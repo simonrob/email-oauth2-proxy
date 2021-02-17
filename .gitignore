@@ -129,6 +129,8 @@ dmypy.json
 .pyre/
 
 # Custom for this repository
+oauth2proxy.config
 versions
+launchd
 .idea
 *.iml

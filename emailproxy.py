@@ -13,6 +13,7 @@ import socket
 import ssl
 import re
 import sys
+import syslog
 import threading
 import time
 import traceback
@@ -33,9 +34,11 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-CONFIG_FILE = 'oauth2proxy.config'
+APP_NAME = 'Email OAuth 2.0 Proxy'
 
-MAX_CONNECTIONS = 3  # number of parallel connections to accept locally
+CONFIG_FILE = '%s/oauth2proxy.config' % os.path.dirname(__file__)
+
+MAX_CONNECTIONS = 0  # number of connections to accept locally (IMAP clients often open several); 0 = no limit
 
 LISTEN_ADDRESS = 'localhost'
 LISTEN_PORT = 1433
@@ -59,6 +62,24 @@ RESPONSE_QUEUE = queue.Queue()  # responses from client web view
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
 
+class Log:
+    """Simple logging that also appears in macOS syslog/Console.app"""
+    DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
+
+    @staticmethod
+    def debug(*args):
+        if VERBOSE:
+            message = ' '.join(map(str, args))
+            print(datetime.datetime.now().strftime(Log.DATE_FORMAT), message)
+            syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+
+    @staticmethod
+    def info(*args):
+        message = ' '.join(map(str, args))
+        print(datetime.datetime.now().strftime(Log.DATE_FORMAT), message)
+        syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+
+
 class ClientConnection(asyncore.dispatcher_with_send):
     """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth2.0 SASL"""
 
@@ -74,8 +95,7 @@ class ClientConnection(asyncore.dispatcher_with_send):
 
     def handle_read(self):
         data = self.recv(RECEIVE_BUFFER_SIZE)
-        if VERBOSE:
-            print(datetime.datetime.now(), self.connection_info, '<--', data)
+        Log.debug(self.connection_info, '-->', data)
 
         # client is established after server; this state should not happen unless already closing
         if not self.server_connection:
@@ -368,8 +388,7 @@ class ServerConnection(asyncore.dispatcher_with_send):
 
     def handle_read(self):
         data = self.recv(RECEIVE_BUFFER_SIZE)
-        if VERBOSE:
-            print(datetime.datetime.now(), self.connection_info, '-->', data)
+        Log.debug(self.connection_info, '<--', data)
 
         if self.client_connection:
             # if authentication succeeds, remove our proxy from the client and ignore all further communication
@@ -377,6 +396,7 @@ class ServerConnection(asyncore.dispatcher_with_send):
                 str_response = data.decode('utf-8').rstrip('\r\n')
                 match = AUTHENTICATION_RESPONSE_MATCHER.match(str_response)
                 if match and match.group('tag') == self.client_connection.authentication_tag:
+                    Log.info('Successfully authenticated connection - removing proxy')
                     self.client_connection.authenticated = True
 
             self.client_connection.send(data)
@@ -398,13 +418,13 @@ class IMAPOAuth2Proxy(asyncore.dispatcher_with_send):
         self.client_connections = []
 
     def handle_accepted(self, connection, address):
-        if len(self.client_connections) < MAX_CONNECTIONS:
+        if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             new_server_connection = ServerConnection((SERVER_ADDRESS, SERVER_PORT), address)
             new_client_connection = ClientConnection(connection, address, new_server_connection, self)
             new_server_connection.client_connection = new_client_connection
             self.client_connections.append(new_client_connection)
         else:
-            print('Rejecting new connection above MAX_CONNECTIONS limit of', MAX_CONNECTIONS)
+            Log.info('Rejecting new connection above MAX_CONNECTIONS limit of', MAX_CONNECTIONS)
             self.close()
             self.start()
 
@@ -431,6 +451,8 @@ class App:
 
     def __init__(self, argv):
         self.argv = argv
+        syslog.openlog(APP_NAME)
+
         if sys.platform == 'darwin':
             import AppKit
             # hide dock icon (but not LSBackgroundOnly as we need input via web view)
@@ -451,10 +473,10 @@ class App:
 
     def create_icon(self):
         image_out = BytesIO()
-        cairosvg.svg2png(url='icon.svg', write_to=image_out)
+        cairosvg.svg2png(url='%s/icon.svg' % os.path.dirname(__file__), write_to=image_out)
 
         return pystray.Icon('test', Image.open(image_out), menu=pystray.Menu(
-            pystray.MenuItem('IMAP OAuth 2.0 Proxy', None, enabled=False),
+            pystray.MenuItem(APP_NAME, None, enabled=False),
             pystray.MenuItem('–––––––––––––––––––––', None, enabled=False),
             pystray.MenuItem('Authorise account...', self.authorise),
             pystray.MenuItem('Edit accounts...', self.edit_config),
@@ -486,17 +508,16 @@ class App:
         self.proxy.start()
         threading.Thread(target=self.run_proxy, name='IMAPOAuth2Proxy-main').start()
 
-        print('Initialised IMAP OAuth 2.0 proxy - listening for authentication requests')
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests')
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
             else:
                 if not data['expired']:
-                    print('Authorisation request received for', data['username'])
+                    Log.info('Authorisation request received for', data['username'])
                     self.authorisation_requests.append(data)
-                    self.notify('IMAP OAuth 2.0 Proxy',
-                                'Please authorise your account %s from the menu' % data['username'])
+                    self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
                 else:
                     for request in self.authorisation_requests:
                         if request['connection'] == data['connection']:
@@ -524,11 +545,11 @@ class App:
             webview.start(self.configure_windows)
             self.web_view_started = True
         else:
-            self.notify('IMAP OAuth 2.0 Proxy', 'There are no pending authorisation requests')
+            self.notify(APP_NAME, 'There are no pending authorisation requests')
 
     @staticmethod
     def create_hidden_window():
-        return webview.create_window('IMAP OAuth 2.0 Proxy hidden (dummy) window', html='', hidden=True)
+        return webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
 
     def configure_windows(self):
         self.hidden_window = self.create_hidden_window()
@@ -541,21 +562,20 @@ class App:
             if len(self.authorisation_requests) > 0:
                 current_request = self.authorisation_requests[0]
                 if url and url.startswith(current_request['redirect_uri']):
-                    print('Successfully authorised request for', current_request['username'])
+                    Log.info('Successfully authorised request for', current_request['username'])
                     RESPONSE_QUEUE.put(
                         {'connection': self.authorisation_requests.pop(0)['connection'], 'response_url': url})
                     window.destroy()
                     if len(self.authorisation_requests) > 0:
-                        self.notify('IMAP OAuth 2.0 Proxy',
+                        self.notify(APP_NAME,
                                     'Authentication successful for %s. Please authorise a further request for account '
                                     '%s from the menu' % (
                                         current_request['username'], self.authorisation_requests[0]['username']))
                     else:
-                        self.notify('IMAP OAuth 2.0 Proxy', 'Authentication successful for %s' %
-                                    current_request['username'])
+                        self.notify(APP_NAME, 'Authentication successful for %s' % current_request['username'])
 
     def exit(self, icon):
-        print('Stopping IMAP OAuth 2.0 proxy')
+        Log.info('Stopping', APP_NAME)
         self.exiting = True
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
@@ -571,6 +591,8 @@ class App:
                 window.destroy()
 
         icon.stop()
+
+        syslog.closelog(APP_NAME)
         sys.exit(0)
 
 
