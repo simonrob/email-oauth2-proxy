@@ -5,13 +5,13 @@ An IMAP/SMTP proxy that adds OAuth 2.0 authentication transparently for clients 
 ## Getting started
 First, add configuration details for each account you want to use with the proxy in the file `emailproxy.config`. [Sample configurations](emailproxy.config) are provided for Office 365 and Gmail, but you will need to register a new [Microsoft identity](https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app) or [Google API](https://support.google.com/googleapi/answer/6158849) client to get started (or use an existing client ID and secret).
 
-While you are editing this file, check the default server details and edit appropriately - again, examples are provided for Office 365 and Gmail, but other services that use OAuth 2.0 should also work.
+While you are editing this file, check the default server details and edit appropriately - again, examples are provided for Office 365 and Gmail, but other services that use OAuth 2.0 should also work (please [report any bugs](https://github.com/simonrob/email-oauth2-proxy/issues)!). You can remove details for services you don't use, or add additional ones for any other OAuth 2.0 IMAP/SMTP servers you would like to use with the proxy. Multiple accounts with the same service can share the same server.
 
-Next, start the proxy: `python3 emailproxy.py` – a menu bar icon should appear. If you get `ModuleNotFoundError`, use `pip` to install any missing packages.
+Next, start the proxy: `python3 emailproxy.py` – a menu bar icon should appear. If you get `ModuleNotFoundError`, use `pip3` to install any missing packages.
 
-Finally, open your email client and configure its IMAP details to match those set in the configuration file above. Typically this would be `localhost` on port `1433`. The local connection should be unencrypted, but the connection between the proxy and your email server is secure.
+Finally, open your email client and configure its server details to match those set in the configuration file. For example, using the sample Office 365 details, this would be `localhost` on port `1433` for IMAP and `localhost` on port `1587` for SMTP. The local connection in your email client should be configured as unencrypted, but the connection between the proxy and your email server is secured.
 
-The first time your email client makes a request you should see a notification about authentication. Click the `Authorise account...` option in the menu bar and follow the instructions to log in to your account. After authentication completes you should have IMAP/SMTP access to your account as normal.
+The first time your email client makes a request you should see a notification about authentication. Click the `Authorise account...` option from the menu bar icon and follow the instructions to log in to your account. After authentication completes you should have IMAP/SMTP access to your account as normal.
 
 
 ## Running as a service/daemon
