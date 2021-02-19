@@ -129,7 +129,7 @@ dmypy.json
 .pyre/
 
 # Custom for this repository
-oauth2proxy.config
+emailproxy.config
 versions
 launchd
 .idea
