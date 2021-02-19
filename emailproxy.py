@@ -39,7 +39,7 @@ APP_NAME = 'Email OAuth 2.0 Proxy'
 VERBOSE = False
 
 CONFIG_FILE = '%s/emailproxy.config' % os.path.dirname(__file__)
-CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP){1})-(?P<port>[\d]{4,5})')
+CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # IMAP/SMTP connections to accept (clients often open several); 0 = no limit; limit is per server
 RECEIVE_BUFFER_SIZE = 65536  # in bytes
@@ -191,7 +191,8 @@ class OAuth2Helper:
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope):
         """Constructs and returns the URL to request permission for this client to access the given scope"""
-        params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code'}
+        params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
+                  'access_type': 'offline'}
         param_pairs = []
         for param in sorted(iter(params.items()), key=lambda x: x[0]):
             param_pairs.append('%s=%s' % (param[0], OAuth2Helper.oauth2_url_escape(param[1])))
@@ -221,7 +222,8 @@ class OAuth2Helper:
 
             elif data['connection'] == connection_info:  # found an authentication response meant for us
                 if data['response_url'] and 'code=' in data['response_url']:
-                    authorisation_code = data['response_url'].split('code=')[1].split('&session_state=')[0]
+                    authorisation_code = OAuth2Helper.oauth2_url_unescape(
+                        data['response_url'].split('code=')[1].split('&')[0])
                     if authorisation_code:
                         return True, authorisation_code
                 return False, None
