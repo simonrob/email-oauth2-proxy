@@ -1,0 +1,10 @@
+CairoSVG
+configobj
+cryptography
+Pillow
+pystray
+pywebview
+setproctitle
+
+# used only to hide the dock icon on macOS
+PyObjC; sys_platform == 'darwin'

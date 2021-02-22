@@ -1,5 +1,5 @@
 """A simple IMAP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth 2.0
-SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers. """
+SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 import asyncore
 import base64
@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.error
 
 import pystray
+import setproctitle as setproctitle
 import webview
 
 # for drawing the SVG icon
@@ -37,8 +38,10 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 VERBOSE = False
+CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # must be byte type string
 
-CONFIG_FILE = '%s/emailproxy.config' % os.path.dirname(__file__)
+CONFIG_FILE_NAME = 'emailproxy.config'
+CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(__file__), CONFIG_FILE_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # IMAP/SMTP connections to accept (clients often open several); 0 = no limit; limit is per server
@@ -46,10 +49,8 @@ RECEIVE_BUFFER_SIZE = 65536  # in bytes
 AUTHENTICATION_TIMEOUT = 60  # seconds to wait before cancelling authentication requests
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
 
-IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(r'(?P<tag>\w+)'
-                                                 r'\s(?P<command>(LOGIN|AUTHENTICATE))'
-                                                 r'\s(?P<flags>.*)', flags=re.IGNORECASE)
-
+IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(r'(?P<tag>\w+) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)',
+                                                 flags=re.IGNORECASE)
 IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(r'(?P<tag>\w+) OK AUTHENTICATE.*', flags=re.IGNORECASE)
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
@@ -82,7 +83,7 @@ class OAuth2Helper:
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
         if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message') """
         config = configparser.ConfigParser(allow_no_value=True)
-        config.read(CONFIG_FILE)
+        config.read(CONFIG_FILE_PATH)
 
         if not config.has_section(username):
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
@@ -136,7 +137,7 @@ class OAuth2Helper:
                 config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
                 config.set(username, 'refresh_token', OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
-                with open(CONFIG_FILE, 'w') as config_output:
+                with open(CONFIG_FILE_PATH, 'w') as config_output:
                     config.write(config_output)
 
             else:
@@ -148,7 +149,7 @@ class OAuth2Helper:
                     access_token = response['access_token']
                     config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                     config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
-                    with open(CONFIG_FILE, 'w') as config_output:
+                    with open(CONFIG_FILE_PATH, 'w') as config_output:
                         config.write(config_output)
                 else:
                     access_token = OAuth2Helper.decrypt(cryptographer, access_token)
@@ -158,18 +159,19 @@ class OAuth2Helper:
             oauth2_string = OAuth2Helper.construct_oauth2_string(username, access_token)
             return True, oauth2_string
 
-        except Exception:
-            # if invalid details are the reason for failure we need to remove our cached version and reauthenticate
+        except Exception as e:
+            # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
             config.remove_option(username, 'token_salt')
             config.remove_option(username, 'access_token')
             config.remove_option(username, 'access_token_expiry')
             config.remove_option(username, 'refresh_token')
-            with open(CONFIG_FILE, 'w') as config_output:
+            with open(CONFIG_FILE_PATH, 'w') as config_output:
                 config.write(config_output)
 
             # we could probably handle this a bit better depending on what the exception actually is (e.g., try
             # authentication again), but given that a repeat request will do this, it's easiest to just remove
             # the potentially invalid credentials and rely on the client to retry
+            Log.info('Caught exception while requesting OAuth 2.0 credentials:', e)
             return False, '%s: Login failure - saved authentication data invalid for account %s' % (APP_NAME, username)
 
     @staticmethod
@@ -295,33 +297,53 @@ class OAuth2Helper:
 
 
 class OAuth2ClientConnection(asyncore.dispatcher_with_send):
-    def __init__(self, proxy_type, connection, connection_info, server_connection, proxy_parent):
+    def __init__(self, proxy_type, connection, connection_info, server_connection, proxy_parent, custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, connection)
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.server_connection = server_connection
         self.proxy_parent = proxy_parent
+        self.custom_configuration = custom_configuration
 
+        self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
-        Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)  # TODO: filter out credentials from logs
 
         # client is established after server; this state should not happen unless already closing
         if not self.server_connection:
+            Log.debug(self.proxy_type, self.connection_info,
+                      'Data received without server connection - ignoring and closing:', byte_data)
             self.close()
             return
 
         # we have already authenticated - nothing to do; just pass data directly to server
         if self.authenticated:
+            Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)
             self.server_connection.send(byte_data)
-            return
 
-        self.process_data(byte_data)
+        else:
+            # try to remove credentials from logged data - both inline (via regex) and those as a separate request
+            if self.censor_next_log:
+                log_data = CENSOR_MESSAGE
+                self.censor_next_log = False
+            else:
+                # IMAP LOGIN command with username/password in plain text inline, and IMAP/SMTP AUTH(ENTICATE) command
+                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 ' + CENSOR_MESSAGE + b'\r\n', byte_data)
+                log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
+                                  b'\\1\\2\\3\\4 \\5 ' + CENSOR_MESSAGE + b'\r\n', log_data)
 
-    def process_data(self, byte_data):
-        self.server_connection.send(byte_data)  # by default we just send everything straight to the server
+            Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
+            self.process_data(byte_data)
+
+    def process_data(self, byte_data, censor_log=False):
+        self.server_connection.send(byte_data, censor_log)  # by default we just send everything straight to the server
+
+    def send(self, byte_data):
+        if not self.authenticated:  # after authentication these messages are identical to above
+            Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # note: will log XOAUTH2 token
+        super().send(byte_data)
 
     def close(self):
         if self.server_connection:
@@ -329,19 +351,19 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             self.server_connection.close()
             self.server_connection = None
         self.proxy_parent.remove_client(self)
-        asyncore.dispatcher_with_send.close(self)
+        super().close()
 
 
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
     """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth2.0 SASL"""
 
-    def __init__(self, connection, connection_info, server_connection, proxy_parent):
-        super().__init__('IMAP', connection, connection_info, server_connection, proxy_parent)
+    def __init__(self, connection, connection_info, server_connection, proxy_parent, custom_configuration):
+        super().__init__('IMAP', connection, connection_info, server_connection, proxy_parent, custom_configuration)
         self.authentication_tag = None
         self.awaiting_credentials = False
 
-    def process_data(self, byte_data):
-        str_data = byte_data.decode('utf-8').rstrip('\r\n')
+    def process_data(self, byte_data, censor_log=False):
+        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
         # AUTHENTICATE PLAIN can be a two-stage request - handle credentials if they are separate from command
         if self.awaiting_credentials:
@@ -369,12 +391,13 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 split_flags = client_flags.split(' ')  # no need to check for ' ' like above as we only require item 0
                 authentication_type = split_flags[0].lower()
                 if authentication_type == 'plain':  # plain can be submitted as a single command or multiline
+                    self.authentication_tag = match.group('tag')
                     if len(split_flags) > 1:
                         (username, password) = OAuth2Helper.decode_credentials(' '.join(split_flags[1:]))
                         self.authenticate_connection(username, password, 'authenticate')
                     else:
                         self.awaiting_credentials = True
-                        self.authentication_tag = match.group('tag')
+                        self.censor_next_log = True
                         self.send(b'+ \r\n')  # request credentials
                 else:
                     # we don't support any other methods - let the server handle the error
@@ -389,14 +412,14 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
         if success:
             # send authentication command to server (response checked in ServerConnection)
             # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
-            super().process_data(('%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag).encode('utf-8'))
-            super().process_data(OAuth2Helper.encode_oauth2_string(result))
+            super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
+            super().process_data(OAuth2Helper.encode_oauth2_string(result), True)
             super().process_data(b'\r\n')
 
         else:
             error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
             self.send(error_message.encode('utf-8'))
-            self.send('* BYE Autologout; authentication failed\r\n'.encode('utf-8'))
+            self.send(b'* BYE Autologout; authentication failed\r\n')
             self.close()
 
 
@@ -410,16 +433,16 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         LOGIN_AWAITING_PASSWORD = 4
         AUTH_CREDENTIALS_SENT = 5
 
-    def __init__(self, connection, connection_info, server_connection, proxy_parent):
-        super().__init__('SMTP', connection, connection_info, server_connection, proxy_parent)
+    def __init__(self, connection, connection_info, server_connection, proxy_parent, custom_configuration):
+        super().__init__('SMTP', connection, connection_info, server_connection, proxy_parent, custom_configuration)
         self.authentication_state = self.AUTH.PENDING
 
-    def process_data(self, byte_data):
-        str_data = byte_data.decode('utf-8').rstrip('\r\n')
+    def process_data(self, byte_data, censor_log=False):
+        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
         str_data_lower = str_data.lower()
 
         # intercept EHLO so we can add STARTTLS
-        if self.server_connection.ehlo is None:
+        if self.server_connection.ehlo is None and self.custom_configuration['starttls']:
             if str_data_lower.startswith('ehlo') or str_data_lower.startswith('helo'):
                 self.server_connection.ehlo = str_data  # save the command so we can replay later from the server side
             super().process_data(byte_data)
@@ -433,7 +456,8 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
                 self.send_authentication_request()
             else:  # ...or requested separately
                 self.authentication_state = self.AUTH.PLAIN_AWAITING_CREDENTIALS
-                self.send('334 \r\n'.encode('utf-8'))  # request details (note: space after response code is mandatory)
+                self.censor_next_log = True
+                self.send(b'334 \r\n')  # request details (note: space after response code is mandatory)
 
         elif self.authentication_state is self.AUTH.PLAIN_AWAITING_CREDENTIALS:
             (self.server_connection.username, self.server_connection.password) = OAuth2Helper.decode_credentials(
@@ -442,7 +466,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 
         elif self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('auth login'):
             self.authentication_state = self.AUTH.LOGIN_AWAITING_USERNAME
-            self.send('334 VXNlcm5hbWU6\r\n'.encode('utf-8'))  # VXNlcm5hbWU6 = base64 encoded 'Username:'
+            self.send(b'334 VXNlcm5hbWU6\r\n')  # VXNlcm5hbWU6 = base64 encoded 'Username:'
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_USERNAME:
             try:
@@ -450,7 +474,8 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
             except binascii.Error:
                 self.server_connection.username = ''
             self.authentication_state = self.AUTH.LOGIN_AWAITING_PASSWORD
-            self.send('334 UGFzc3dvcmQ6\r\n'.encode('utf-8'))  # UGFzc3dvcmQ6 = base64 encoded 'Password:'
+            self.censor_next_log = True
+            self.send(b'334 UGFzc3dvcmQ6\r\n')  # UGFzc3dvcmQ6 = base64 encoded 'Password:'
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_PASSWORD:
             try:
@@ -466,32 +491,56 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
     def send_authentication_request(self):
         self.authentication_state = self.AUTH.PENDING
         self.server_connection.authentication_state = SMTPOAuth2ServerConnection.AUTH.STARTED
-        super().process_data('AUTH XOAUTH2\r\n'.encode('utf-8'))
+        super().process_data(b'AUTH XOAUTH2\r\n')
 
 
 class OAuth2ServerConnection(asyncore.dispatcher_with_send):
-    def __init__(self, proxy_type, server_address, connection_info):
+    def __init__(self, proxy_type, server_address, connection_info, custom_configuration):
         asyncore.dispatcher_with_send.__init__(self)
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.client_connection = None
         self.server_address = server_address
+        self.custom_configuration = custom_configuration
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.server_address)
 
     def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
         new_socket = socket.socket(socket_family, socket_type)
         new_socket.setblocking(True)
-        self.set_socket(new_socket)
+
+        # connections can either wrapped via the STARTTLS command, or SSL from the start
+        if self.custom_configuration['starttls']:
+            self.set_socket(new_socket)
+        else:
+            ssl_context = ssl.create_default_context()
+            self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
 
     def handle_read(self):
-        data = self.recv(RECEIVE_BUFFER_SIZE)
-        Log.debug(self.proxy_type, self.connection_info, '<--', data)  # TODO: filter out credentials from logs
-        if self.client_connection:
-            self.process_data(data)
+        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+        Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
+
+        # data received before client is connected (or after client has disconnected) - ignore
+        if not self.client_connection:
+            if byte_data:
+                Log.debug(self.proxy_type, self.connection_info, 'Data received without client connection - ignoring:',
+                          byte_data)
+            return
+
+        # we have already authenticated - nothing to do; just pass data directly to client
+        if self.client_connection.authenticated:
+            self.client_connection.send(byte_data)
+            return
+
+        self.process_data(byte_data)
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
+
+    def send(self, byte_data, censor_log=False):
+        if not self.client_connection.authenticated:  # after authentication these messages are identical to above
+            Log.debug(self.proxy_type, self.connection_info, '    -->', CENSOR_MESSAGE if censor_log else byte_data)
+        super().send(byte_data)
 
     def handle_close(self):
         if self.client_connection:
@@ -506,29 +555,25 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
     # IMAP: https://tools.ietf.org/html/rfc3501
     # IMAP SASL-IR: https://tools.ietf.org/html/rfc4959
-    def __init__(self, server_address, connection_info):
-        super().__init__('IMAP', server_address, connection_info)
-
-    def set_socket(self, new_socket, channel_map=None):
-        # IMAP connections are SSL from the start; SMTP is only wrapped once STARTTLS command is provided
-        ssl_context = ssl.create_default_context()
-        super().set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]), channel_map)
+    def __init__(self, server_address, connection_info, custom_configuration):
+        super().__init__('IMAP', server_address, connection_info, custom_configuration)
 
     def process_data(self, byte_data):
-        if not self.client_connection.authenticated:
-            str_response = byte_data.decode('utf-8').rstrip('\r\n')
+        # note: there is no reason why IMAP STARTTLS (https://tools.ietf.org/html/rfc2595) couldn't be supported here
+        # as with SMTP, but it doesn't seem like any well-known servers support this, so left unimplemented for now
+        str_response = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
-            if str_response.startswith('* CAPABILITY'):
-                # intercept CAPABILITY response and replace with what we can actually do
-                updated_response = re.sub(r'(AUTH=[\w]+ )+', 'AUTH=PLAIN ', str_response, flags=re.IGNORECASE)
-                byte_data = ('%s\r\n' % updated_response).encode('utf-8')
+        if str_response.startswith('* CAPABILITY'):
+            # intercept CAPABILITY response and replace with what we can actually do
+            updated_response = re.sub(r'(AUTH=[\w]+ )+', 'AUTH=PLAIN ', str_response, flags=re.IGNORECASE)
+            byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
 
-            else:
-                # if authentication succeeds, remove our proxy from the client and ignore all further communication
-                match = IMAP_AUTHENTICATION_RESPONSE_MATCHER.match(str_response)
-                if match and match.group('tag') == self.client_connection.authentication_tag:
-                    Log.info('Successfully authenticated IMAP connection - removing proxy')
-                    self.client_connection.authenticated = True
+        else:
+            # if authentication succeeds, remove our proxy from the client and ignore all further communication
+            match = IMAP_AUTHENTICATION_RESPONSE_MATCHER.match(str_response)
+            if match and match.group('tag') == self.client_connection.authentication_tag:
+                Log.info('Successfully authenticated IMAP connection - removing proxy')
+                self.client_connection.authenticated = True
 
         super().process_data(byte_data)
 
@@ -549,99 +594,99 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         STARTED = 2
         CREDENTIALS_SENT = 3
 
-    def __init__(self, server_address, connection_info):
-        super().__init__('SMTP', server_address, connection_info)
-
+    def __init__(self, server_address, connection_info, custom_configuration):
+        super().__init__('SMTP', server_address, connection_info, custom_configuration)
         self.ehlo = None
-        self.starttls = self.STARTTLS.PENDING
+        if self.custom_configuration['starttls']:
+            self.starttls = self.STARTTLS.PENDING
+        else:
+            self.starttls = self.STARTTLS.COMPLETE
         self.authentication_state = self.AUTH.PENDING
 
         self.username = None
         self.password = None
 
     def process_data(self, byte_data):
-        if self.client_connection.authenticated:
-            super().process_data(byte_data)
+        # SMTP setup and authentication involves a little more back-and-forth than IMAP as the default is STARTTLS...
+        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
-        # SMTP setup and authentication involves a little more back-and-forth than IMAP...
-        else:
-            str_data = byte_data.decode('utf-8').rstrip('\r\n')
+        # before we can do anything we need to intercept EHLO/HELO and add STARTTLS
+        if self.ehlo is not None and self.starttls is not self.STARTTLS.COMPLETE:
+            if self.starttls is self.STARTTLS.PENDING:
+                self.send(b'STARTTLS\r\n')
+                self.starttls = self.STARTTLS.NEGOTIATING
 
-            # before we can do anything we need to intercept EHLO/HELO and add STARTTLS
-            if self.ehlo is not None and self.starttls is not self.STARTTLS.COMPLETE:
-                if self.starttls is self.STARTTLS.PENDING:
-                    self.send('STARTTLS\r\n'.encode('utf-8'))
-                    self.starttls = self.STARTTLS.NEGOTIATING
-
-                elif self.starttls is self.STARTTLS.NEGOTIATING:
-                    if str_data.startswith('220'):
-                        ssl_context = ssl.create_default_context()
-                        super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0]))
-                        self.starttls = self.STARTTLS.COMPLETE
-                        Log.info('Successfully negotiated SMTP STARTTLS connection - re-sending greeting')
-                        self.send(('%s\r\n' % self.ehlo).encode('utf-8'))  # re-send original EHLO/HELO to server
-                    else:
-                        super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                        self.client_connection.close()
-
-            # then, once we have the username and password we can respond to the '334 ' response with credentials
-            elif self.authentication_state is self.AUTH.STARTED and self.username is not None \
-                    and self.password is not None:
-                if str_data.startswith('334'):  # 334 = "please send credentials"
-                    (success, result) = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
-                                                                            self.connection_info)
-                    self.username = None
-                    self.password = None
-                    if success:
-                        self.authentication_state = self.AUTH.CREDENTIALS_SENT
-                        self.send(OAuth2Helper.encode_oauth2_string(result))
-                        self.send(b'\r\n')
-
-                    else:
-                        # a local authentication error occurred - send details to the client and exit
-                        super().process_data(
-                            ('535 5.7.8  Authentication credentials invalid. %s\r\n' % result).encode('utf-8'))
-                        self.client_connection.close()
-                        return
-
+            elif self.starttls is self.STARTTLS.NEGOTIATING:
+                if str_data.startswith('220'):
+                    ssl_context = ssl.create_default_context()
+                    super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0]))
+                    self.starttls = self.STARTTLS.COMPLETE
+                    Log.info('Successfully negotiated SMTP STARTTLS connection - re-sending greeting')
+                    self.send(b'%s\r\n' % self.ehlo.encode('utf-8'))  # re-send original EHLO/HELO to server
                 else:
                     super().process_data(byte_data)  # an error occurred - just send to the client and exit
                     self.client_connection.close()
 
-            elif self.authentication_state is self.AUTH.CREDENTIALS_SENT:
-                if str_data.startswith('235'):
-                    Log.info('Successfully authenticated SMTP connection - removing proxy')
-                    self.client_connection.authenticated = True
-                    super().process_data(byte_data)
+        # then, once we have the username and password we can respond to the '334 ' response with credentials
+        elif self.authentication_state is self.AUTH.STARTED and self.username is not None \
+                and self.password is not None:
+            if str_data.startswith('334'):  # 334 = "please send credentials"
+                (success, result) = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
+                                                                        self.connection_info)
+                self.username = None
+                self.password = None
+                if success:
+                    self.authentication_state = self.AUTH.CREDENTIALS_SENT
+                    self.send(OAuth2Helper.encode_oauth2_string(result), True)
+                    self.send(b'\r\n')
+
                 else:
-                    super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                    # a local authentication error occurred - send details to the client and exit
+                    super().process_data(
+                        b'535 5.7.8  Authentication credentials invalid. %s\r\n' % result.encode('utf-8'))
                     self.client_connection.close()
+                    return
 
             else:
-                # intercept EHLO response AUTH capabilities and replace with what we can actually do
-                if str_data.startswith('250-'):
-                    updated_response = re.sub(r'250-AUTH[\w ]+', '250-AUTH PLAIN LOGIN', str_data, flags=re.IGNORECASE)
-                    super().process_data(('%s\r\n' % updated_response).encode('utf-8'))
-                else:
-                    super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.client_connection.close()
+
+        elif self.authentication_state is self.AUTH.CREDENTIALS_SENT:
+            if str_data.startswith('235'):
+                Log.info('Successfully authenticated SMTP connection - removing proxy')
+                self.client_connection.authenticated = True
+                super().process_data(byte_data)
+            else:
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.client_connection.close()
+
+        else:
+            # intercept EHLO response AUTH capabilities and replace with what we can actually do
+            if str_data.startswith('250-'):
+                updated_response = re.sub(r'250-AUTH[\w ]+', '250-AUTH PLAIN LOGIN', str_data, flags=re.IGNORECASE)
+                super().process_data(b'%s\r\n' % updated_response.encode('utf-8'))
+            else:
+                super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
 
 
 class OAuth2Proxy(asyncore.dispatcher_with_send):
     """Listen on SERVER_ADDRESS:SERVER_PORT, creating a ServerConnection + ClientConnection for each new connection"""
 
-    def __init__(self, proxy_type, local_address, server_address):
+    def __init__(self, proxy_type, local_address, server_address, custom_configuration):
         asyncore.dispatcher_with_send.__init__(self)
         self.proxy_type = proxy_type
         self.local_address = local_address
         self.server_address = server_address
+        self.custom_configuration = custom_configuration
         self.client_connections = []
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
-            new_server_connection = server_class(self.server_address, address)
+            new_server_connection = server_class(self.server_address, address, self.custom_configuration)
             client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
-            new_client_connection = client_class(connection, address, new_server_connection, self)
+            new_client_connection = client_class(connection, address, new_server_connection, self,
+                                                 self.custom_configuration)
             new_server_connection.client_connection = new_client_connection
             self.client_connections.append(new_client_connection)
         else:
@@ -670,7 +715,7 @@ class OAuth2Proxy(asyncore.dispatcher_with_send):
 
     def stop(self):
         for connection in self.client_connections:
-            connection.send(('%s\r\n' % self.bye_message()).encode('utf-8'))  # try to exit gracefully
+            connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
             connection.close()
         self.close()
 
@@ -680,6 +725,7 @@ class App:
 
     def __init__(self, argv):
         self.argv = argv
+        setproctitle.setproctitle(APP_NAME)
         syslog.openlog(APP_NAME)
 
         if sys.platform == 'darwin':
@@ -706,12 +752,12 @@ class App:
 
         return pystray.Icon('test', Image.open(image_out), menu=pystray.Menu(
             pystray.MenuItem(APP_NAME, None, enabled=False),
-            pystray.MenuItem('–––––––––––––––––––––––', None, enabled=False),
+            pystray.MenuItem('––––––––––––––––––––––', None, enabled=False),
             pystray.MenuItem('Authorise account...', self.authorise),
             pystray.MenuItem('Accounts and servers...', self.edit_config),
-            pystray.MenuItem('–––––––––––––––––––––––', None, enabled=False),
+            pystray.MenuItem('––––––––––––––––––––––', None, enabled=False),
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda item: VERBOSE),
-            pystray.MenuItem('–––––––––––––––––––––––', None, enabled=False),
+            pystray.MenuItem('––––––––––––––––––––––', None, enabled=False),
             pystray.MenuItem('Quit', self.exit)
         ))
 
@@ -719,10 +765,13 @@ class App:
     @staticmethod
     def edit_config(icon, item):
         if sys.platform == 'darwin':
-            os.system("""open {}""".format(CONFIG_FILE))
+            os.system("""open {}""".format(CONFIG_FILE_PATH))
+        elif sys.platform == 'win32':
+            os.startfile(CONFIG_FILE_PATH)
+        elif sys.platform.startswith('linux'):
+            os.system("""xdg-open {}""".format(CONFIG_FILE_PATH))  # not tested but is apparently near-universal
         else:
-            # TODO: will this work cross-platform?
-            os.system("""start {}""".format(CONFIG_FILE))
+            pass  # nothing we can do
 
     # noinspection PyUnusedLocal
     @staticmethod
@@ -734,7 +783,7 @@ class App:
         icon.visible = True
 
         config = configparser.ConfigParser(allow_no_value=True)
-        config.read(CONFIG_FILE)
+        config.read(CONFIG_FILE_PATH)
 
         # load server types and configurations
         server_load_error = False
@@ -754,17 +803,20 @@ class App:
                 break
 
             server_address = config.get(section, 'server_address', fallback=None)
-            str_server_port = config.get(section, 'server_port', fallback=None)
-            try:
-                server_port = int(str_server_port)
-            except ValueError:
+            server_port = config.getint(section, 'server_port', fallback=-1)
+            if server_port < 0:
                 server_load_error = True
                 break
+
+            custom_configuration = {
+                'starttls': config.getboolean(section, 'starttls', fallback=False)
+            }
 
             if server_address:  # all other values are checked, regex matched or have a fallback above
                 Log.info('Starting %s server at %s:%d proxying %s:%d' % (
                     server_type, local_address, local_port, server_address, server_port))
-                new_proxy = OAuth2Proxy(server_type, (local_address, local_port), (server_address, server_port))
+                new_proxy = OAuth2Proxy(server_type, (local_address, local_port), (server_address, server_port),
+                                        custom_configuration)
                 new_proxy.start()
                 self.proxies.append(new_proxy)
             else:
@@ -773,8 +825,8 @@ class App:
 
         if server_load_error:
             Log.info('No (or invalid) server details found - exiting')
-            self.notify(APP_NAME, 'No (or invalid) server details found. Please add your accounts and servers from '
-                                  'the menu')
+            self.notify(APP_NAME, 'No (or invalid) server details found. Please add your accounts and servers in %s' %
+                        CONFIG_FILE_NAME)
             self.exit(icon)
             return
 
@@ -799,14 +851,18 @@ class App:
     def run_proxy(self):
         try:
             asyncore.loop()
-        except Exception:
+        except Exception as e:
             if not self.exiting:
+                Log.info('Caught asyncore exception in main loop:', e)
                 traceback.print_exc()
 
-    @staticmethod
-    def notify(title, text):
-        # TODO: do this in a cross-platform way
-        os.system("""osascript -e 'display notification "{}" with title "{}"'""".format(text, title))
+    def notify(self, title, text):
+        if self.icon.HAS_NOTIFICATION:
+            self.icon.notify('%s: %s' % (title, text))  # note: not tested; based on pystray documentation
+        elif sys.platform == 'darwin':
+            os.system("""osascript -e 'display notification "{}" with title "{}"'""".format(text, title))
+        else:
+            Log.info(title, text)  # last resort
 
     def authorise(self):
         if len(self.authorisation_requests) > 0:
@@ -838,8 +894,14 @@ class App:
                     RESPONSE_QUEUE.put(
                         {'connection': self.authorisation_requests.pop(0)['connection'], 'response_url': url})
                     window.destroy()
+
+                    # remove other authentication requests that match the same username (we assume username == email)
+                    for request in self.authorisation_requests:
+                        if request['username'] == current_request['username']:
+                            self.authorisation_requests.remove(request)
+                            break
+
                     if len(self.authorisation_requests) > 0:
-                        # TODO: remove other auth requests that match the same username
                         self.notify(APP_NAME,
                                     'Authentication successful for %s. Please authorise a further request for account '
                                     '%s from the menu' % (
