@@ -330,9 +330,9 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                 self.censor_next_log = False
             else:
                 # IMAP LOGIN command with username/password in plain text inline, and IMAP/SMTP AUTH(ENTICATE) command
-                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 ' + CENSOR_MESSAGE + b'\r\n', byte_data)
+                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data)
                 log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
-                                  b'\\1\\2\\3\\4 \\5 ' + CENSOR_MESSAGE + b'\r\n', log_data)
+                                  b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data)
 
             Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
             self.process_data(byte_data)
@@ -798,13 +798,15 @@ class App:
             str_local_port = match.group('port')
             try:
                 local_port = int(str_local_port)
+                if local_port <= 0 or local_port > 65535:
+                    raise ValueError
             except ValueError:
                 server_load_error = True
                 break
 
             server_address = config.get(section, 'server_address', fallback=None)
             server_port = config.getint(section, 'server_port', fallback=-1)
-            if server_port < 0:
+            if server_port <= 0 or server_port > 65535:
                 server_load_error = True
                 break
 
