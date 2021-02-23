@@ -308,20 +308,25 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
 
+    def handle_connect(self):
+        pass
+
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
 
         # client is established after server; this state should not happen unless already closing
         if not self.server_connection:
-            Log.debug(self.proxy_type, self.connection_info,
-                      'Data received without server connection - ignoring and closing:', byte_data)
+            if byte_data:
+                Log.debug(self.proxy_type, self.connection_info,
+                          'Data received without server connection - ignoring and closing:', byte_data)
             self.close()
             return
 
-        # we have already authenticated - nothing to do; just pass data directly to server
+        # we have already authenticated - nothing to do; just pass data directly to server (slightly more involved
+        # than the server connection because we censor commands that contain passwords or authentication tokens)
         if self.authenticated:
             Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)
-            self.server_connection.send(byte_data)
+            OAuth2ClientConnection.process_data(self, byte_data)
 
         else:
             # try to remove credentials from logged data - both inline (via regex) and those as a separate request
@@ -337,13 +342,15 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
             self.process_data(byte_data)
 
-    def process_data(self, byte_data, censor_log=False):
-        self.server_connection.send(byte_data, censor_log)  # by default we just send everything straight to the server
+    def process_data(self, byte_data, censor_server_log=False):
+        self.server_connection.send(byte_data, censor_server_log)  # by default just send everything straight to server
 
-    def send(self, byte_data):
-        if not self.authenticated:  # after authentication these messages are identical to above
-            Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # note: will log XOAUTH2 token
-        super().send(byte_data)
+    def handle_write(self):
+        pass
+
+    def handle_close(self):
+        Log.debug(self.proxy_type, self.connection_info, '[ Client disconnected ]')
+        self.close()
 
     def close(self):
         if self.server_connection:
@@ -360,9 +367,10 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
     def __init__(self, connection, connection_info, server_connection, proxy_parent, custom_configuration):
         super().__init__('IMAP', connection, connection_info, server_connection, proxy_parent, custom_configuration)
         self.authentication_tag = None
+        self.authentication_command = None
         self.awaiting_credentials = False
 
-    def process_data(self, byte_data, censor_log=False):
+    def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
         # AUTHENTICATE PLAIN can be a two-stage request - handle credentials if they are separate from command
@@ -378,16 +386,16 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 return
 
             # we replace the standard LOGIN/AUTHENTICATE commands with OAuth 2.0 authentication
-            client_command = match.group('command').lower()
+            self.authentication_command = match.group('command').lower()
             client_flags = match.group('flags')
-            if client_command == 'login' and ' ' in client_flags:
+            if self.authentication_command == 'login' and ' ' in client_flags:
                 (username, password) = client_flags.split(' ')  # we check for ' ' above to avoid crash if no arguments
                 username = OAuth2Helper.strip_quotes(username)
                 password = OAuth2Helper.strip_quotes(password)
                 self.authentication_tag = match.group('tag')
                 self.authenticate_connection(username, password)
 
-            elif client_command == 'authenticate':
+            elif self.authentication_command == 'authenticate':
                 split_flags = client_flags.split(' ')  # no need to check for ' ' like above as we only require item 0
                 authentication_type = split_flags[0].lower()
                 if authentication_type == 'plain':  # plain can be submitted as a single command or multiline
@@ -437,7 +445,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         super().__init__('SMTP', connection, connection_info, server_connection, proxy_parent, custom_configuration)
         self.authentication_state = self.AUTH.PENDING
 
-    def process_data(self, byte_data, censor_log=False):
+    def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
         str_data_lower = str_data.lower()
 
@@ -505,6 +513,9 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.server_address)
 
+    def handle_connect(self):
+        Log.debug(self.proxy_type, self.connection_info, '--> [ Client connected ]')
+
     def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
         new_socket = socket.socket(socket_family, socket_type)
         new_socket.setblocking(True)
@@ -518,7 +529,6 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
-        Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
 
         # data received before client is connected (or after client has disconnected) - ignore
         if not self.client_connection:
@@ -527,22 +537,27 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
                           byte_data)
             return
 
-        # we have already authenticated - nothing to do; just pass data directly to client
+        # we have already authenticated - nothing to do; just pass data directly to client, ignoring overridden method
         if self.client_connection.authenticated:
-            self.client_connection.send(byte_data)
-            return
-
-        self.process_data(byte_data)
+            OAuth2ServerConnection.process_data(self, byte_data)
+        else:
+            Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # command received before editing
+            self.process_data(byte_data)
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
+        Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)  # command after any editing
 
     def send(self, byte_data, censor_log=False):
-        if not self.client_connection.authenticated:  # after authentication these messages are identical to above
+        if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
             Log.debug(self.proxy_type, self.connection_info, '    -->', CENSOR_MESSAGE if censor_log else byte_data)
         super().send(byte_data)
 
+    def handle_write(self):
+        pass
+
     def handle_close(self):
+        Log.debug(self.proxy_type, self.connection_info, '[ Server disconnected ]')
         if self.client_connection:
             self.client_connection.server_connection = None
             self.client_connection.close()
@@ -572,7 +587,10 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
             # if authentication succeeds, remove our proxy from the client and ignore all further communication
             match = IMAP_AUTHENTICATION_RESPONSE_MATCHER.match(str_response)
             if match and match.group('tag') == self.client_connection.authentication_tag:
-                Log.info('Successfully authenticated IMAP connection - removing proxy')
+                Log.info(self.proxy_type, self.connection_info,
+                         '[ Successfully authenticated IMAP connection - removing proxy ]')
+                if self.client_connection.authentication_command == 'login':
+                    byte_data = byte_data.replace(b'OK AUTHENTICATE', b'OK LOGIN')  # make sure response is correct
                 self.client_connection.authenticated = True
 
         super().process_data(byte_data)
@@ -621,7 +639,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     ssl_context = ssl.create_default_context()
                     super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0]))
                     self.starttls = self.STARTTLS.COMPLETE
-                    Log.info('Successfully negotiated SMTP STARTTLS connection - re-sending greeting')
+                    Log.info(self.proxy_type, self.connection_info,
+                             '[ Successfully negotiated SMTP STARTTLS connection - re-sending greeting ]')
                     self.send(b'%s\r\n' % self.ehlo.encode('utf-8'))  # re-send original EHLO/HELO to server
                 else:
                     super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -653,7 +672,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.authentication_state is self.AUTH.CREDENTIALS_SENT:
             if str_data.startswith('235'):
-                Log.info('Successfully authenticated SMTP connection - removing proxy')
+                Log.info(self.proxy_type, self.connection_info,
+                         '[ Successfully authenticated SMTP connection - removing proxy ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
             else:
@@ -718,6 +738,12 @@ class OAuth2Proxy(asyncore.dispatcher_with_send):
             connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
             connection.close()
         self.close()
+
+    def handle_close(self):
+        # if we encounter an exception in asyncore, handle_close() is called - restart the service
+        Log.info('Unexpected proxy close() - restarting service')
+        self.close()
+        self.start()
 
 
 class App:
