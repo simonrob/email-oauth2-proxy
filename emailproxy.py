@@ -740,8 +740,11 @@ class OAuth2Proxy(asyncore.dispatcher_with_send):
         self.close()
 
     def handle_close(self):
-        # if we encounter an exception in asyncore, handle_close() is called - restart the service
-        Log.info('Unexpected proxy close() - restarting service')
+        # if we encounter an exception in asyncore, handle_close() is called - restart the service - typically one of:
+        # - (<class 'socket.gaierror'>:[Errno 8] nodename nor servname provided, or not known (asyncore.py|read)
+        # - (<class 'TimeoutError'>:[Errno 60] Operation timed out (asyncore.py|read)
+        # note - intentionally not overriding handle_error() so we see errors in the log rather than hiding them
+        Log.info('Unexpected close of proxy connection - restarting service')
         self.close()
         self.start()
 
@@ -919,11 +922,10 @@ class App:
                 current_request = self.authorisation_requests[0]
                 if url and url.startswith(current_request['redirect_uri']):
                     Log.info('Successfully authorised request for', current_request['username'])
-                    RESPONSE_QUEUE.put(
-                        {'connection': self.authorisation_requests.pop(0)['connection'], 'response_url': url})
+                    RESPONSE_QUEUE.put({'connection': current_request['connection'], 'response_url': url})
                     window.destroy()
 
-                    # remove other authentication requests that match the same username (we assume username == email)
+                    # remove this and other requests that match the same username (we assume username == email)
                     for request in self.authorisation_requests:
                         if request['username'] == current_request['username']:
                             self.authorisation_requests.remove(request)
