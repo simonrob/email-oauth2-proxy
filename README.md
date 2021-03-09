@@ -20,6 +20,12 @@ Finally, open your email client and configure its server details to match those 
 The first time your email client makes a request you should see a notification from the proxy about authentication. Click the `Authorise account...` option from the menu bar icon and follow the instructions to log in to your account. After authentication completes you should have IMAP/SMTP access to your account as normal.
 
 
+## Running as a service/daemon (macOS)
+Move [the included plist file](ac.robinson.email-oauth2-proxy.plist) to `~/Library/LaunchAgents/`, then edit it to replace `/path/to/python3` and `/path/to/emailproxy.py` with the full paths to your local `python3` installation and the `emailproxy.py` script. Run `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`, and the menu bar icon should appear. The script will now run at startup.
+
+If you stop the service (i.e., `Quit` in the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy`. You can remove the service from your startup items using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
+
+
 ## Troubleshooting
 If you encounter problems, enabling `Debug mode` from the menu will send all client-proxy-server communication to the system log to help identify the error. On macOS this can be viewed using Console.app (select `system.log` in the sidebar).
 
@@ -28,16 +34,11 @@ Please note that Debug mode may also result in your login credentials being prin
 Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) reporting any bugs you find, or [submit a pull request](https://github.com/simonrob/email-oauth2-proxy/pulls) to help improve this tool.
 
 
-## Running as a service/daemon (macOS)
-Move [the included plist file](ac.robinson.email-oauth2-proxy.plist) to `~/Library/LaunchAgents/`, then edit it to replace `/path/to/python3` and `/path/to/emailproxy.py` with the full paths to your local `python3` installation and the `emailproxy.py` script. Run `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`, and the menu bar icon should appear. The script will now run at startup.
-
-If you stop the service (i.e., `Quit` in the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy`. You can remove the service from your startup items using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
-
-
-## Potential improvements ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
-- Improved error handling (e.g., recovery from exceptions during computer sleep; robustness improvements)
+## Potential improvements and known issues ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
+- Improved error handling (e.g., totally reliable recovery from exceptions during computer sleep; robustness improvements)
 - Testing on different platforms and with different providers (currently tested only with Office 365 and Gmail on macOS)
-- Better integration of menu bar icon, authorisation web views and proxies without the ugly background webview workaround
+- Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). Restarting seems to be the only reliable fix for this
+- Retina menu bar icon ([pystray](https://github.com/moses-palmer/pystray) does not currently support this; [rumps](https://github.com/jaredks/rumps) does, but is not cross-platform)
 - Encrypted local connections?
 - Package as .app/.exe etc?
 

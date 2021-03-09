@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.error
 
 import pystray
-import setproctitle as setproctitle
+import setproctitle
 import webview
 
 # for drawing the SVG icon
@@ -32,7 +32,7 @@ import cairosvg
 from PIL import Image
 
 # for encrypting/decrypting the locally-stored credentials
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
@@ -41,12 +41,17 @@ VERBOSE = False
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # must be byte type string
 
 CONFIG_FILE_NAME = 'emailproxy.config'
-CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(__file__), CONFIG_FILE_NAME)
+CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(os.path.realpath(__file__)), CONFIG_FILE_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # IMAP/SMTP connections to accept (clients often open several); 0 = no limit; limit is per server
-RECEIVE_BUFFER_SIZE = 65536  # in bytes
-AUTHENTICATION_TIMEOUT = 60  # seconds to wait before cancelling authentication requests
+RECEIVE_BUFFER_SIZE = 65536  # in bytes, limit is per socket
+
+# seconds to wait before cancelling authentication requests (i.e., the user has this long to log in) - note that the
+# actual server timeout is often around 60 seconds, so the connection may be closed in the background and immediately
+# disconnect after login completes; however, the login credentials will still be saved and used for future requests
+AUTHENTICATION_TIMEOUT = 600
+
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
 
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(r'(?P<tag>\w+) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)',
@@ -55,6 +60,7 @@ IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(r'(?P<tag>\w+) OK AUTHENTICATE
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from client web view
+WEBVIEW_QUEUE = queue.Queue()  # authentication window events
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
 
@@ -78,7 +84,7 @@ class Log:
 
 class OAuth2Helper:
     @staticmethod
-    def get_oauth2_credentials(username, password, connection_info):
+    def get_oauth2_credentials(username, password, connection_info, recurse_retries=True):
         """Using the given username (i.e., email address) and password, reads account details from CONFIG_FILE and
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
         if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message') """
@@ -132,6 +138,7 @@ class OAuth2Helper:
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, authorisation_code)
 
+                config.read(CONFIG_FILE_PATH)  # re-read (here and below) so parallel requests aren't overwritten
                 access_token = response['access_token']
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
@@ -146,6 +153,7 @@ class OAuth2Helper:
                                                                         OAuth2Helper.decrypt(cryptographer,
                                                                                              refresh_token))
 
+                    config.read(CONFIG_FILE_PATH)
                     access_token = response['access_token']
                     config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                     config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
@@ -159,8 +167,9 @@ class OAuth2Helper:
             oauth2_string = OAuth2Helper.construct_oauth2_string(username, access_token)
             return True, oauth2_string
 
-        except Exception as e:
+        except InvalidToken as e:
             # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
+            config.read(CONFIG_FILE_PATH)
             config.remove_option(username, 'token_salt')
             config.remove_option(username, 'access_token')
             config.remove_option(username, 'access_token_expiry')
@@ -168,11 +177,14 @@ class OAuth2Helper:
             with open(CONFIG_FILE_PATH, 'w') as config_output:
                 config.write(config_output)
 
-            # we could probably handle this a bit better depending on what the exception actually is (e.g., try
-            # authentication again), but given that a repeat request will do this, it's easiest to just remove
-            # the potentially invalid credentials and rely on the client to retry
-            Log.info('Caught exception while requesting OAuth 2.0 credentials:', e)
-            return False, '%s: Login failure - saved authentication data invalid for account %s' % (APP_NAME, username)
+            Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:',
+                     getattr(e, 'message', repr(e)))
+            return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+
+        except Exception as e:
+            Log.info('Caught exception while requesting OAuth 2.0 credentials:', getattr(e, 'message', repr(e)))
+            return False, '%s: Login failure - saved authentication data invalid for account %s' % (
+                APP_NAME, username)
 
     @staticmethod
     def encrypt(cryptographer, byte_input):
@@ -297,8 +309,9 @@ class OAuth2Helper:
 
 
 class OAuth2ClientConnection(asyncore.dispatcher_with_send):
-    def __init__(self, proxy_type, connection, connection_info, server_connection, proxy_parent, custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self, connection)
+    def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
+                 custom_configuration):
+        asyncore.dispatcher_with_send.__init__(self, connection, map=socket_map)
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.server_connection = server_connection
@@ -335,9 +348,10 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                 self.censor_next_log = False
             else:
                 # IMAP LOGIN command with username/password in plain text inline, and IMAP/SMTP AUTH(ENTICATE) command
-                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data)
+                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data,
+                                  flags=re.IGNORECASE)
                 log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
-                                  b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data)
+                                  b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
 
             Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
             self.process_data(byte_data)
@@ -345,11 +359,13 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def process_data(self, byte_data, censor_server_log=False):
         self.server_connection.send(byte_data, censor_server_log)  # by default just send everything straight to server
 
-    def handle_write(self):
-        pass
+    def send(self, byte_data):
+        if not self.authenticated:  # after authentication these are identical to server-side logs (in process_data)
+            Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
+        super().send(byte_data)
 
     def handle_close(self):
-        Log.debug(self.proxy_type, self.connection_info, '[ Client disconnected ]')
+        Log.debug(self.proxy_type, self.connection_info, '--> [ Client disconnected ]')
         self.close()
 
     def close(self):
@@ -364,8 +380,9 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
     """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth2.0 SASL"""
 
-    def __init__(self, connection, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('IMAP', connection, connection_info, server_connection, proxy_parent, custom_configuration)
+    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
+        super().__init__('IMAP', connection, socket_map, connection_info, server_connection, proxy_parent,
+                         custom_configuration)
         self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
@@ -441,8 +458,9 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         LOGIN_AWAITING_PASSWORD = 4
         AUTH_CREDENTIALS_SENT = 5
 
-    def __init__(self, connection, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('SMTP', connection, connection_info, server_connection, proxy_parent, custom_configuration)
+    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
+        super().__init__('SMTP', connection, socket_map, connection_info, server_connection, proxy_parent,
+                         custom_configuration)
         self.authentication_state = self.AUTH.PENDING
 
     def process_data(self, byte_data, censor_server_log=False):
@@ -503,12 +521,13 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 
 
 class OAuth2ServerConnection(asyncore.dispatcher_with_send):
-    def __init__(self, proxy_type, server_address, connection_info, custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self)
+    def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
+        asyncore.dispatcher_with_send.__init__(self, map=socket_map)  # note: establish connection later due to STARTTLS
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.client_connection = None
         self.server_address = server_address
+        self.proxy_parent = proxy_parent
         self.custom_configuration = custom_configuration
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.server_address)
@@ -546,18 +565,16 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
-        Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)  # command after any editing
+        if self.client_connection.authenticated:
+            Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)  # command after any editing/interception
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
             Log.debug(self.proxy_type, self.connection_info, '    -->', CENSOR_MESSAGE if censor_log else byte_data)
         super().send(byte_data)
 
-    def handle_write(self):
-        pass
-
     def handle_close(self):
-        Log.debug(self.proxy_type, self.connection_info, '[ Server disconnected ]')
+        Log.debug(self.proxy_type, self.connection_info, '<-- [ Server disconnected ]')
         if self.client_connection:
             self.client_connection.server_connection = None
             self.client_connection.close()
@@ -570,8 +587,8 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
     # IMAP: https://tools.ietf.org/html/rfc3501
     # IMAP SASL-IR: https://tools.ietf.org/html/rfc4959
-    def __init__(self, server_address, connection_info, custom_configuration):
-        super().__init__('IMAP', server_address, connection_info, custom_configuration)
+    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
+        super().__init__('IMAP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
 
     def process_data(self, byte_data):
         # note: there is no reason why IMAP STARTTLS (https://tools.ietf.org/html/rfc2595) couldn't be supported here
@@ -612,8 +629,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         STARTED = 2
         CREDENTIALS_SENT = 3
 
-    def __init__(self, server_address, connection_info, custom_configuration):
-        super().__init__('SMTP', server_address, connection_info, custom_configuration)
+    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
+        super().__init__('SMTP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
         self.ehlo = None
         if self.custom_configuration['starttls']:
             self.starttls = self.STARTTLS.PENDING
@@ -689,11 +706,11 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
 
 
-class OAuth2Proxy(asyncore.dispatcher_with_send):
+class OAuth2Proxy(asyncore.dispatcher):
     """Listen on SERVER_ADDRESS:SERVER_PORT, creating a ServerConnection + ClientConnection for each new connection"""
 
     def __init__(self, proxy_type, local_address, server_address, custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self)
+        asyncore.dispatcher.__init__(self)
         self.proxy_type = proxy_type
         self.local_address = local_address
         self.server_address = server_address
@@ -702,19 +719,38 @@ class OAuth2Proxy(asyncore.dispatcher_with_send):
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
+            socket_map = {}
             server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
-            new_server_connection = server_class(self.server_address, address, self.custom_configuration)
+            new_server_connection = server_class(socket_map, self.server_address, address, self,
+                                                 self.custom_configuration)
             client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
-            new_client_connection = client_class(connection, address, new_server_connection, self,
+            new_client_connection = client_class(connection, socket_map, address, new_server_connection, self,
                                                  self.custom_configuration)
             new_server_connection.client_connection = new_client_connection
             self.client_connections.append(new_client_connection)
+
+            threading.Thread(target=self.run_server, args=(socket_map,),
+                             name='EmailOAuth2Proxy-server-%d' % address[1]).start()
         else:
             Log.info('Rejecting new', self.proxy_type, 'connection above MAX_CONNECTIONS limit of', MAX_CONNECTIONS)
             self.close()
             self.start()
 
+    def run_server(self, socket_map=None):
+        try:
+            asyncore.loop(map=socket_map)
+        except Exception as e:
+            Log.info('Caught asyncore exception in server thread loop:', getattr(e, 'message', repr(e)))
+            try:
+                self.restart()
+            except Exception as e:
+                Log.info('Abandoning restart due to repeated exception in server thread loop:',
+                         getattr(e, 'message', repr(e)))
+
     def start(self):
+        Log.info('Starting %s server at %s:%d proxying %s:%d' % (
+            self.proxy_type, self.local_address[0], self.local_address[1], self.server_address[0],
+            self.server_address[1]))
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
@@ -736,17 +772,28 @@ class OAuth2Proxy(asyncore.dispatcher_with_send):
     def stop(self):
         for connection in self.client_connections:
             connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
-            connection.close()
+            connection.close()  # closes both client and server
         self.close()
 
+    def restart(self):
+        self.stop()
+        self.start()
+
     def handle_close(self):
-        # if we encounter an exception in asyncore, handle_close() is called - restart the service - typically one of:
+        # if we encounter an exception in asyncore, handle_close() is called - restart this server - typically one of:
         # - (<class 'socket.gaierror'>:[Errno 8] nodename nor servname provided, or not known (asyncore.py|read)
         # - (<class 'TimeoutError'>:[Errno 60] Operation timed out (asyncore.py|read)
         # note - intentionally not overriding handle_error() so we see errors in the log rather than hiding them
-        Log.info('Unexpected close of proxy connection - restarting service')
-        self.close()
-        self.start()
+        Log.info('Unexpected close of proxy connection - restarting server')
+        self.restart()
+
+
+class AuthorisationWindow:
+    """ Used to dynamically add the missing get_title method to a pywebview window"""
+
+    # noinspection PyUnresolvedReferences
+    def get_title(self):
+        return self.title
 
 
 class App:
@@ -770,29 +817,24 @@ class App:
         self.authorisation_requests = []
 
         self.web_view_started = False
-        self.hidden_window = self.create_hidden_window()  # web views from back without quitting self when they close
 
         self.icon = self.create_icon()
         self.icon.run(self.post_create)
 
     def create_icon(self):
         image_out = BytesIO()
-        cairosvg.svg2png(url='%s/icon.svg' % os.path.dirname(__file__), write_to=image_out)
-
-        return pystray.Icon('test', Image.open(image_out), menu=pystray.Menu(
-            pystray.MenuItem(APP_NAME, None, enabled=False),
-            pystray.MenuItem('––––––––––––––––––––––', None, enabled=False),
-            pystray.MenuItem('Authorise account...', self.authorise),
+        cairosvg.svg2png(url='%s/icon.svg' % os.path.dirname(os.path.realpath(__file__)), write_to=image_out)
+        return pystray.Icon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+            pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.MenuItem('Accounts and servers...', self.edit_config),
-            pystray.MenuItem('––––––––––––––––––––––', None, enabled=False),
-            pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda item: VERBOSE),
-            pystray.MenuItem('––––––––––––––––––––––', None, enabled=False),
-            pystray.MenuItem('Quit', self.exit)
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('Quit %s' % APP_NAME, self.exit)
         ))
 
-    # noinspection PyUnusedLocal
     @staticmethod
-    def edit_config(icon, item):
+    def edit_config():
         if sys.platform == 'darwin':
             os.system("""open {}""".format(CONFIG_FILE_PATH))
         elif sys.platform == 'win32':
@@ -844,12 +886,15 @@ class App:
             }
 
             if server_address:  # all other values are checked, regex matched or have a fallback above
-                Log.info('Starting %s server at %s:%d proxying %s:%d' % (
-                    server_type, local_address, local_port, server_address, server_port))
                 new_proxy = OAuth2Proxy(server_type, (local_address, local_port), (server_address, server_port),
                                         custom_configuration)
-                new_proxy.start()
-                self.proxies.append(new_proxy)
+                try:
+                    new_proxy.start()
+                    self.proxies.append(new_proxy)
+                except Exception as e:
+                    Log.info('Unable to start server:', getattr(e, 'message', repr(e)))
+                    server_load_error = True
+                    break
             else:
                 server_load_error = True
                 break
@@ -872,9 +917,10 @@ class App:
                 if not data['expired']:
                     Log.info('Authorisation request received for', data['username'])
                     self.authorisation_requests.append(data)
+                    self.icon.update_menu()  # force refresh the menu
                     self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
                 else:
-                    for request in self.authorisation_requests:
+                    for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
                         if request['connection'] == data['connection']:
                             self.authorisation_requests.remove(request)
                             break
@@ -884,7 +930,7 @@ class App:
             asyncore.loop()
         except Exception as e:
             if not self.exiting:
-                Log.info('Caught asyncore exception in main loop:', e)
+                Log.info('Caught asyncore exception in main loop:', getattr(e, 'message', repr(e)))
                 traceback.print_exc()
 
     def notify(self, title, text):
@@ -895,49 +941,80 @@ class App:
         else:
             Log.info(title, text)  # last resort
 
-    def authorise(self):
-        if len(self.authorisation_requests) > 0:
-            current_request = self.authorisation_requests[0]
-            authorisation_window = webview.create_window('Authorise your account: %s' % current_request['username'],
-                                                         current_request['permission_url'], on_top=True)
-            authorisation_window.loaded += self.authorisation_loaded
-            webview.start(self.configure_windows)
-            self.web_view_started = True
+    def create_authorisation_menu(self):
+        items = []
+        if len(self.authorisation_requests) <= 0:
+            items.append(pystray.MenuItem('No pending authorisation requests', None, enabled=False))
         else:
-            self.notify(APP_NAME, 'There are no pending authorisation requests')
+            usernames = []
+            for request in self.authorisation_requests:
+                if not request['username'] in usernames:
+                    items.append(pystray.MenuItem(request['username'], self.authorise_account))
+                    usernames.append(request['username'])
+        return items
 
-    @staticmethod
-    def create_hidden_window():
-        return webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
+    # noinspection PyUnusedLocal
+    def authorise_account(self, icon, item):
+        for request in self.authorisation_requests:
+            if str(item) == request['username']:  # use str(item) because item.text() hangs
+                if not self.web_view_started:
+                    self.create_authorisation_window(request)
+                    webview.start(self.handle_authorisation_windows)
+                    self.web_view_started = True
+                else:
+                    WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
+                return
+        self.notify(APP_NAME, 'There are no pending authorisation requests')
 
-    def configure_windows(self):
-        self.hidden_window = self.create_hidden_window()
-        if len(webview.windows) > 2:
-            webview.windows[0].destroy()
+    def create_authorisation_window(self, request):
+        # note that the webview title *must* end with a space and then the email address/username
+        authorisation_window = webview.create_window('Authorise your account: %s' % request['username'],
+                                                     request['permission_url'], on_top=True)
+        setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
+        authorisation_window.loaded += self.authorisation_loaded
+
+    def handle_authorisation_windows(self):
+        # needed because otherwise closing the last remaining webview window exits the application
+        webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
+
+        while True:
+            data = WEBVIEW_QUEUE.get()  # note: blocking call
+            if data is QUEUE_SENTINEL:  # app is closing
+                break
+            else:
+                self.create_authorisation_window(data)
 
     def authorisation_loaded(self):
         for window in webview.windows:
+            if not hasattr(window, 'get_title'):
+                continue  # skip dummy window
+
             url = window.get_current_url()
+            account_name = window.get_title(window).split(' ')[-1]  # see note above: title *must* match this format
+            if not url or not account_name:
+                continue  # skip any invalid windows
+
+            # respond to both the original request and any duplicates in the list
+            completed_request = None
+            for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
+                if url.startswith(request['redirect_uri']) and account_name == request['username']:
+                    Log.info('Successfully authorised request for', request['username'])
+                    RESPONSE_QUEUE.put({'connection': request['connection'], 'response_url': url})
+                    self.authorisation_requests.remove(request)
+                    completed_request = request
+
+            if completed_request is None:
+                continue  # no requests processed for this window - nothing to do yet
+
+            window.destroy()
+            self.icon.update_menu()
+
             if len(self.authorisation_requests) > 0:
-                current_request = self.authorisation_requests[0]
-                if url and url.startswith(current_request['redirect_uri']):
-                    Log.info('Successfully authorised request for', current_request['username'])
-                    RESPONSE_QUEUE.put({'connection': current_request['connection'], 'response_url': url})
-                    window.destroy()
-
-                    # remove this and other requests that match the same username (we assume username == email)
-                    for request in self.authorisation_requests:
-                        if request['username'] == current_request['username']:
-                            self.authorisation_requests.remove(request)
-                            break
-
-                    if len(self.authorisation_requests) > 0:
-                        self.notify(APP_NAME,
-                                    'Authentication successful for %s. Please authorise a further request for account '
-                                    '%s from the menu' % (
-                                        current_request['username'], self.authorisation_requests[0]['username']))
-                    else:
-                        self.notify(APP_NAME, 'Authentication successful for %s' % current_request['username'])
+                self.notify(APP_NAME,
+                            'Authentication successful for %s. Please authorise an additional account %s from the '
+                            'menu' % (completed_request['username'], self.authorisation_requests[0]['username']))
+            else:
+                self.notify(APP_NAME, 'Authentication successful for %s' % completed_request['username'])
 
     def exit(self, icon):
         Log.info('Stopping', APP_NAME)
@@ -945,15 +1022,16 @@ class App:
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
-
-        for proxy in self.proxies:
-            proxy.stop()
-            proxy.close()
+        WEBVIEW_QUEUE.put(QUEUE_SENTINEL)
 
         if self.web_view_started:
             for window in webview.windows:
                 window.show()
                 window.destroy()
+
+        for proxy in self.proxies:
+            proxy.stop()
+            proxy.close()
 
         icon.stop()
 
