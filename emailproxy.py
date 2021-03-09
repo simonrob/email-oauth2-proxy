@@ -37,7 +37,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
-VERBOSE = False
+VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup here)
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # must be byte type string
 
 CONFIG_FILE_NAME = 'emailproxy.config'
@@ -62,6 +62,8 @@ REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from client web view
 WEBVIEW_QUEUE = queue.Queue()  # authentication window events
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
+
+EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested exit
 
 
 class Log:
@@ -177,9 +179,10 @@ class OAuth2Helper:
             with open(CONFIG_FILE_PATH, 'w') as config_output:
                 config.write(config_output)
 
-            Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:',
-                     getattr(e, 'message', repr(e)))
-            return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+            if recurse_retries:
+                Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:',
+                         getattr(e, 'message', repr(e)))
+                return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
 
         except Exception as e:
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', getattr(e, 'message', repr(e)))
@@ -740,12 +743,15 @@ class OAuth2Proxy(asyncore.dispatcher):
         try:
             asyncore.loop(map=socket_map)
         except Exception as e:
-            Log.info('Caught asyncore exception in server thread loop:', getattr(e, 'message', repr(e)))
-            try:
-                self.restart()
-            except Exception as e:
-                Log.info('Abandoning restart due to repeated exception in server thread loop:',
-                         getattr(e, 'message', repr(e)))
+            if not EXITING:
+                Log.info('Caught asyncore exception in server thread loop:', getattr(e, 'message', repr(e)))
+                traceback.print_exc()
+                try:
+                    self.restart()
+                except Exception as e:
+                    Log.info('Abandoning restart due to repeated exception in server thread loop:',
+                             getattr(e, 'message', repr(e)))
+                    traceback.print_exc()
 
     def start(self):
         Log.info('Starting %s server at %s:%d proxying %s:%d' % (
@@ -810,8 +816,6 @@ class App:
             # noinspection PyUnresolvedReferences
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
-
-        self.exiting = False
 
         self.proxies = []
         self.authorisation_requests = []
@@ -925,11 +929,12 @@ class App:
                             self.authorisation_requests.remove(request)
                             break
 
-    def run_proxy(self):
+    @staticmethod
+    def run_proxy():
         try:
             asyncore.loop()
         except Exception as e:
-            if not self.exiting:
+            if not EXITING:
                 Log.info('Caught asyncore exception in main loop:', getattr(e, 'message', repr(e)))
                 traceback.print_exc()
 
@@ -1018,7 +1023,8 @@ class App:
 
     def exit(self, icon):
         Log.info('Stopping', APP_NAME)
-        self.exiting = True
+        global EXITING
+        EXITING = True
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
