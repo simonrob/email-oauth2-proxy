@@ -413,7 +413,6 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 if len(split_flags) > 1:
                     username = OAuth2Helper.strip_quotes(split_flags[0])
                     password = OAuth2Helper.strip_quotes(' '.join(split_flags[1:]))
-                    print(username,  '---', password, '---')
                     self.authentication_tag = match.group('tag')
                     self.authenticate_connection(username, password)
                 else:

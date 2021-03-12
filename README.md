@@ -35,7 +35,6 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 
 ## Potential improvements and known issues ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
-- Improved error handling (e.g., totally reliable recovery from exceptions during computer sleep; robustness improvements)
 - Testing on different platforms and with different providers (currently tested only with Office 365 and Gmail on macOS)
 - Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). Restarting seems to be the only reliable fix for this
 - Encrypted local connections?
