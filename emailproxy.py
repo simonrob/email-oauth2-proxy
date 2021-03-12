@@ -89,7 +89,7 @@ class OAuth2Helper:
     def get_oauth2_credentials(username, password, connection_info, recurse_retries=True):
         """Using the given username (i.e., email address) and password, reads account details from CONFIG_FILE and
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
-        if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message') """
+        if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message')"""
         config = configparser.ConfigParser(allow_no_value=True)
         config.read(CONFIG_FILE_PATH)
 
@@ -261,7 +261,7 @@ class OAuth2Helper:
     @staticmethod
     def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
         """Obtains a new access token from token_url using the given refresh token, returning a dict with
-        'access_token', 'expires_in', and 'refresh_token' on success """
+        'access_token', 'expires_in', and 'refresh_token' on success"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
         response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
@@ -277,7 +277,7 @@ class OAuth2Helper:
         """We use encode() from imaplib's _Authenticator, but it is a private class so we can't just import it. That
         method's docstring is: Invoke binascii.b2a_base64 iteratively with short even length buffers, strip the
         trailing line feed from the result and append. 'Even' means a number that factors to both 6 and 8, so
-        when it gets to the end of the 8-bit input there's no partial 6-bit output. """
+        when it gets to the end of the 8-bit input there's no partial 6-bit output."""
         output_bytes = b''
         if isinstance(input_string, str):
             input_string = input_string.encode('utf-8')
@@ -297,7 +297,7 @@ class OAuth2Helper:
     def strip_quotes(text):
         """Remove double quotes (i.e., ") around a string - used for IMAP LOGIN command"""
         if text.startswith('"') and text.endswith('"'):
-            return text[1:-1]
+            return text[1:-1].replace('\\"', '"')  # also need to fix any escaped quotes within the string
         return text
 
     @staticmethod
@@ -408,15 +408,20 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             # we replace the standard LOGIN/AUTHENTICATE commands with OAuth 2.0 authentication
             self.authentication_command = match.group('command').lower()
             client_flags = match.group('flags')
-            if self.authentication_command == 'login' and ' ' in client_flags:
-                (username, password) = client_flags.split(' ')  # we check for ' ' above to avoid crash if no arguments
-                username = OAuth2Helper.strip_quotes(username)
-                password = OAuth2Helper.strip_quotes(password)
-                self.authentication_tag = match.group('tag')
-                self.authenticate_connection(username, password)
+            if self.authentication_command == 'login':
+                split_flags = client_flags.split(' ')
+                if len(split_flags) > 1:
+                    username = OAuth2Helper.strip_quotes(split_flags[0])
+                    password = OAuth2Helper.strip_quotes(' '.join(split_flags[1:]))
+                    print(username,  '---', password, '---')
+                    self.authentication_tag = match.group('tag')
+                    self.authenticate_connection(username, password)
+                else:
+                    # wrong number of arguments - let the server handle the error
+                    super().process_data(byte_data)
 
             elif self.authentication_command == 'authenticate':
-                split_flags = client_flags.split(' ')  # no need to check for ' ' like above as we only require item 0
+                split_flags = client_flags.split(' ')
                 authentication_type = split_flags[0].lower()
                 if authentication_type == 'plain':  # plain can be submitted as a single command or multiline
                     self.authentication_tag = match.group('tag')
@@ -732,26 +737,22 @@ class OAuth2Proxy(asyncore.dispatcher):
             new_server_connection.client_connection = new_client_connection
             self.client_connections.append(new_client_connection)
 
-            threading.Thread(target=self.run_server, args=(socket_map,),
-                             name='EmailOAuth2Proxy-server-%d' % address[1]).start()
+            threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
+                             name='EmailOAuth2Proxy-connection-%d' % address[1]).start()
         else:
             Log.info('Rejecting new', self.proxy_type, 'connection above MAX_CONNECTIONS limit of', MAX_CONNECTIONS)
             self.close()
             self.start()
 
-    def run_server(self, socket_map=None):
+    @staticmethod
+    def run_server(client, socket_map, address):
         try:
-            asyncore.loop(map=socket_map)
+            asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
-                Log.info('Caught asyncore exception in server thread loop:', getattr(e, 'message', repr(e)))
+                Log.info('Caught asyncore exception in', address, 'thread loop:', getattr(e, 'message', repr(e)))
+                client.close()
                 traceback.print_exc()
-                try:
-                    self.restart()
-                except Exception as e:
-                    Log.info('Abandoning restart due to repeated exception in server thread loop:',
-                             getattr(e, 'message', repr(e)))
-                    traceback.print_exc()
 
     def start(self):
         Log.info('Starting %s server at %s:%d proxying %s:%d' % (
@@ -776,7 +777,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             return ''
 
     def stop(self):
-        for connection in self.client_connections:
+        for connection in self.client_connections[:]:  # iterate over a copy; remove (in close()) from original
             connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
             connection.close()  # closes both client and server
         self.close()
@@ -791,19 +792,50 @@ class OAuth2Proxy(asyncore.dispatcher):
         # - (<class 'TimeoutError'>:[Errno 60] Operation timed out (asyncore.py|read)
         # note - intentionally not overriding handle_error() so we see errors in the log rather than hiding them
         Log.info('Unexpected close of proxy connection - restarting server')
-        self.restart()
+        try:
+            self.restart()
+        except Exception as e:
+            Log.info('Abandoning server restart due to repeated exception:', getattr(e, 'message', repr(e)))
+            traceback.print_exc()
 
 
 class AuthorisationWindow:
-    """ Used to dynamically add the missing get_title method to a pywebview window"""
+    """Used to dynamically add the missing get_title method to a pywebview window"""
 
     # noinspection PyUnresolvedReferences
     def get_title(self):
         return self.title
 
 
+# noinspection PyPackageRequirements,PyUnresolvedReferences
+class RetinaIcon(pystray.Icon):
+    """Used to dynamically override the default pystray icon behaviour on macOS and allow high-dpi (retina) icons"""
+
+    def _assert_image(self):
+        # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
+        if sys.platform == 'darwin':
+            import io
+            import AppKit
+            import Foundation
+
+            # PIL to NSImage - duplicates what we do to load the icon, but kept to preserve platform compatibility
+            bytes_image = io.BytesIO()
+            self.icon.save(bytes_image, 'png')
+            data = Foundation.NSData(bytes_image.getvalue())
+            self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
+
+            thickness = self._status_bar.thickness()  # macOS menu bar size - default = 22px, but can be scaled
+            self._icon_image.setSize_((int(thickness), int(thickness)))
+            self._icon_image.setTemplate_(True)  # so macOS applies the default shading and inverse on click
+            self._status_item.button().setImage_(self._icon_image)
+
+        else:
+            # noinspection PyProtectedMember
+            return super()._assert_image()
+
+
 class App:
-    """ Manage the menu bar icon, web view authorisation popup, notifications and start the main proxy thread"""
+    """Manage the menu bar icon, web view authorisation popup, notifications and start the main proxy thread"""
 
     def __init__(self, argv):
         self.argv = argv
@@ -828,7 +860,7 @@ class App:
     def create_icon(self):
         image_out = BytesIO()
         cairosvg.svg2png(url='%s/icon.svg' % os.path.dirname(os.path.realpath(__file__)), write_to=image_out)
-        return pystray.Icon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.MenuItem('Accounts and servers...', self.edit_config),
             pystray.Menu.SEPARATOR,
@@ -931,12 +963,13 @@ class App:
 
     @staticmethod
     def run_proxy():
-        try:
-            asyncore.loop()
-        except Exception as e:
-            if not EXITING:
-                Log.info('Caught asyncore exception in main loop:', getattr(e, 'message', repr(e)))
-                traceback.print_exc()
+        while not EXITING:
+            try:
+                asyncore.loop()  # loop for main proxy servers, accepting requests and starting connection threads
+            except Exception as e:
+                if not EXITING:
+                    Log.info('Caught asyncore exception in main loop:', getattr(e, 'message', repr(e)))
+                    traceback.print_exc()
 
     def notify(self, title, text):
         if self.icon.HAS_NOTIFICATION:
@@ -990,7 +1023,7 @@ class App:
                 self.create_authorisation_window(data)
 
     def authorisation_loaded(self):
-        for window in webview.windows:
+        for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
             if not hasattr(window, 'get_title'):
                 continue  # skip dummy window
 
@@ -1031,11 +1064,11 @@ class App:
         WEBVIEW_QUEUE.put(QUEUE_SENTINEL)
 
         if self.web_view_started:
-            for window in webview.windows:
+            for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
                 window.show()
                 window.destroy()
 
-        for proxy in self.proxies:
+        for proxy in self.proxies:  # no need to copy - proxies are never removed; we just restart them on error
             proxy.stop()
             proxy.close()
 
