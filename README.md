@@ -17,13 +17,13 @@ Next, install the script's requirements: `pip3 install -r requirements.txt`, and
 
 Finally, open your email client and configure its server details to match those set in the configuration file. For example, using the sample Office 365 details, this would be `localhost` on port `1433` for IMAP and `localhost` on port `1587` for SMTP. The local connection in your email client should be configured as unencrypted, but the connection between the proxy and your email server is secured (SSL for IMAP, SSL/STARTTLS for SMTP).
 
-The first time your email client makes a request you should see a notification from the proxy about authentication. Click the `Authorise account...` option from the menu bar icon and follow the instructions to log in to your account. After authentication completes you should have IMAP/SMTP access to your account as normal.
+The first time your email client makes a request you should see a notification from the proxy about authentication. Click your account name in the `Authorise account` submenu from the menu bar icon and log in via the popup window that appears. After authentication completes you should have IMAP/SMTP access to your account as normal.
 
 
 ## Running as a service/daemon (macOS)
 Move [the included plist file](ac.robinson.email-oauth2-proxy.plist) to `~/Library/LaunchAgents/`, then edit it to replace `/path/to/python3` and `/path/to/emailproxy.py` with the full paths to your local `python3` installation and the `emailproxy.py` script. Run `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`, and the menu bar icon should appear. The script will now run at startup.
 
-If you stop the service (i.e., `Quit` in the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy`. You can remove the service from your startup items using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
+If you stop the service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy`. You can remove the service from your startup items using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
 
 
 ## Troubleshooting
@@ -36,6 +36,7 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 ## Potential improvements and known issues ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
 - Testing on different platforms and with different providers (currently tested only with Office 365 and Gmail on macOS)
+- Enable/disable loading on startup from the menu bar icon
 - Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). Restarting seems to be the only reliable fix for this
 - Encrypted local connections?
 - Package as .app/.exe etc?
