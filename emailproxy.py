@@ -17,7 +17,6 @@ import sys
 import syslog
 import threading
 import time
-import traceback
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -27,8 +26,8 @@ import setproctitle
 import webview
 
 # for drawing the SVG icon
-from io import BytesIO
 import cairosvg
+from io import BytesIO
 from PIL import Image
 
 # for encrypting/decrypting the locally-stored credentials
@@ -82,6 +81,10 @@ class Log:
         message = ' '.join(map(str, args))
         print(datetime.datetime.now().strftime(Log.DATE_FORMAT), message)
         syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+
+    @staticmethod
+    def error_string(error):
+        return getattr(error, 'message', repr(error))
 
 
 class OAuth2Helper:
@@ -180,12 +183,11 @@ class OAuth2Helper:
                 config.write(config_output)
 
             if recurse_retries:
-                Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:',
-                         getattr(e, 'message', repr(e)))
+                Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
 
         except Exception as e:
-            Log.info('Caught exception while requesting OAuth 2.0 credentials:', getattr(e, 'message', repr(e)))
+            Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
             return False, '%s: Login failure - saved authentication data invalid for account %s' % (
                 APP_NAME, username)
 
@@ -749,9 +751,8 @@ class OAuth2Proxy(asyncore.dispatcher):
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
-                Log.info('Caught asyncore exception in', address, 'thread loop:', getattr(e, 'message', repr(e)))
+                Log.info('Caught asyncore exception in', address, 'thread loop:', Log.error_string(e))
                 client.close()
-                traceback.print_exc()
 
     def start(self):
         Log.info('Starting %s server at %s:%d proxying %s:%d' % (
@@ -794,8 +795,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         try:
             self.restart()
         except Exception as e:
-            Log.info('Abandoning server restart due to repeated exception:', getattr(e, 'message', repr(e)))
-            traceback.print_exc()
+            Log.info('Abandoning server restart due to repeated exception:', Log.error_string(e))
 
 
 class AuthorisationWindow:
@@ -927,7 +927,7 @@ class App:
                     new_proxy.start()
                     self.proxies.append(new_proxy)
                 except Exception as e:
-                    Log.info('Unable to start server:', getattr(e, 'message', repr(e)))
+                    Log.info('Unable to start server:', Log.error_string(e))
                     server_load_error = True
                     break
             else:
@@ -967,8 +967,7 @@ class App:
                 asyncore.loop()  # loop for main proxy servers, accepting requests and starting connection threads
             except Exception as e:
                 if not EXITING:
-                    Log.info('Caught asyncore exception in main loop:', getattr(e, 'message', repr(e)))
-                    traceback.print_exc()
+                    Log.info('Caught asyncore exception in main loop:', Log.error_string(e))
 
     def notify(self, title, text):
         if self.icon.HAS_NOTIFICATION:
