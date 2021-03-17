@@ -6,6 +6,7 @@ pystray
 pywebview
 setproctitle
 
-# used only to hide the dock icon and improve the menu bar icon on macOS
+# used to toggle launch on login, hide the dock icon and improve the menu bar icon on macOS
 PyObjC; sys_platform == 'darwin'
 Foundation; sys_platform == 'darwin'
+launchctl; sys_platform == 'darwin'

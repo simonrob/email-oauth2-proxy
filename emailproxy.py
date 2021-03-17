@@ -9,6 +9,8 @@ import datetime
 import enum
 import json
 import os
+import pathlib
+import plistlib
 import queue
 import socket
 import ssl
@@ -36,6 +38,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
+APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
+
 VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup here)
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # must be byte type string
 
@@ -61,6 +65,8 @@ REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from client web view
 WEBVIEW_QUEUE = queue.Queue()  # authentication window events
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
+
+PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested exit
 
@@ -808,7 +814,7 @@ class AuthorisationWindow:
 
 # noinspection PyPackageRequirements,PyUnresolvedReferences
 class RetinaIcon(pystray.Icon):
-    """Used to dynamically override the default pystray icon behaviour on macOS and allow high-dpi (retina) icons"""
+    """Used to dynamically override the default pystray icon behaviour on macOS and allow high-dpi ('retina') icons"""
 
     def _assert_image(self):
         # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
@@ -863,13 +869,15 @@ class App:
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.MenuItem('Accounts and servers...', self.edit_config),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem('Start at login', self.toggle_start_at_login, enabled=sys.platform == 'darwin',
+                             checked=self.started_at_login),
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)
         ))
 
     @staticmethod
-    def edit_config():
+    def edit_config(_):
         if sys.platform == 'darwin':
             os.system("""open {}""".format(CONFIG_FILE_PATH))
         elif sys.platform == 'win32':
@@ -879,9 +887,54 @@ class App:
         else:
             pass  # nothing we can do
 
-    # noinspection PyUnusedLocal
+    def toggle_start_at_login(self, icon):
+        if sys.platform == 'darwin':
+            if not PLIST_FILE_PATH.exists():
+                # need to create and load the plist
+                import subprocess
+                plist = {
+                    'Label': APP_PACKAGE,
+                    'ProgramArguments': [
+                        subprocess.check_output("which python3", shell=True).decode('utf-8').strip(),
+                        os.path.realpath(__file__)],
+                    'RunAtLoad': True
+                }
+            else:
+                # just toggle the disabled value rather than loading/unloading, so we don't need to restart the app
+                with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                    plist = plistlib.load(plist_file)
+                plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
+
+            with open(PLIST_FILE_PATH, 'wb') as plist_file:
+                plistlib.dump(plist, plist_file)
+
+            # if loading, need to exit so we're not running twice (note: relies on exiting completing before loading)
+            # noinspection PyPackageRequirements
+            import launchctl
+            if not launchctl.job(APP_PACKAGE):
+                launchctl.load(PLIST_FILE_PATH)
+                self.exit(icon)
+
+        else:
+            pass  # platforms other than macOS not currently supported
+
     @staticmethod
-    def toggle_verbose(icon, item):
+    def started_at_login(_):
+        if sys.platform == 'darwin':
+            # note: menu state will be stale if changed externally, but clicking menu item forces a refresh
+            if PLIST_FILE_PATH.exists():
+                # noinspection PyPackageRequirements
+                import launchctl
+                if launchctl.job(APP_PACKAGE):
+                    with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                        plist = plistlib.load(plist_file)
+                    if 'Disabled' in plist:
+                        return not plist['Disabled']
+                    return True  # job is loaded and is not disabled
+        return False
+
+    @staticmethod
+    def toggle_verbose(_, item):
         global VERBOSE
         VERBOSE = not item.checked
 
@@ -989,8 +1042,7 @@ class App:
                     usernames.append(request['username'])
         return items
 
-    # noinspection PyUnusedLocal
-    def authorise_account(self, icon, item):
+    def authorise_account(self, _, item):
         for request in self.authorisation_requests:
             if str(item) == request['username']:  # use str(item) because item.text() hangs
                 if not self.web_view_started:
