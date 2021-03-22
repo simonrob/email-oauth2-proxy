@@ -784,6 +784,9 @@ class OAuth2Proxy(asyncore.dispatcher):
             return ''
 
     def stop(self):
+        Log.info('Stopping %s server at %s:%d proxying %s:%d' % (
+            self.proxy_type, self.local_address[0], self.local_address[1], self.server_address[0],
+            self.server_address[1]))
         for connection in self.client_connections[:]:  # iterate over a copy; remove (in close()) from original
             connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
             connection.close()  # closes both client and server
@@ -850,7 +853,7 @@ class App:
 
         if sys.platform == 'darwin':
             import AppKit
-            # hide dock icon (but not LSBackgroundOnly as we need input via web view)
+            # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             # noinspection PyUnresolvedReferences
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -867,8 +870,8 @@ class App:
         image_out = BytesIO()
         cairosvg.svg2png(url='%s/icon.svg' % os.path.dirname(os.path.realpath(__file__)), write_to=image_out)
         return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+            pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
-            pystray.MenuItem('Accounts and servers...', self.edit_config),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Start at login', self.toggle_start_at_login, enabled=sys.platform == 'darwin',
                              checked=self.started_at_login),
@@ -876,6 +879,34 @@ class App:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)
         ))
+
+    def create_config_menu(self):
+        items = [pystray.MenuItem('Servers:', None, enabled=False)]
+        if len(self.proxies) <= 0:
+            items.append(pystray.MenuItem('\tNo servers configured', None, enabled=False))
+        else:
+            for proxy in self.proxies:
+                items.append(pystray.MenuItem('\t%s:%d ➝ %s:%d' % (proxy.local_address[0], proxy.local_address[1],
+                                                                   proxy.server_address[0], proxy.server_address[1]),
+                                              None, enabled=False))
+        items.append(pystray.Menu.SEPARATOR)
+
+        config = configparser.ConfigParser()
+        config.read(CONFIG_FILE_PATH)
+        config_sections = config.sections()
+        config_accounts = [s for s in config_sections if not CONFIG_SERVER_MATCHER.match(s)]
+
+        items.append(pystray.MenuItem('Accounts:', None, enabled=False))
+        if len(config_accounts) <= 0:
+            items.append(pystray.MenuItem('\tNo accounts configured', None, enabled=False))
+        else:
+            for account in config_accounts:
+                items.append(pystray.MenuItem('\t%s' % account, None, enabled=False))
+        items.append(pystray.Menu.SEPARATOR)
+
+        items.append(pystray.MenuItem('Edit configuration file...', self.edit_config))
+        items.append(pystray.MenuItem('Reload configuration file', self.load_servers))
+        return items
 
     @staticmethod
     def edit_config(_):
@@ -887,150 +918,6 @@ class App:
             os.system("""xdg-open {}""".format(CONFIG_FILE_PATH))  # not tested but is apparently near-universal
         else:
             pass  # nothing we can do
-
-    def toggle_start_at_login(self, icon):
-        if sys.platform == 'darwin':
-            if not PLIST_FILE_PATH.exists():
-                # need to create and load the plist
-                import subprocess
-                plist = {
-                    'Label': APP_PACKAGE,
-                    'ProgramArguments': [
-                        subprocess.check_output("which python3", shell=True).decode('utf-8').strip(),
-                        os.path.realpath(__file__)],
-                    'RunAtLoad': True
-                }
-            else:
-                # just toggle the disabled value rather than loading/unloading, so we don't need to restart the app
-                with open(PLIST_FILE_PATH, 'rb') as plist_file:
-                    plist = plistlib.load(plist_file)
-                plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
-
-            with open(PLIST_FILE_PATH, 'wb') as plist_file:
-                plistlib.dump(plist, plist_file)
-
-            # if loading, need to exit so we're not running twice (note: relies on exiting completing before loading)
-            # noinspection PyPackageRequirements
-            import launchctl
-            if not launchctl.job(APP_PACKAGE):
-                launchctl.load(PLIST_FILE_PATH)
-                self.exit(icon)
-
-        else:
-            pass  # platforms other than macOS not currently supported
-
-    @staticmethod
-    def started_at_login(_):
-        if sys.platform == 'darwin':
-            # note: menu state will be stale if changed externally, but clicking menu item forces a refresh
-            if PLIST_FILE_PATH.exists():
-                # noinspection PyPackageRequirements
-                import launchctl
-                if launchctl.job(APP_PACKAGE):
-                    with open(PLIST_FILE_PATH, 'rb') as plist_file:
-                        plist = plistlib.load(plist_file)
-                    if 'Disabled' in plist:
-                        return not plist['Disabled']
-                    return True  # job is loaded and is not disabled
-        return False
-
-    @staticmethod
-    def toggle_verbose(_, item):
-        global VERBOSE
-        VERBOSE = not item.checked
-
-    def post_create(self, icon):
-        icon.visible = True
-
-        config = configparser.ConfigParser(allow_no_value=True)
-        config.read(CONFIG_FILE_PATH)
-
-        # load server types and configurations
-        server_load_error = False
-        for section in config.sections():
-            match = CONFIG_SERVER_MATCHER.match(section)
-            if not match:
-                continue
-
-            server_type = match.group('type')
-
-            local_address = config.get(section, 'local_address', fallback='localhost')
-            str_local_port = match.group('port')
-            try:
-                local_port = int(str_local_port)
-                if local_port <= 0 or local_port > 65535:
-                    raise ValueError
-            except ValueError:
-                server_load_error = True
-                break
-
-            server_address = config.get(section, 'server_address', fallback=None)
-            server_port = config.getint(section, 'server_port', fallback=-1)
-            if server_port <= 0 or server_port > 65535:
-                server_load_error = True
-                break
-
-            custom_configuration = {
-                'starttls': config.getboolean(section, 'starttls', fallback=False)
-            }
-
-            if server_address:  # all other values are checked, regex matched or have a fallback above
-                new_proxy = OAuth2Proxy(server_type, (local_address, local_port), (server_address, server_port),
-                                        custom_configuration)
-                try:
-                    new_proxy.start()
-                    self.proxies.append(new_proxy)
-                except Exception as e:
-                    Log.info('Unable to start server:', Log.error_string(e))
-                    server_load_error = True
-                    break
-            else:
-                server_load_error = True
-                break
-
-        if server_load_error:
-            Log.info('No (or invalid) server details found - exiting')
-            self.notify(APP_NAME, 'No (or invalid) server details found. Please add your accounts and servers in %s' %
-                        CONFIG_FILE_NAME)
-            self.exit(icon)
-            return
-
-        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main').start()
-
-        Log.info('Initialised', APP_NAME, '- listening for authentication requests')
-        while True:
-            data = REQUEST_QUEUE.get()  # note: blocking call
-            if data is QUEUE_SENTINEL:  # app is closing
-                break
-            else:
-                if not data['expired']:
-                    Log.info('Authorisation request received for', data['username'])
-                    self.authorisation_requests.append(data)
-                    self.icon.update_menu()  # force refresh the menu
-                    self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
-                else:
-                    for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                        if request['connection'] == data['connection']:
-                            self.authorisation_requests.remove(request)
-                            break
-
-    @staticmethod
-    def run_proxy():
-        while not EXITING:
-            try:
-                # loop for main proxy servers, accepting requests and starting connection threads
-                asyncore.loop(timeout=CONNECTION_TIMEOUT)
-            except Exception as e:
-                if not EXITING:
-                    Log.info('Caught asyncore exception in main loop:', Log.error_string(e))
-
-    def notify(self, title, text):
-        if self.icon.HAS_NOTIFICATION:
-            self.icon.notify('%s: %s' % (title, text))  # note: not tested; based on pystray documentation
-        elif sys.platform == 'darwin':
-            os.system("""osascript -e 'display notification "{}" with title "{}"'""".format(text, title))
-        else:
-            Log.info(title, text)  # last resort
 
     def create_authorisation_menu(self):
         items = []
@@ -1105,6 +992,164 @@ class App:
                             'menu' % (completed_request['username'], self.authorisation_requests[0]['username']))
             else:
                 self.notify(APP_NAME, 'Authentication successful for %s' % completed_request['username'])
+
+    def toggle_start_at_login(self, icon):
+        if sys.platform == 'darwin':
+            if not PLIST_FILE_PATH.exists():
+                # need to create and load the plist
+                import subprocess
+                plist = {
+                    'Label': APP_PACKAGE,
+                    'ProgramArguments': [
+                        subprocess.check_output("which python3", shell=True).decode('utf-8').strip(),
+                        os.path.realpath(__file__)],
+                    'RunAtLoad': True
+                }
+            else:
+                # just toggle the disabled value rather than loading/unloading, so we don't need to restart the app
+                with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                    plist = plistlib.load(plist_file)
+                plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
+
+            with open(PLIST_FILE_PATH, 'wb') as plist_file:
+                plistlib.dump(plist, plist_file)
+
+            # if loading, need to exit so we're not running twice (note: relies on exiting completing before loading)
+            # noinspection PyPackageRequirements
+            import launchctl
+            if not launchctl.job(APP_PACKAGE):
+                launchctl.load(PLIST_FILE_PATH)
+                self.exit(icon)
+
+        else:
+            pass  # platforms other than macOS not currently supported
+
+    @staticmethod
+    def started_at_login(_):
+        if sys.platform == 'darwin':
+            # note: menu state will be stale if changed externally, but clicking menu item forces a refresh
+            if PLIST_FILE_PATH.exists():
+                # noinspection PyPackageRequirements
+                import launchctl
+                if launchctl.job(APP_PACKAGE):
+                    with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                        plist = plistlib.load(plist_file)
+                    if 'Disabled' in plist:
+                        return not plist['Disabled']
+                    return True  # job is loaded and is not disabled
+        return False
+
+    @staticmethod
+    def toggle_verbose(_, item):
+        global VERBOSE
+        VERBOSE = not item.checked
+
+    def notify(self, title, text):
+        if self.icon.HAS_NOTIFICATION:
+            self.icon.notify('%s: %s' % (title, text))  # note: not tested; based on pystray documentation
+        elif sys.platform == 'darwin':
+            os.system("""osascript -e 'display notification "{}" with title "{}"'""".format(text, title))
+        else:
+            Log.info(title, text)  # last resort
+
+    def load_servers(self, icon):
+        # we allow reloading, so must first stop any existing servers
+        for proxy in self.proxies:
+            proxy.stop()
+            proxy.close()
+        self.proxies = []
+
+        config = configparser.ConfigParser(allow_no_value=True)
+        config.read(CONFIG_FILE_PATH)
+
+        # load server types and configurations
+        server_load_error = False
+        config_sections = config.sections()
+        for section in config_sections:
+            match = CONFIG_SERVER_MATCHER.match(section)
+            if not match:
+                continue
+
+            server_type = match.group('type')
+
+            local_address = config.get(section, 'local_address', fallback='localhost')
+            str_local_port = match.group('port')
+            try:
+                local_port = int(str_local_port)
+                if local_port <= 0 or local_port > 65535:
+                    raise ValueError
+            except ValueError:
+                server_load_error = True
+                break
+
+            server_address = config.get(section, 'server_address', fallback=None)
+            server_port = config.getint(section, 'server_port', fallback=-1)
+            if server_port <= 0 or server_port > 65535:
+                server_load_error = True
+                break
+
+            custom_configuration = {
+                'starttls': config.getboolean(section, 'starttls', fallback=False)
+            }
+
+            if server_address:  # all other values are checked, regex matched or have a fallback above
+                new_proxy = OAuth2Proxy(server_type, (local_address, local_port), (server_address, server_port),
+                                        custom_configuration)
+                try:
+                    new_proxy.start()
+                    self.proxies.append(new_proxy)
+                except Exception as e:
+                    Log.info('Unable to start server:', Log.error_string(e))
+                    server_load_error = True
+                    break
+            else:
+                server_load_error = True
+                break
+
+        if server_load_error or len(self.proxies) <= 0:
+            Log.info('No (or invalid) server details found - exiting')
+            self.notify(APP_NAME, 'No (or invalid) server details found. Please add your accounts and servers in %s' %
+                        CONFIG_FILE_NAME)
+            self.exit(icon)
+            return False
+
+        self.icon.update_menu()  # force refresh the menu to show running proxy servers
+        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main').start()
+
+    def post_create(self, icon):
+        icon.visible = True
+
+        if not self.load_servers(icon):
+            return
+
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests')
+        while True:
+            data = REQUEST_QUEUE.get()  # note: blocking call
+            if data is QUEUE_SENTINEL:  # app is closing
+                break
+            else:
+                if not data['expired']:
+                    Log.info('Authorisation request received for', data['username'])
+                    self.authorisation_requests.append(data)
+                    self.icon.update_menu()  # force refresh the menu
+                    self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
+                else:
+                    for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
+                        if request['connection'] == data['connection']:
+                            self.authorisation_requests.remove(request)
+                            break
+
+    @staticmethod
+    def run_proxy():
+        while not EXITING:
+            try:
+                # loop for main proxy servers, accepting requests and starting connection threads
+                # note: we need to make sure there are always proxy servers running (i.e., exit on configuration
+                # file parse/load failure), otherwise this will throw an error every time and loop infinitely
+                asyncore.loop(timeout=CONNECTION_TIMEOUT)
+            except Exception as e:
+                if not EXITING:
+                    Log.info('Caught asyncore exception in main loop:', Log.error_string(e))
 
     def exit(self, icon):
         Log.info('Stopping', APP_NAME)
