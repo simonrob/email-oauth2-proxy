@@ -48,6 +48,7 @@ CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(os.path.realpath(__file__)), CONFI
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # IMAP/SMTP connections to accept (clients often open several); 0 = no limit; limit is per server
+CONNECTION_TIMEOUT = 15  # in seconds - timeout for socket connections
 RECEIVE_BUFFER_SIZE = 65536  # in bytes, limit is per socket
 
 # seconds to wait before cancelling authentication requests (i.e., the user has this long to log in) - note that the
@@ -507,7 +508,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 
         elif self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('auth login'):
             self.authentication_state = self.AUTH.LOGIN_AWAITING_USERNAME
-            self.send(b'334 VXNlcm5hbWU6\r\n')  # VXNlcm5hbWU6 = base64 encoded 'Username:'
+            self.send(b'334 %s\r\n' % base64.b64encode(b'Username:'))
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_USERNAME:
             try:
@@ -516,7 +517,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
                 self.server_connection.username = ''
             self.authentication_state = self.AUTH.LOGIN_AWAITING_PASSWORD
             self.censor_next_log = True
-            self.send(b'334 UGFzc3dvcmQ6\r\n')  # UGFzc3dvcmQ6 = base64 encoded 'Password:'
+            self.send(b'334 %s\r\n' % base64.b64encode(b'Password:'))
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_PASSWORD:
             try:
@@ -754,7 +755,7 @@ class OAuth2Proxy(asyncore.dispatcher):
     @staticmethod
     def run_server(client, socket_map, address):
         try:
-            asyncore.loop(map=socket_map)  # loop for a single connection thread
+            asyncore.loop(map=socket_map, timeout=CONNECTION_TIMEOUT)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
                 Log.info('Caught asyncore exception in', address, 'thread loop:', Log.error_string(e))
@@ -1017,7 +1018,8 @@ class App:
     def run_proxy():
         while not EXITING:
             try:
-                asyncore.loop()  # loop for main proxy servers, accepting requests and starting connection threads
+                # loop for main proxy servers, accepting requests and starting connection threads
+                asyncore.loop(timeout=CONNECTION_TIMEOUT)
             except Exception as e:
                 if not EXITING:
                     Log.info('Caught asyncore exception in main loop:', Log.error_string(e))
