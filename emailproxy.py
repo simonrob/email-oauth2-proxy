@@ -24,7 +24,6 @@ import urllib.parse
 import urllib.error
 
 import pystray
-import setproctitle
 import webview
 
 # for drawing the SVG icon
@@ -340,6 +339,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         pass
 
     def handle_read(self):
+        # note: we don't handle clients that send one character at a time (e.g., inbuilt Windows telnet client)
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
 
         # client is established after server; this state should not happen unless already closing
@@ -566,6 +566,7 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
 
     def handle_read(self):
+        # note: we don't handle servers that send one character at a time (no known instances, but see client side note)
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
 
         # data received before client is connected (or after client has disconnected) - ignore
@@ -851,7 +852,6 @@ class App:
 
     def __init__(self, argv):
         self.argv = argv
-        setproctitle.setproctitle(APP_NAME)
         syslog.openlog(APP_NAME)
 
         if sys.platform == 'darwin':
@@ -887,7 +887,7 @@ class App:
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)]
-        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(*[m for m in menu_items if m]))
+        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(lambda: menu_items))
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
@@ -944,6 +944,8 @@ class App:
         for request in self.authorisation_requests:
             if str(item) == request['username']:  # use str(item) because item.text() hangs
                 if not self.web_view_started:
+                    # note: there is a known issue here on Windows (crash with WinError 1402)
+                    # reported at https://github.com/r0x0r/pywebview/issues/720
                     self.create_authorisation_window(request)
                     webview.start(self.handle_authorisation_windows)
                     self.web_view_started = True
@@ -1103,7 +1105,7 @@ class App:
                 break
 
             custom_configuration = {
-                'starttls': config.getboolean(section, 'starttls', fallback=False)
+                'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False
             }
 
             if server_address:  # all other values are checked, regex matched or have a fallback above
