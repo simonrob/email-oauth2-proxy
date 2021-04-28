@@ -36,6 +36,7 @@ from PIL import Image
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
@@ -100,7 +101,7 @@ class OAuth2Helper:
         """Using the given username (i.e., email address) and password, reads account details from CONFIG_FILE and
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
         if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message')"""
-        config = configparser.ConfigParser(allow_no_value=True)
+        config = configparser.ConfigParser()
         config.read(CONFIG_FILE_PATH)
 
         if not config.has_section(username):
@@ -117,23 +118,24 @@ class OAuth2Helper:
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
 
+        if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
+            return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
+                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id, '
+                           'and client_secret)' % (APP_NAME, username))
+
         token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
 
         # we hash locally-stored tokens with the given password
-        if not (permission_url and token_url and redirect_uri and client_id and client_secret):
-            return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
-                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id, '
-                           'and client_secret)' % (APP_NAME, username))
-
         if not token_salt:
             token_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
 
         # generate encryptor/decrypter based on password and random salt
         key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
-                                             salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000)
+                                             salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000,
+                                             backend=default_backend())
         key = base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8')))
         cryptographer = Fernet(key)
 
@@ -244,6 +246,7 @@ class OAuth2Helper:
                     return False, None
 
             if data is QUEUE_SENTINEL:  # app is closing
+                RESPONSE_QUEUE.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, None
 
             elif data['connection'] == connection_info:  # found an authentication response meant for us
@@ -867,18 +870,24 @@ class App:
         self.icon.run(self.post_create)
 
     def create_icon(self):
+        # default (black) icon is designed for macOS, but other platforms look better in different colours
         image_out = BytesIO()
-        cairosvg.svg2png(url='%s/icon.svg' % os.path.dirname(os.path.realpath(__file__)), write_to=image_out)
-        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+        with open('%s/icon.svg' % os.path.dirname(os.path.realpath(__file__))) as svg_file:
+            svg_icon = svg_file.read()
+        if sys.platform.startswith('linux'):
+            svg_icon = svg_icon.replace('black', 'white')
+        cairosvg.svg2png(bytestring=svg_icon, write_to=image_out)
+
+        menu_items = [
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Start at login', self.toggle_start_at_login, enabled=sys.platform == 'darwin',
-                             checked=self.started_at_login),
+            None if not sys.platform == 'darwin' else pystray.MenuItem('Start at login', self.toggle_start_at_login,
+                                                                       checked=self.started_at_login),
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Quit %s' % APP_NAME, self.exit)
-        ))
+            pystray.MenuItem('Quit %s' % APP_NAME, self.exit)]
+        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(*[m for m in menu_items if m]))
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
@@ -952,7 +961,8 @@ class App:
 
     def handle_authorisation_windows(self):
         # needed because otherwise closing the last remaining webview window exits the application
-        webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
+        dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
+        dummy_window.hide()  # hidden=True (above) doesn't seem to work on Linux
 
         while True:
             data = WEBVIEW_QUEUE.get()  # note: blocking call
@@ -1054,10 +1064,14 @@ class App:
 
     def load_servers(self, icon):
         # we allow reloading, so must first stop any existing servers
+        global RESPONSE_QUEUE
+        RESPONSE_QUEUE.put(QUEUE_SENTINEL)
+        RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
         for proxy in self.proxies:
             proxy.stop()
             proxy.close()
         self.proxies = []
+        self.authorisation_requests = []  # these requests are no-longer valid
 
         config = configparser.ConfigParser(allow_no_value=True)
         config.read(CONFIG_FILE_PATH)
@@ -1115,6 +1129,7 @@ class App:
 
         self.icon.update_menu()  # force refresh the menu to show running proxy servers
         threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main').start()
+        return True
 
     def post_create(self, icon):
         icon.visible = True

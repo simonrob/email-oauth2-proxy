@@ -23,16 +23,20 @@ If you stop the service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), 
 
 
 ## Troubleshooting
-If you encounter problems, enabling `Debug mode` from the menu will print all client-proxy-server communication to your system log to help identify the error. On macOS this can be viewed using Console.app (select `system.log` in the sidebar).
+If you encounter problems, enabling `Debug mode` from the menu will print all client-proxy-server communication to your system log to help identify the error. On macOS this can be viewed using Console.app (select `system.log` in the sidebar). On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`.
 
 Please note that Debug mode may also result in your login credentials being printed to the log (though this is avoided where possible). However, it is worth pointing out that while the username you set in your email client must be correct, the password used here does not need to be the one you actually use to log in to your account, so you can use a test password for debugging and then replace this with a secure password (and authenticate again) once set up.
 
 Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) reporting any bugs you find, or [submit a pull request](https://github.com/simonrob/email-oauth2-proxy/pulls) to help improve this tool.
 
 
-## Potential improvements and known issues ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
+## Known issues
+- Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). A system restart seems to be the only reliable fix for this.
+- When first launching on Linux you may encounter an error message similar to `Namespace […] not available`. This is caused by [pystray](https://github.com/moses-palmer/pystray/), which is used to display the menu bar icon (see [#1](https://github.com/simonrob/email-oauth2-proxy/issues/1)). Installing [Ayatana Application Indicators](https://github.com/AyatanaIndicators/libayatana-appindicator) via `sudo apt install gir1.2-ayatanaappindicator3-0.1` resolves this issue.
+
+
+## Potential improvements ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
 - Testing on different platforms and with different providers (currently tested only with Office 365 and Gmail on macOS)
-- Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). Restarting seems to be the only reliable fix for this
 - Encrypted local connections?
 - Package as .app/.exe etc?
 
