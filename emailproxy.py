@@ -37,6 +37,11 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
+# for macOS-specific functionality
+if sys.platform == 'darwin':
+    import AppKit
+    from AppKit import Foundation
+
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 
@@ -827,12 +832,8 @@ class RetinaIcon(pystray.Icon):
     def _assert_image(self):
         # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
         if sys.platform == 'darwin':
-            import io
-            import AppKit
-            import Foundation
-
             # PIL to NSImage - duplicates what we do to load the icon, but kept to preserve platform compatibility
-            bytes_image = io.BytesIO()
+            bytes_image = BytesIO()
             self.icon.save(bytes_image, 'png')
             data = Foundation.NSData(bytes_image.getvalue())
             self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
@@ -878,16 +879,15 @@ class App:
             svg_icon = svg_icon.replace('black', 'white')
         cairosvg.svg2png(bytestring=svg_icon, write_to=image_out)
 
-        menu_items = [
+        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
-            None if not sys.platform == 'darwin' else pystray.MenuItem('Start at login', self.toggle_start_at_login,
-                                                                       checked=self.started_at_login),
+            pystray.MenuItem('Start at login', self.toggle_start_at_login,
+                             checked=self.started_at_login, visible=sys.platform == 'darwin'),
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Quit %s' % APP_NAME, self.exit)]
-        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(lambda: menu_items))
+            pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
@@ -1058,7 +1058,8 @@ class App:
 
     def notify(self, title, text):
         if self.icon.HAS_NOTIFICATION:
-            self.icon.notify('%s: %s' % (title, text))  # note: not tested; based on pystray documentation
+            self.icon.remove_notification()
+            self.icon.notify('%s: %s' % (title, text))
         elif sys.platform == 'darwin':
             os.system("""osascript -e 'display notification "{}" with title "{}"'""".format(text, title))
         else:
@@ -1075,7 +1076,7 @@ class App:
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
-        config = configparser.ConfigParser(allow_no_value=True)
+        config = configparser.ConfigParser()
         config.read(CONFIG_FILE_PATH)
 
         # load server types and configurations
