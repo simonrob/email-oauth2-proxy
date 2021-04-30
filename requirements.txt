@@ -2,6 +2,7 @@ configobj
 cryptography
 pystray
 pywebview
+timeago
 
 # used to load the SVG icon and avoid maintaining multiple platform-specific versions
 CairoSVG

@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.error
 
 import pystray
+import timeago as timeago
 import webview
 
 # for drawing the SVG icon
@@ -37,7 +38,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
-# for macOS-specific functionality
+# for macOS-specific functionality: retina icon; updating menu on click
 if sys.platform == 'darwin':
     import AppKit
     from AppKit import Foundation
@@ -79,24 +80,69 @@ EXITING = False  # used to check whether to restart failed threads - is set to T
 
 class Log:
     """Simple logging that also appears in macOS syslog/Console.app"""
-    DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
+    _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
 
     @staticmethod
     def debug(*args):
         if VERBOSE:
             message = ' '.join(map(str, args))
-            print(datetime.datetime.now().strftime(Log.DATE_FORMAT), message)
+            print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
             syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
 
     @staticmethod
     def info(*args):
         message = ' '.join(map(str, args))
-        print(datetime.datetime.now().strftime(Log.DATE_FORMAT), message)
+        print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
         syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
 
     @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
+
+
+class AppConfig:
+    """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
+    _PARSER = None
+    _LOADED = False
+
+    _SERVERS = []
+    _ACCOUNTS = []
+
+    @staticmethod
+    def _load():
+        AppConfig._PARSER = configparser.ConfigParser()
+        AppConfig._PARSER.read(CONFIG_FILE_PATH)
+
+        config_sections = AppConfig._PARSER.sections()
+        AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
+        AppConfig._ACCOUNTS = [s for s in config_sections if not CONFIG_SERVER_MATCHER.match(s)]
+        AppConfig._LOADED = True
+
+    @staticmethod
+    def get():
+        if not AppConfig._LOADED:
+            AppConfig._load()
+        return AppConfig._PARSER
+
+    @staticmethod
+    def reload():
+        AppConfig._LOADED = False
+        return AppConfig.get()
+
+    @staticmethod
+    def servers():
+        AppConfig.get()  # make sure config is loaded
+        return AppConfig._SERVERS
+
+    @staticmethod
+    def accounts():
+        AppConfig.get()  # make sure config is loaded
+        return AppConfig._ACCOUNTS
+
+    @staticmethod
+    def save():
+        with open(CONFIG_FILE_PATH, 'w') as config_output:
+            AppConfig._PARSER.write(config_output)
 
 
 class OAuth2Helper:
@@ -105,14 +151,12 @@ class OAuth2Helper:
         """Using the given username (i.e., email address) and password, reads account details from CONFIG_FILE and
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
         if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message')"""
-        config = configparser.ConfigParser()
-        config.read(CONFIG_FILE_PATH)
-
-        if not config.has_section(username):
+        if username not in AppConfig.accounts():
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
                            'for permission_url, token_url, oauth2_scope, redirect_uri, client_id, and '
                            'client_secret' % (APP_NAME, username))
 
+        config = AppConfig.get()
         current_time = int(time.time())
 
         permission_url = config.get(username, 'permission_url', fallback=None)
@@ -156,14 +200,12 @@ class OAuth2Helper:
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, authorisation_code)
 
-                config.read(CONFIG_FILE_PATH)  # re-read (here and below) so parallel requests aren't overwritten
                 access_token = response['access_token']
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
                 config.set(username, 'refresh_token', OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
-                with open(CONFIG_FILE_PATH, 'w') as config_output:
-                    config.write(config_output)
+                AppConfig.save()
 
             else:
                 if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # if expiring soon, refresh token
@@ -171,12 +213,10 @@ class OAuth2Helper:
                                                                         OAuth2Helper.decrypt(cryptographer,
                                                                                              refresh_token))
 
-                    config.read(CONFIG_FILE_PATH)
                     access_token = response['access_token']
                     config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                     config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
-                    with open(CONFIG_FILE_PATH, 'w') as config_output:
-                        config.write(config_output)
+                    AppConfig.save()
                 else:
                     access_token = OAuth2Helper.decrypt(cryptographer, access_token)
 
@@ -187,13 +227,11 @@ class OAuth2Helper:
 
         except InvalidToken as e:
             # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
-            config.read(CONFIG_FILE_PATH)
             config.remove_option(username, 'token_salt')
             config.remove_option(username, 'access_token')
             config.remove_option(username, 'access_token_expiry')
             config.remove_option(username, 'refresh_token')
-            with open(CONFIG_FILE_PATH, 'w') as config_output:
-                config.write(config_output)
+            AppConfig.save()
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
@@ -464,6 +502,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
             super().process_data(OAuth2Helper.encode_oauth2_string(result), True)
             super().process_data(b'\r\n')
+            self.server_connection.authenticated_username = username
 
         else:
             error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
@@ -553,6 +592,10 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         self.server_address = server_address
         self.proxy_parent = proxy_parent
         self.custom_configuration = custom_configuration
+
+        self.authenticated_username = None  # used only for showing last activity in the menu
+        self.last_activity = 0
+
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.server_address)
 
@@ -584,6 +627,14 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         # we have already authenticated - nothing to do; just pass data directly to client, ignoring overridden method
         if self.client_connection.authenticated:
             OAuth2ServerConnection.process_data(self, byte_data)
+
+            # receiving data from the server while authenticated counts as activity (i.e., ignore pre-login negotiation)
+            if self.authenticated_username is not None:
+                activity_time = int(time.time())
+                if activity_time > self.last_activity:
+                    config = AppConfig.get()
+                    config.set(self.authenticated_username, 'last_activity', str(activity_time))
+                    self.last_activity = activity_time
         else:
             Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # command received before editing
             self.process_data(byte_data)
@@ -689,19 +740,19 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     self.client_connection.close()
 
         # then, once we have the username and password we can respond to the '334 ' response with credentials
-        elif self.authentication_state is self.AUTH.STARTED and self.username is not None \
-                and self.password is not None:
+        elif self.authentication_state is self.AUTH.STARTED and self.username is not None and self.password is not None:
             if str_data.startswith('334'):  # 334 = "please send credentials"
                 (success, result) = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
                                                                         self.connection_info)
-                self.username = None
-                self.password = None
                 if success:
                     self.authentication_state = self.AUTH.CREDENTIALS_SENT
                     self.send(OAuth2Helper.encode_oauth2_string(result), True)
                     self.send(b'\r\n')
+                    self.authenticated_username = self.username
 
-                else:
+                self.username = None
+                self.password = None
+                if not success:
                     # a local authentication error occurred - send details to the client and exit
                     super().process_data(
                         b'535 5.7.8  Authentication credentials invalid. %s\r\n' % result.encode('utf-8'))
@@ -825,27 +876,51 @@ class AuthorisationWindow:
         return self.title
 
 
-# noinspection PyPackageRequirements,PyUnresolvedReferences
+# noinspection PyPackageRequirements,PyUnresolvedReferences,PyProtectedMember
 class RetinaIcon(pystray.Icon):
-    """Used to dynamically override the default pystray icon behaviour on macOS and allow high-dpi ('retina') icons"""
+    """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
+    regeneration of certain parts of the menu each time the icon is clicked """
+
+    def _create_menu(self, descriptors, callbacks):
+        # we add a new delegate to each created menu/submenu so that we can respond to menuNeedsUpdate
+        menu = super()._create_menu(descriptors, callbacks)
+        menu.setDelegate_(self._refresh_delegate)
+        return menu
+
+    def _mark_ready(self):
+        # in order to create the delegate *after* the NSApplication has been initialised, but only once, we override
+        # _mark_ready() to do so before the super() call that itself calls _create_menu()
+        self._refresh_delegate = self.MenuDelegate.alloc().init()
+        super()._mark_ready()
+
+    if sys.platform == 'darwin':
+        # noinspection PyUnresolvedReferences
+        class MenuDelegate(Foundation.NSObject):
+            # noinspection PyMethodMayBeStatic,PyProtectedMember,PyPep8Naming
+            def menuNeedsUpdate_(self, sender):
+                # update account menu items' last activity times from config cache - it would be better to delegate this
+                # entirely to App.create_config_menu() via update_menu(), but can't replace the menu while creating it
+                config_accounts = AppConfig.accounts()
+                menu_items = sender._itemArray()
+                for item in menu_items:
+                    for account in config_accounts:
+                        if account in item.title():
+                            item.setTitle_(App.get_last_activity(account))
+                            break
+                return True
 
     def _assert_image(self):
         # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
-        if sys.platform == 'darwin':
-            # PIL to NSImage - duplicates what we do to load the icon, but kept to preserve platform compatibility
-            bytes_image = BytesIO()
-            self.icon.save(bytes_image, 'png')
-            data = Foundation.NSData(bytes_image.getvalue())
-            self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
+        # PIL to NSImage - duplicates what we do to load the icon, but kept to preserve platform compatibility
+        bytes_image = BytesIO()
+        self.icon.save(bytes_image, 'png')
+        data = Foundation.NSData(bytes_image.getvalue())
+        self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
 
-            thickness = self._status_bar.thickness()  # macOS menu bar size - default = 22px, but can be scaled
-            self._icon_image.setSize_((int(thickness), int(thickness)))
-            self._icon_image.setTemplate_(True)  # so macOS applies the default shading and inverse on click
-            self._status_item.button().setImage_(self._icon_image)
-
-        else:
-            # noinspection PyProtectedMember
-            return super()._assert_image()
+        thickness = self._status_bar.thickness()  # macOS menu bar size - default = 22px, but can be scaled
+        self._icon_image.setSize_((int(thickness), int(thickness)))
+        self._icon_image.setTemplate_(True)  # so macOS applies the default shading and inverse on click
+        self._status_item.button().setImage_(self._icon_image)
 
 
 class App:
@@ -856,7 +931,6 @@ class App:
         syslog.openlog(APP_NAME)
 
         if sys.platform == 'darwin':
-            import AppKit
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             # noinspection PyUnresolvedReferences
             info = AppKit.NSBundle.mainBundle().infoDictionary()
@@ -879,7 +953,8 @@ class App:
             svg_icon = svg_icon.replace('black', 'white')
         cairosvg.svg2png(bytestring=svg_icon, write_to=image_out)
 
-        return RetinaIcon(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+        icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
+        return icon_class(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
@@ -900,22 +975,31 @@ class App:
                                               None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)
 
-        config = configparser.ConfigParser()
-        config.read(CONFIG_FILE_PATH)
-        config_sections = config.sections()
-        config_accounts = [s for s in config_sections if not CONFIG_SERVER_MATCHER.match(s)]
-
-        items.append(pystray.MenuItem('Accounts:', None, enabled=False))
+        config_accounts = AppConfig.accounts()
+        items.append(pystray.MenuItem('Accounts (+ last authenticated activity):', None, enabled=False))
         if len(config_accounts) <= 0:
             items.append(pystray.MenuItem('\tNo accounts configured', None, enabled=False))
         else:
             for account in config_accounts:
-                items.append(pystray.MenuItem('\t%s' % account, None, enabled=False))
+                items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
+            if not sys.platform == 'darwin':
+                items.append(pystray.MenuItem('\tRefresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
         items.append(pystray.MenuItem('Edit configuration file...', self.edit_config))
         items.append(pystray.MenuItem('Reload configuration file', self.load_servers))
         return items
+
+    @staticmethod
+    def get_last_activity(account):
+        config = AppConfig.get()
+        last_sync = config.get(account, 'last_activity', fallback=None)
+        if last_sync is not None:
+            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(float(last_sync)),
+                                                 datetime.datetime.now(), 'en_short')
+        else:
+            formatted_sync_time = 'never'
+        return '\t%s (%s)' % (account, formatted_sync_time)
 
     @staticmethod
     def edit_config(_):
@@ -1076,17 +1160,12 @@ class App:
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
-        config = configparser.ConfigParser()
-        config.read(CONFIG_FILE_PATH)
+        config = AppConfig.reload()
 
         # load server types and configurations
         server_load_error = False
-        config_sections = config.sections()
-        for section in config_sections:
+        for section in AppConfig.servers():
             match = CONFIG_SERVER_MATCHER.match(section)
-            if not match:
-                continue
-
             server_type = match.group('type')
 
             local_address = config.get(section, 'local_address', fallback='localhost')
@@ -1173,6 +1252,8 @@ class App:
         Log.info('Stopping', APP_NAME)
         global EXITING
         EXITING = True
+
+        AppConfig.save()
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
