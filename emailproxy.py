@@ -793,24 +793,37 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.custom_configuration = custom_configuration
         self.client_connections = []
 
+    def info_string(self):
+        return '%s server at %s:%d proxying %s:%d' % (self.proxy_type, self.local_address[0], self.local_address[1],
+                                                      self.server_address[0], self.server_address[1])
+
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
-            socket_map = {}
-            server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
-            new_server_connection = server_class(socket_map, self.server_address, address, self,
-                                                 self.custom_configuration)
-            client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
-            new_client_connection = client_class(connection, socket_map, address, new_server_connection, self,
-                                                 self.custom_configuration)
-            new_server_connection.client_connection = new_client_connection
-            self.client_connections.append(new_client_connection)
+            try:
+                socket_map = {}
+                server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
+                new_server_connection = server_class(socket_map, self.server_address, address, self,
+                                                     self.custom_configuration)
+                client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
+                new_client_connection = client_class(connection, socket_map, address, new_server_connection, self,
+                                                     self.custom_configuration)
+                new_server_connection.client_connection = new_client_connection
+                self.client_connections.append(new_client_connection)
 
-            threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
-                             name='EmailOAuth2Proxy-connection-%d' % address[1]).start()
+                threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
+                                 name='EmailOAuth2Proxy-connection-%d' % address[1]).start()
+            except ssl.SSLError:
+                error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
+                             'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
+                Log.info(error_text)
+                connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
+                connection.close()
         else:
-            Log.info('Rejecting new', self.proxy_type, 'connection above MAX_CONNECTIONS limit of', MAX_CONNECTIONS)
-            self.close()
-            self.start()
+            error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
+                self.info_string(), MAX_CONNECTIONS)
+            Log.info(error_text)
+            connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
+            connection.close()
 
     @staticmethod
     def run_server(client, socket_map, address):
@@ -822,9 +835,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 client.close()
 
     def start(self):
-        Log.info('Starting %s server at %s:%d proxying %s:%d' % (
-            self.proxy_type, self.local_address[0], self.local_address[1], self.server_address[0],
-            self.server_address[1]))
+        Log.info('Starting %s' % self.info_string())
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
@@ -835,18 +846,16 @@ class OAuth2Proxy(asyncore.dispatcher):
             self.client_connections.remove(client)
         del client
 
-    def bye_message(self):
+    def bye_message(self, error_text=None):
         if self.proxy_type == 'IMAP':
-            return '* BYE Server shutting down'
+            return '* BYE %s' % ('Server shutting down' if error_text is None else error_text)
         elif self.proxy_type == 'SMTP':
-            return '221 2.0.0 Service closing transmission channel'
+            return '221 %s' % ('2.0.0 Service closing transmission channel' if error_text is None else error_text)
         else:
             return ''
 
     def stop(self):
-        Log.info('Stopping %s server at %s:%d proxying %s:%d' % (
-            self.proxy_type, self.local_address[0], self.local_address[1], self.server_address[0],
-            self.server_address[1]))
+        Log.info('Stopping %s' % self.info_string())
         for connection in self.client_connections[:]:  # iterate over a copy; remove (in close()) from original
             connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
             connection.close()  # closes both client and server
@@ -861,11 +870,12 @@ class OAuth2Proxy(asyncore.dispatcher):
         # - (<class 'socket.gaierror'>:[Errno 8] nodename nor servname provided, or not known (asyncore.py|read)
         # - (<class 'TimeoutError'>:[Errno 60] Operation timed out (asyncore.py|read)
         # note - intentionally not overriding handle_error() so we see errors in the log rather than hiding them
-        Log.info('Unexpected close of proxy connection - restarting server')
+        Log.info('Unexpected close of proxy connection - restarting %s' % self.info_string())
         try:
             self.restart()
         except Exception as e:
-            Log.info('Abandoning server restart due to repeated exception:', Log.error_string(e))
+            Log.info('Abandoning server restart of %s due to repeated exception: %s' % (self.info_string(),
+                                                                                        Log.error_string(e)))
 
 
 class AuthorisationWindow:
