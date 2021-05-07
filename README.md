@@ -3,7 +3,7 @@ An IMAP/SMTP proxy that transparently adds OAuth 2.0 authentication for clients 
 
 
 ## Motivation, capabilities and alternatives
-Many email services that provide IMAP/SMTP access require the use of OAuth 2.0 to authenticate the connection, but not all native clients support this method. This app is a simple local proxy that intercepts the standard IMAP/SMTP authentication commands and transparently replaces them with the appropriate OAuth 2.0 commands and credentials. Your email client can continue to use the standard `login` or `auth/authenticate` options, with no need to make it aware of OAuth 2.0's existence.
+Many email services that provide IMAP/SMTP access require the use of OAuth 2.0 to authenticate the connection, but not all native clients support this method. This script creates a simple local proxy that intercepts the standard IMAP/SMTP authentication commands and transparently replaces them with the appropriate OAuth 2.0 commands and credentials. Your email client can continue to use the standard `login` or `auth/authenticate` options, with no need to make it aware of OAuth 2.0's existence.
 
 [DavMail](http://davmail.sourceforge.net/) is an alternative that takes the same approach of providing a local IMAP/SMTP server (and more) for Exchange/Office 365, though it does this by translating these protocols into Exchange API calls rather than proxying the connection. That approach is very useful in situations where IMAP/SMTP are not supported, or the full Exchange capabilities are needed, but it has limitations in terms of speed and the number of email messages that can be retrieved. This proxy was developed to work around these limitations for providers that do support IMAP/SMTP natively.
 

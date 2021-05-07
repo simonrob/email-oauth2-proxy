@@ -914,7 +914,8 @@ class RetinaIcon(pystray.Icon):
                 menu_items = sender._itemArray()
                 for item in menu_items:
                     for account in config_accounts:
-                        if account in item.title():
+                        account_title = '\t%s (' % account  # needed to avoid matching authentication menu
+                        if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
                 return True

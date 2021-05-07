@@ -4,11 +4,10 @@ pystray
 pywebview
 timeago
 
-# used to load the SVG icon and avoid maintaining multiple platform-specific versions
+# used to load and avoid maintaining multiple platform-specific versions of the SVG icon
 CairoSVG
-Pillow
+pillow
 
-# used to toggle launch on login, hide the dock icon and improve the menu bar icon on macOS
-PyObjC; sys_platform == 'darwin'
-Foundation; sys_platform == 'darwin'
+# used to toggle launch on login, hide the dock icon and improve the menu bar icon and menu on macOS
 launchctl; sys_platform == 'darwin'
+pyobjc; sys_platform == 'darwin'
