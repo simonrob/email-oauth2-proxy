@@ -86,28 +86,33 @@ class Log:
     @staticmethod
     def initialise():
         Log._LOGGER = logging.getLogger(APP_NAME)
+        Log._LOGGER.setLevel(logging.INFO)
         if sys.platform == 'win32':
-            logging.basicConfig(filename='emailproxy.log')
+            handler = logging.FileHandler('emailproxy.log')
+            handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         else:
             handler = logging.handlers.SysLogHandler(
                 address='/var/run/syslog' if sys.platform == 'darwin' else '/dev/log')
             handler.setFormatter(logging.Formatter('%s: %%(message)s' % APP_NAME))
-            Log._LOGGER.addHandler(handler)
+        Log._LOGGER.addHandler(handler)
+
+    @staticmethod
+    def _log(level, *args):
+        message = ' '.join(map(str, args))
+        print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
+
+        # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macO
+        severity = Log._LOGGER.warning if sys.platform == 'darwin' else level
+        severity(message)
 
     @staticmethod
     def debug(*args):
         if VERBOSE:
-            message = ' '.join(map(str, args))
-            print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
-            severity = Log._LOGGER.warning if sys.platform == 'darwin' else Log._LOGGER.debug
-            severity(message)  # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
+            Log._log(Log._LOGGER.debug, *args)
 
     @staticmethod
     def info(*args):
-        message = ' '.join(map(str, args))
-        print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
-        severity = Log._LOGGER.warning if sys.platform == 'darwin' else Log._LOGGER.info
-        severity(message)  # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
+        Log._log(Log._LOGGER.info, *args)
 
     @staticmethod
     def error_string(error):
@@ -1326,8 +1331,6 @@ class App:
             proxy.close()
 
         icon.stop()
-
-        sys.exit(0)
 
 
 if __name__ == '__main__':
