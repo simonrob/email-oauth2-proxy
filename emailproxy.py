@@ -24,13 +24,12 @@ import urllib.parse
 import urllib.error
 
 import pystray
-import timeago as timeago
+import timeago
 import webview
 
-# for drawing the SVG icon
-import cairosvg
+# for drawing the icon
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # for encrypting/decrypting the locally-stored credentials
 from cryptography.fernet import Fernet, InvalidToken
@@ -956,16 +955,8 @@ class App:
         self.icon.run(self.post_create)
 
     def create_icon(self):
-        # default (black) icon is designed for macOS, but other platforms look better in different colours
-        image_out = BytesIO()
-        with open('%s/icon.svg' % os.path.dirname(os.path.realpath(__file__))) as svg_file:
-            svg_icon = svg_file.read()
-        if sys.platform.startswith('linux'):
-            svg_icon = svg_icon.replace('black', 'white')
-        cairosvg.svg2png(bytestring=svg_icon, write_to=image_out)
-
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
-        return icon_class(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+        return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
@@ -974,6 +965,46 @@ class App:
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
+
+    @staticmethod
+    def get_image():
+        # we use an icon font for better multiplatform compatibility and icon size flexibility
+        icon_font_file = '%s/icon.ttf' % os.path.dirname(os.path.realpath(__file__))
+        icon_colour = 'white' if sys.platform.startswith('linux') else 'black'
+        icon_character = 'e'
+        icon_background_width = 44
+        icon_background_height = 44
+        icon_width = 40  # to allow for padding between icon and background image size
+
+        # find the largest font size that will let us draw the icon within the available width
+        minimum_font_size = 1
+        maximum_font_size = 255
+        font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+        while maximum_font_size - minimum_font_size > 1:
+            current_font_size = round((minimum_font_size + maximum_font_size) / 2)  # ImageFont only supports integers
+            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, current_font_size)
+            if font_width > icon_width:
+                maximum_font_size = current_font_size
+            elif font_width < icon_width:
+                minimum_font_size = current_font_size
+            else:
+                break
+        if font_width > icon_width:  # because we need to round font sizes we need one final check for oversize width
+            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+
+        icon_image = Image.new('RGBA', (icon_background_width, icon_background_height))
+        draw = ImageDraw.Draw(icon_image)
+        icon_x = (icon_background_width - font_width) / 2
+        icon_y = (icon_background_height - font_height) / 2
+        draw.text((icon_x, icon_y), icon_character, font=font, fill=icon_colour)
+
+        return icon_image
+
+    @staticmethod
+    def get_icon_size(font_file, text, font_size):
+        font = ImageFont.truetype(font_file, size=font_size)
+        font_width, font_height = font.getsize(text)
+        return font, font_width, font_height
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
