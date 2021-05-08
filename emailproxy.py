@@ -8,6 +8,8 @@ import configparser
 import datetime
 import enum
 import json
+import logging
+import logging.handlers
 import os
 import pathlib
 import plistlib
@@ -16,7 +18,6 @@ import socket
 import ssl
 import re
 import sys
-import syslog
 import threading
 import time
 import urllib.request
@@ -79,20 +80,34 @@ EXITING = False  # used to check whether to restart failed threads - is set to T
 
 class Log:
     """Simple logging that also appears in macOS syslog/Console.app"""
+    _LOGGER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
+
+    @staticmethod
+    def initialise():
+        Log._LOGGER = logging.getLogger(APP_NAME)
+        if sys.platform == 'win32':
+            logging.basicConfig(filename='emailproxy.log')
+        else:
+            handler = logging.handlers.SysLogHandler(
+                address='/var/run/syslog' if sys.platform == 'darwin' else '/dev/log')
+            handler.setFormatter(logging.Formatter('%s: %%(message)s' % APP_NAME))
+            Log._LOGGER.addHandler(handler)
 
     @staticmethod
     def debug(*args):
         if VERBOSE:
             message = ' '.join(map(str, args))
             print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
-            syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+            severity = Log._LOGGER.warning if sys.platform == 'darwin' else Log._LOGGER.debug
+            severity(message)  # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
 
     @staticmethod
     def info(*args):
         message = ' '.join(map(str, args))
         print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
-        syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+        severity = Log._LOGGER.warning if sys.platform == 'darwin' else Log._LOGGER.info
+        severity(message)  # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
 
     @staticmethod
     def error_string(error):
@@ -938,7 +953,7 @@ class App:
 
     def __init__(self, argv):
         self.argv = argv
-        syslog.openlog(APP_NAME)
+        Log.initialise()
 
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
@@ -1312,7 +1327,6 @@ class App:
 
         icon.stop()
 
-        syslog.closelog()
         sys.exit(0)
 
 
