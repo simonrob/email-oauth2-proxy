@@ -985,7 +985,7 @@ class App:
     def get_image():
         # we use an icon font for better multiplatform compatibility and icon size flexibility
         icon_font_file = '%s/icon.ttf' % os.path.dirname(os.path.realpath(__file__))
-        icon_colour = 'white' if sys.platform.startswith('linux') else 'black'
+        icon_colour = 'black' if sys.platform == 'darwin' else 'white'
         icon_character = 'e'
         icon_background_width = 44
         icon_background_height = 44
