@@ -1,12 +1,9 @@
 configobj
 cryptography
+pillow
 pystray
 pywebview
 timeago
-
-# used to load and avoid maintaining multiple platform-specific versions of the SVG icon
-CairoSVG
-pillow
 
 # used to toggle launch on login, hide the dock icon and improve the menu bar icon and menu on macOS
 launchctl; sys_platform == 'darwin'

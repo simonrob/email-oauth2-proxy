@@ -8,6 +8,8 @@ import configparser
 import datetime
 import enum
 import json
+import logging
+import logging.handlers
 import os
 import pathlib
 import plistlib
@@ -16,7 +18,6 @@ import socket
 import ssl
 import re
 import sys
-import syslog
 import threading
 import time
 import urllib.request
@@ -24,13 +25,12 @@ import urllib.parse
 import urllib.error
 
 import pystray
-import timeago as timeago
+import timeago
 import webview
 
-# for drawing the SVG icon
-import cairosvg
+# for drawing the icon
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 # for encrypting/decrypting the locally-stored credentials
 from cryptography.fernet import Fernet, InvalidToken
@@ -80,20 +80,39 @@ EXITING = False  # used to check whether to restart failed threads - is set to T
 
 class Log:
     """Simple logging that also appears in macOS syslog/Console.app"""
+    _LOGGER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
+
+    @staticmethod
+    def initialise():
+        Log._LOGGER = logging.getLogger(APP_NAME)
+        Log._LOGGER.setLevel(logging.INFO)
+        if sys.platform == 'win32':
+            handler = logging.FileHandler('emailproxy.log')
+            handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
+        else:
+            handler = logging.handlers.SysLogHandler(
+                address='/var/run/syslog' if sys.platform == 'darwin' else '/dev/log')
+            handler.setFormatter(logging.Formatter('%s: %%(message)s' % APP_NAME))
+        Log._LOGGER.addHandler(handler)
+
+    @staticmethod
+    def _log(level, *args):
+        message = ' '.join(map(str, args))
+        print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
+
+        # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macO
+        severity = Log._LOGGER.warning if sys.platform == 'darwin' else level
+        severity(message)
 
     @staticmethod
     def debug(*args):
         if VERBOSE:
-            message = ' '.join(map(str, args))
-            print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
-            syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+            Log._log(Log._LOGGER.debug, *args)
 
     @staticmethod
     def info(*args):
-        message = ' '.join(map(str, args))
-        print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
-        syslog.syslog(syslog.LOG_ALERT, message)  # note: need LOG_ALERT or higher to show in syslog on macOS
+        Log._log(Log._LOGGER.info, *args)
 
     @staticmethod
     def error_string(error):
@@ -939,7 +958,7 @@ class App:
 
     def __init__(self, argv):
         self.argv = argv
-        syslog.openlog(APP_NAME)
+        Log.initialise()
 
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
@@ -956,16 +975,8 @@ class App:
         self.icon.run(self.post_create)
 
     def create_icon(self):
-        # default (black) icon is designed for macOS, but other platforms look better in different colours
-        image_out = BytesIO()
-        with open('%s/icon.svg' % os.path.dirname(os.path.realpath(__file__))) as svg_file:
-            svg_icon = svg_file.read()
-        if sys.platform.startswith('linux'):
-            svg_icon = svg_icon.replace('black', 'white')
-        cairosvg.svg2png(bytestring=svg_icon, write_to=image_out)
-
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
-        return icon_class(APP_NAME, Image.open(image_out), APP_NAME, menu=pystray.Menu(
+        return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
@@ -974,6 +985,46 @@ class App:
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
+
+    @staticmethod
+    def get_image():
+        # we use an icon font for better multiplatform compatibility and icon size flexibility
+        icon_font_file = '%s/icon.ttf' % os.path.dirname(os.path.realpath(__file__))
+        icon_colour = 'black' if sys.platform == 'darwin' else 'white'
+        icon_character = 'e'
+        icon_background_width = 44
+        icon_background_height = 44
+        icon_width = 40  # to allow for padding between icon and background image size
+
+        # find the largest font size that will let us draw the icon within the available width
+        minimum_font_size = 1
+        maximum_font_size = 255
+        font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+        while maximum_font_size - minimum_font_size > 1:
+            current_font_size = round((minimum_font_size + maximum_font_size) / 2)  # ImageFont only supports integers
+            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, current_font_size)
+            if font_width > icon_width:
+                maximum_font_size = current_font_size
+            elif font_width < icon_width:
+                minimum_font_size = current_font_size
+            else:
+                break
+        if font_width > icon_width:  # because we need to round font sizes we need one final check for oversize width
+            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+
+        icon_image = Image.new('RGBA', (icon_background_width, icon_background_height))
+        draw = ImageDraw.Draw(icon_image)
+        icon_x = (icon_background_width - font_width) / 2
+        icon_y = (icon_background_height - font_height) / 2
+        draw.text((icon_x, icon_y), icon_character, font=font, fill=icon_colour)
+
+        return icon_image
+
+    @staticmethod
+    def get_icon_size(font_file, text, font_size):
+        font = ImageFont.truetype(font_file, size=font_size)
+        font_width, font_height = font.getsize(text)
+        return font, font_width, font_height
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
@@ -1280,9 +1331,6 @@ class App:
             proxy.close()
 
         icon.stop()
-
-        syslog.closelog()
-        sys.exit(0)
 
 
 if __name__ == '__main__':
