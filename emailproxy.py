@@ -1,6 +1,6 @@
 """A simple IMAP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth 2.0
 SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
-
+import argparse
 import asyncore
 import base64
 import binascii
@@ -171,6 +171,7 @@ class OAuth2Helper:
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
         if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message')"""
         if username not in AppConfig.accounts():
+            Log.info('Proxy config file entry missing for account', username, '- aborting login')
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
                            'for permission_url, token_url, oauth2_scope, redirect_uri, client_id, and '
                            'client_secret' % (APP_NAME, username))
@@ -186,6 +187,7 @@ class OAuth2Helper:
         client_secret = config.get(username, 'client_secret', fallback=None)
 
         if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
+            Log.info('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id, '
                            'and client_secret)' % (APP_NAME, username))
@@ -214,7 +216,9 @@ class OAuth2Helper:
                 (success, authorisation_code) = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
                                                                                            username, connection_info)
                 if not success:
-                    return False, '%s: Login failure - connection timed out for account %s' % (APP_NAME, username)
+                    Log.info('Authentication request failed or expired for account', username, '- aborting login')
+                    return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
+                                  'account %s' % (APP_NAME, username)
 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, authorisation_code)
@@ -956,9 +960,15 @@ class RetinaIcon(pystray.Icon):
 class App:
     """Manage the menu bar icon, web view authorisation popup, notifications and start the main proxy thread"""
 
-    def __init__(self, argv):
-        self.argv = argv
+    def __init__(self):
         Log.initialise()
+
+        parser = argparse.ArgumentParser(description=APP_NAME)
+        parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
+                                                                  'initial account authorisation will fail)')
+        parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
+                                                                 'interaction to the system log')
+        self.args = parser.parse_args()
 
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
@@ -971,8 +981,14 @@ class App:
 
         self.web_view_started = False
 
-        self.icon = self.create_icon()
-        self.icon.run(self.post_create)
+        if self.args.no_gui:
+            global VERBOSE
+            VERBOSE = self.args.debug
+            self.icon = None
+            self.load_servers(self.icon)
+        else:
+            self.icon = self.create_icon()
+            self.icon.run(self.post_create)
 
     def create_icon(self):
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
@@ -1271,7 +1287,8 @@ class App:
             self.exit(icon)
             return False
 
-        self.icon.update_menu()  # force refresh the menu to show running proxy servers
+        if self.icon:
+            self.icon.update_menu()  # force refresh the menu to show running proxy servers
         threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main').start()
         return True
 
@@ -1334,4 +1351,4 @@ class App:
 
 
 if __name__ == '__main__':
-    App(sys.argv)
+    App()
