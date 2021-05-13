@@ -1,5 +1,10 @@
 """A simple IMAP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth 2.0
 SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
+
+__author__ = 'Simon Robinson'
+__copyright__ = 'Copyright (c) 2021 Simon Robinson'
+__license__ = 'Apache 2.0'
+
 import argparse
 import asyncore
 import base64
