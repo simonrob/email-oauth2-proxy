@@ -21,26 +21,39 @@ The first time your email client makes a request you should see a notification f
 
 
 ## Starting the proxy automatically
-If you are using macOS you can click the proxy's menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the proxy, configuring it to run as a service/daemon each time you log in. [Pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) are welcome to add this functionality to other platforms.
+If you are using macOS you can click the proxy's menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the proxy, configuring it to run as a service/daemon each time you log in.
 
 If you stop the service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
 
+Linux users should read the Non-GUI mode section below for a similar approach. Pull requests are welcome to improve this functionality or add similar options for other platforms.
+
+
+## Non-GUI mode
+When starting the proxy there are two optional arguments that are particularly helpful if you would like it to run in a background/service mode on Linux.
+
+`--no-gui` will prevent creating a menu bar icon, which allows the proxy to be run as a `systemctl` service as demonstrated in [issue 2](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677). Please note that this option is only of use if you have already authorised your accounts via the menu bar icon. Accounts that have not yet been authorised (or for whatever reason require reauthorisation) will fail to connect in this mode, and an error will be printed to the log.
+
+`--debug` enables debug mode, printing more verbose output to the log as discussed in the next section. This argument is identical to enabling debug mode from the menu bar icon.
+
 
 ## Troubleshooting
-If you encounter problems, enabling `Debug mode` from the menu will print all client-proxy-server communication to your system log to help identify the error. This will include all messages to and from the server, and also the content of your email messages. On macOS this can be viewed using Console.app (select `system.log` in the sidebar). On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`.
+If you encounter problems using the proxy, enabling `Debug mode` from the menu will print all client-proxy-server communication to your system log to help identify the error. This will include all messages to and from the server, and also the content of your email messages. On macOS this can be viewed using Console.app (select `system.log` in the sidebar). On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`.
 
-Please note that Debug mode may also result in your login credentials being printed to the log (though this is avoided where possible). However, it is worth pointing out that while the username you set in your email client must be correct, the password used here does not need to be the one you actually use to log in to your account, so you can use a test password for debugging and then replace this with a secure password (and authenticate again) once set up.
+Please note that Debug mode may also result in your login credentials being printed to the log (though this is avoided where possible). However, it is worth pointing out that because account authorisation is handled entirely through OAuth 2.0 in a web browser, while the username you set in your email client must be correct, the password used can be anything you like, and does not need to be the one you actually use to log in to your account. The password you provide via your email client is used only to encrypt and decrypt the authentication token that the proxy transparently sends to the server on your behalf. Because of this, if you are concerned about Debug mode and security you can use a test password for debugging and then replace it with a secure password (and authenticate again) once set up.
 
+### Linux setup
+When first launching on Linux you may encounter errors similar to `Namespace […] not available`. This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and login windows. See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) page and [issue 1](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) in this repository for a summary and instructions about how to resolve this.
+
+### Other issues
 Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) reporting any bugs you find, or [submit a pull request](https://github.com/simonrob/email-oauth2-proxy/pulls) to help improve this tool.
 
 
 ## Known issues
-- When first launching on Linux you may encounter errors similar to `Namespace […] not available`. This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and login windows. See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) page and [issue 1](https://github.com/simonrob/email-oauth2-proxy/issues/1) in this repository for a summary and instructions about how to resolve this.
 - Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). A system restart seems to be the only reliable fix for this.
 
 
-## Potential improvements ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
-- Full feature parity on different platforms
+## Potential improvements (pull requests welcome)
+- Full feature parity on different platforms (e.g., launch on startup; live menu updating)
 - Testing with different providers (currently verified only with Office 365 and Gmail)
 - Encrypted local connections?
 - Package as .app/.exe etc?
