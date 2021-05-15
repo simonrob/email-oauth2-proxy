@@ -33,7 +33,7 @@ import pystray
 import timeago
 import webview
 
-# for drawing the icon
+# for drawing the menu bar icon
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1111,11 +1111,14 @@ class App:
         for request in self.authorisation_requests:
             if str(item) == request['username']:  # use str(item) because item.text() hangs
                 if not self.web_view_started:
-                    # note: there is a known issue here on Windows (crash with WinError 1402)
-                    # reported at https://github.com/r0x0r/pywebview/issues/720
+                    # pywebview on macOS needs start() to be called only once so we use a dummy window to keep it open
+                    # Windows is the opposite - the macOS technique freezes the tray icon; Linux is fine either way
                     self.create_authorisation_window(request)
-                    webview.start(self.handle_authorisation_windows)
-                    self.web_view_started = True
+                    if sys.platform == 'darwin':
+                        webview.start(self.handle_authorisation_windows)
+                        self.web_view_started = True
+                    else:
+                        webview.start()
                 else:
                     WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
                 return
@@ -1129,8 +1132,8 @@ class App:
         authorisation_window.loaded += self.authorisation_loaded
 
     def handle_authorisation_windows(self):
-        # needed because otherwise closing the last remaining webview window exits the application
-        dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
+        # needed on macOS because otherwise closing the last remaining webview window exits the application
+        dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
         dummy_window.hide()  # hidden=True (above) doesn't seem to work on Linux
 
         while True:
@@ -1224,7 +1227,7 @@ class App:
         VERBOSE = not item.checked
 
     def notify(self, title, text):
-        if self.icon.HAS_NOTIFICATION:
+        if self.icon and self.icon.HAS_NOTIFICATION:
             self.icon.remove_notification()
             self.icon.notify('%s: %s' % (title, text))
         elif sys.platform == 'darwin':
@@ -1352,7 +1355,8 @@ class App:
             proxy.stop()
             proxy.close()
 
-        icon.stop()
+        if icon:
+            icon.stop()
 
 
 if __name__ == '__main__':
