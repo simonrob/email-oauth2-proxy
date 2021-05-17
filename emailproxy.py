@@ -91,7 +91,7 @@ class Log:
     @staticmethod
     def initialise():
         Log._LOGGER = logging.getLogger(APP_NAME)
-        Log._LOGGER.setLevel(logging.INFO)
+        Log._LOGGER.setLevel(logging.DEBUG)
         if sys.platform == 'win32':
             handler = logging.FileHandler('emailproxy.log')
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
@@ -974,6 +974,8 @@ class App:
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
         self.args = parser.parse_args()
+        global VERBOSE
+        VERBOSE = self.args.debug
 
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
@@ -987,8 +989,6 @@ class App:
         self.web_view_started = False
 
         if self.args.no_gui:
-            global VERBOSE
-            VERBOSE = self.args.debug
             self.icon = None
             self.load_servers(self.icon)
         else:
