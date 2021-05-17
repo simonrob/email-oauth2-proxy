@@ -27,10 +27,10 @@ If you are using macOS you can click the proxy's menu bar icon and then select `
 
 If you stop the service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
 
-Linux users should read the Non-GUI mode section below for a similar approach. Pull requests are welcome to improve this functionality or add similar options for other platforms.
+Linux users should read the No-GUI mode section below for a similar approach. Pull requests are welcome to improve this functionality or add similar options for other platforms.
 
 
-## Non-GUI mode
+## No-GUI mode
 When starting the proxy there are two optional arguments that are particularly helpful if you would like it to run in a background/service mode on Linux.
 
 `--no-gui` will launch the proxy without a menu bar icon, which allows it to be run as a `systemctl` service as demonstrated in [issue 2](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677). Please note that this option is only of use if you have already authorised your accounts via the menu bar icon. Accounts that have not yet been authorised (or for whatever reason require reauthorisation) will fail to connect in this mode, and an error will be printed to the log.
@@ -39,7 +39,7 @@ When starting the proxy there are two optional arguments that are particularly h
 
 
 ## Troubleshooting
-If you encounter problems using the proxy, enabling `Debug mode` from the menu or passing `--debug` as a script argument will print all client↔proxy↔server communication to your system log to help identify the error. This will include all commands to and responses from the server (and also as a result the content of your email messages).
+If you encounter problems using the proxy, enabling `Debug mode` from the menu or passing `--debug` as a script argument will print all client–proxy–server communication to your system log to help identify the error. This will include all commands to and responses from the server (and also as a result the content of your email messages).
 
 On macOS this can be viewed using Console.app (select `system.log` in the sidebar). On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`. On Windows a file `config.log` will be created in the same location as the proxy script.
 
