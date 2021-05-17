@@ -87,18 +87,19 @@ class Log:
     """Simple logging that also appears in macOS syslog/Console.app"""
     _LOGGER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
+    _DEFAULT_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
 
     @staticmethod
     def initialise():
         Log._LOGGER = logging.getLogger(APP_NAME)
-        Log._LOGGER.setLevel(logging.DEBUG)
+        Log._LOGGER.setLevel(logging.INFO if sys.platform == 'darwin' else logging.DEBUG)
         if sys.platform == 'win32':
             handler = logging.FileHandler('emailproxy.log')
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         else:
             handler = logging.handlers.SysLogHandler(
                 address='/var/run/syslog' if sys.platform == 'darwin' else '/dev/log')
-            handler.setFormatter(logging.Formatter('%s: %%(message)s' % APP_NAME))
+            handler.setFormatter(logging.Formatter(Log._DEFAULT_MESSAGE_FORMAT))
         Log._LOGGER.addHandler(handler)
 
     @staticmethod
@@ -108,6 +109,10 @@ class Log:
 
         # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macO
         severity = Log._LOGGER.warning if sys.platform == 'darwin' else level
+        if len(message) > 2048:
+            truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run with' \
+                                 ' --debug option in a terminal to see the full output ] '
+            message = message[0:2048 - len(Log._DEFAULT_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
         severity(message)
 
     @staticmethod
@@ -974,8 +979,9 @@ class App:
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
         self.args = parser.parse_args()
-        global VERBOSE
-        VERBOSE = self.args.debug
+        if self.args.debug:
+            global VERBOSE
+            VERBOSE = True
 
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)

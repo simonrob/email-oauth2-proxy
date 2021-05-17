@@ -69,4 +69,4 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 
 ## License
-[Apache 2.0](https://github.com/simonrob/email-oauth2-proxy/blob/main/README.md)
+[Apache 2.0](https://github.com/simonrob/email-oauth2-proxy/blob/main/LICENSE)
