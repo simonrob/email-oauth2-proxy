@@ -1,6 +1,11 @@
 """A simple IMAP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth 2.0
 SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
+__author__ = 'Simon Robinson'
+__copyright__ = 'Copyright (c) 2021 Simon Robinson'
+__license__ = 'Apache 2.0'
+
+import argparse
 import asyncore
 import base64
 import binascii
@@ -28,7 +33,7 @@ import pystray
 import timeago
 import webview
 
-# for drawing the icon
+# for drawing the menu bar icon
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
@@ -86,7 +91,7 @@ class Log:
     @staticmethod
     def initialise():
         Log._LOGGER = logging.getLogger(APP_NAME)
-        Log._LOGGER.setLevel(logging.INFO)
+        Log._LOGGER.setLevel(logging.DEBUG)
         if sys.platform == 'win32':
             handler = logging.FileHandler('emailproxy.log')
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
@@ -171,6 +176,7 @@ class OAuth2Helper:
         handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
         if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message')"""
         if username not in AppConfig.accounts():
+            Log.info('Proxy config file entry missing for account', username, '- aborting login')
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
                            'for permission_url, token_url, oauth2_scope, redirect_uri, client_id, and '
                            'client_secret' % (APP_NAME, username))
@@ -186,6 +192,7 @@ class OAuth2Helper:
         client_secret = config.get(username, 'client_secret', fallback=None)
 
         if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
+            Log.info('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id, '
                            'and client_secret)' % (APP_NAME, username))
@@ -214,7 +221,9 @@ class OAuth2Helper:
                 (success, authorisation_code) = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
                                                                                            username, connection_info)
                 if not success:
-                    return False, '%s: Login failure - connection timed out for account %s' % (APP_NAME, username)
+                    Log.info('Authentication request failed or expired for account', username, '- aborting login')
+                    return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
+                                  'account %s' % (APP_NAME, username)
 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, authorisation_code)
@@ -956,9 +965,17 @@ class RetinaIcon(pystray.Icon):
 class App:
     """Manage the menu bar icon, web view authorisation popup, notifications and start the main proxy thread"""
 
-    def __init__(self, argv):
-        self.argv = argv
+    def __init__(self):
         Log.initialise()
+
+        parser = argparse.ArgumentParser(description=APP_NAME)
+        parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
+                                                                  'initial account authorisation will fail)')
+        parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
+                                                                 'interaction to the system log')
+        self.args = parser.parse_args()
+        global VERBOSE
+        VERBOSE = self.args.debug
 
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
@@ -971,8 +988,12 @@ class App:
 
         self.web_view_started = False
 
-        self.icon = self.create_icon()
-        self.icon.run(self.post_create)
+        if self.args.no_gui:
+            self.icon = None
+            self.load_servers(self.icon)
+        else:
+            self.icon = self.create_icon()
+            self.icon.run(self.post_create)
 
     def create_icon(self):
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
@@ -1090,11 +1111,14 @@ class App:
         for request in self.authorisation_requests:
             if str(item) == request['username']:  # use str(item) because item.text() hangs
                 if not self.web_view_started:
-                    # note: there is a known issue here on Windows (crash with WinError 1402)
-                    # reported at https://github.com/r0x0r/pywebview/issues/720
+                    # pywebview on macOS needs start() to be called only once so we use a dummy window to keep it open
+                    # Windows is the opposite - the macOS technique freezes the tray icon; Linux is fine either way
                     self.create_authorisation_window(request)
-                    webview.start(self.handle_authorisation_windows)
-                    self.web_view_started = True
+                    if sys.platform == 'darwin':
+                        webview.start(self.handle_authorisation_windows)
+                        self.web_view_started = True
+                    else:
+                        webview.start()
                 else:
                     WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
                 return
@@ -1108,8 +1132,8 @@ class App:
         authorisation_window.loaded += self.authorisation_loaded
 
     def handle_authorisation_windows(self):
-        # needed because otherwise closing the last remaining webview window exits the application
-        dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='', hidden=True)
+        # needed on macOS because otherwise closing the last remaining webview window exits the application
+        dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
         dummy_window.hide()  # hidden=True (above) doesn't seem to work on Linux
 
         while True:
@@ -1203,7 +1227,7 @@ class App:
         VERBOSE = not item.checked
 
     def notify(self, title, text):
-        if self.icon.HAS_NOTIFICATION:
+        if self.icon and self.icon.HAS_NOTIFICATION:
             self.icon.remove_notification()
             self.icon.notify('%s: %s' % (title, text))
         elif sys.platform == 'darwin':
@@ -1271,7 +1295,8 @@ class App:
             self.exit(icon)
             return False
 
-        self.icon.update_menu()  # force refresh the menu to show running proxy servers
+        if self.icon:
+            self.icon.update_menu()  # force refresh the menu to show running proxy servers
         threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main').start()
         return True
 
@@ -1330,8 +1355,9 @@ class App:
             proxy.stop()
             proxy.close()
 
-        icon.stop()
+        if icon:
+            icon.stop()
 
 
 if __name__ == '__main__':
-    App(sys.argv)
+    App()

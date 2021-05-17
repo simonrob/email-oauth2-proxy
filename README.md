@@ -13,38 +13,60 @@ First, add configuration details for each server and account you want to use wit
 
 You can remove details from the sample configuration file for services you don't use, or add additional ones for any other OAuth 2.0 IMAP/SMTP servers you would like to use with the proxy (note: services other than Office 365 and Gmail have not been tested, but should work – please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) if not). Multiple accounts with the same provider can share the same server, and the correct server to use with an account is identified using the port number you configure in your client (see below). Account names (i.e., email addresses) must be unique – only one entry is permitted per account in the configuration file. Once the proxy is running, you can view or update the current configuration from its menu (via the `Servers and accounts` option).
 
-Next, from a terminal, install the script's requirements: `pip3 install -r requirements.txt`, and start the proxy: `python3 emailproxy.py` – a menu bar icon should appear. If you are using Linux and instead of the menu you see an error in the terminal that mentions `pywebview` or `pystray` it is likely that your system is missing their dependencies. See the [Known issues](https://github.com/simonrob/email-oauth2-proxy#known-issues) section below to resolve this. Once any missing dependencies have been resolved, starting the proxy should create a menu bar icon.
+Next, from a terminal, install the script's requirements: `pip3 install -r requirements.txt`, and start the proxy: `python3 emailproxy.py` – a menu bar icon should appear. If instead of the menu bar icon you see an error in the terminal, it is likely that your system is missing dependencies for the `pywebview` or `pystray` packages. See the [Dependencies and setup](https://github.com/simonrob/email-oauth2-proxy#dependencies-and-setup) section below to resolve this. Once any missing dependencies have been resolved, starting the proxy should create a menu bar icon.
 
 Finally, open your email client and configure your account's server details to match those you set in the proxy configuration file. For example, using the sample Office 365 details, this would be `localhost` on port `1433` for IMAP and `localhost` on port `1587` for SMTP. The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is secured (SSL for IMAP; SSL or STARTTLS for SMTP).
 
-The first time your email client makes a request you should see a notification from the proxy about authentication. Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup window that appears. After authentication completes you should have IMAP/SMTP access to your account as normal.
+The first time your email client makes a request you should see a notification from the proxy about authorising your account. (Note that the notification is not itself clickable, but pull requests to improve this are very welcome). Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup browser window that appears. The window will close itself once the process is complete.
+
+After successful authentication and authorisation you should have IMAP/SMTP access to your account as normal. Make sure you keep the proxy running at all times to allow it to authorise your email client's background activity (see the next section for a guide about how to do this). No further proxy interaction should be required unless your account needs authorising again, but it will notify you if this is the case.
 
 
 ## Starting the proxy automatically
-If you are using macOS you can click the proxy's menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the proxy, configuring it to run as a service/daemon each time you log in. [Pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) are welcome to add this functionality to other platforms.
+If you are using macOS you can click the proxy's menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the proxy, configuring it to run as a service/daemon each time you log in.
 
 If you stop the service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
 
+Linux users should read the Non-GUI mode section below for a similar approach. Pull requests are welcome to improve this functionality or add similar options for other platforms.
+
+
+## Non-GUI mode
+When starting the proxy there are two optional arguments that are particularly helpful if you would like it to run in a background/service mode on Linux.
+
+`--no-gui` will launch the proxy without a menu bar icon, which allows it to be run as a `systemctl` service as demonstrated in [issue 2](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677). Please note that this option is only of use if you have already authorised your accounts via the menu bar icon. Accounts that have not yet been authorised (or for whatever reason require reauthorisation) will fail to connect in this mode, and an error will be printed to the log.
+
+`--debug` enables debug mode, printing more verbose output to the log as discussed in the next section. This argument is identical to enabling debug mode from the menu bar icon.
+
 
 ## Troubleshooting
-If you encounter problems, enabling `Debug mode` from the menu will print all client-proxy-server communication to your system log to help identify the error. This will include all messages to and from the server, and also the content of your email messages. On macOS this can be viewed using Console.app (select `system.log` in the sidebar). On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`.
+If you encounter problems using the proxy, enabling `Debug mode` from the menu or passing `--debug` as a script argument will print all client↔proxy↔server communication to your system log to help identify the error. This will include all commands to and responses from the server (and also as a result the content of your email messages).
 
-Please note that Debug mode may also result in your login credentials being printed to the log (though this is avoided where possible). However, it is worth pointing out that while the username you set in your email client must be correct, the password used here does not need to be the one you actually use to log in to your account, so you can use a test password for debugging and then replace this with a secure password (and authenticate again) once set up.
+On macOS this can be viewed using Console.app (select `system.log` in the sidebar). On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`. On Windows a file `config.log` will be created in the same location as the proxy script.
 
+Please note that Debug mode may also result in your login credentials being printed to the log (though this is avoided where possible). However, it is worth pointing out that because account authorisation is handled entirely through OAuth 2.0 in a web browser, while the username you set in your email client must be correct, the password used can be anything you like, and does not need to be the one you actually use to log in to your account. The password you provide via your email client is used only to encrypt and decrypt the authentication token that the proxy transparently sends to the server on your behalf. Because of this, if you are concerned about Debug mode and security you can use a test password for debugging and then replace it with a secure password (and authenticate again) once set up.
+
+### Dependencies and setup
+On macOS the setup and installation instructions above should automatically install all required dependencies. Please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) if you encounter problems here.
+
+When first launching on Linux you may encounter errors similar to `Namespace […] not available`. This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and login windows. See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) page and [issue 1](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) in this repository for a summary and suggestions about how to resolve this.
+
+A similar issue may occur on Windows with the [pythonnet](https://github.com/pythonnet/pythonnet) package, which is required for pywebview. If you are unable to resolve this by following the [pythonnet installation instructions](https://github.com/pythonnet/pythonnet/wiki/Installation), you may find that installing a [prebuilt wheel](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pythonnet) helps fix the issue.
+
+### Other problems
 Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) reporting any bugs you find, or [submit a pull request](https://github.com/simonrob/email-oauth2-proxy/pulls) to help improve this tool.
 
 
 ## Known issues
-- When first launching on Linux you may encounter errors similar to `Namespace […] not available`. This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and login windows. See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) page and [issue 1](https://github.com/simonrob/email-oauth2-proxy/issues/1) in this repository for a summary and instructions about how to resolve this.
-- Authentication currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display the account login page. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). A system restart seems to be the only reliable fix for this.
+- On Windows there is a known incompatibility between [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/) that prevents account authentication – the proxy will crash when the authorisation window is opened. Until [this pull request](https://github.com/r0x0r/pywebview/pull/724) is merged to fix the bug, you can resolve the issue by editing your local copy of pywebview to make [a minor change](https://github.com/r0x0r/pywebview/pull/724/commits/10e2876e8e58d01a297fa1ef83c34d0aad8a7fbb), which prevents the crash. It is normally easiest to achieve this by using a [Python virtual environment](https://docs.python.org/3/library/venv.html).
+- The proxy currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display account login and authorisation pages. For reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). A system restart seems to be the only reliable fix for this.
 
 
-## Potential improvements ([pull requests](https://github.com/simonrob/email-oauth2-proxy/pulls) welcome)
-- Full feature parity on different platforms
+## Potential improvements (pull requests welcome)
+- Full feature parity on different platforms (e.g., launch on startup option; live menu updating)
 - Testing with different providers (currently verified only with Office 365 and Gmail)
 - Encrypted local connections?
 - Package as .app/.exe etc?
 
 
 ## License
-Apache 2.0
+[Apache 2.0](https://github.com/simonrob/email-oauth2-proxy/blob/main/README.md)
