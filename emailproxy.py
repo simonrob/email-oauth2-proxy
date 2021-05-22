@@ -22,6 +22,7 @@ import queue
 import socket
 import ssl
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -49,12 +50,13 @@ if sys.platform == 'darwin':
     from AppKit import Foundation
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
+APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 
 VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup here)
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # must be byte type string
 
-CONFIG_FILE_NAME = 'emailproxy.config'
+CONFIG_FILE_NAME = '%s.config' % APP_SHORT_NAME
 CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(os.path.realpath(__file__)), CONFIG_FILE_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
@@ -79,6 +81,8 @@ WEBVIEW_QUEUE = queue.Queue()  # authentication window events
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
+CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
+                             APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested exit
 
@@ -94,7 +98,7 @@ class Log:
         Log._LOGGER = logging.getLogger(APP_NAME)
         Log._LOGGER.setLevel(logging.INFO if sys.platform == 'darwin' else logging.DEBUG)
         if sys.platform == 'win32':
-            handler = logging.FileHandler('emailproxy.log')
+            handler = logging.FileHandler('%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         else:
             handler = logging.handlers.SysLogHandler(
@@ -1008,7 +1012,7 @@ class App:
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Start at login', self.toggle_start_at_login,
-                             checked=self.started_at_login, visible=sys.platform == 'darwin'),
+                             checked=self.started_at_login, visible=sys.platform in ['darwin', 'win32']),
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
@@ -1185,7 +1189,6 @@ class App:
         if sys.platform == 'darwin':
             if not PLIST_FILE_PATH.exists():
                 # need to create and load the plist
-                import subprocess
                 plist = {
                     'Label': APP_PACKAGE,
                     'ProgramArguments': [
@@ -1209,8 +1212,22 @@ class App:
                 launchctl.load(PLIST_FILE_PATH)
                 self.exit(icon)
 
+        elif sys.platform == "win32":
+            if not CMD_FILE_PATH.exists():
+                windows_command = 'start %s %s' % (
+                    subprocess.check_output("where pythonw", shell=True).decode('utf-8').strip(),
+                    os.path.realpath(__file__))
+
+                with open(CMD_FILE_PATH, 'w') as cmd_file:
+                    cmd_file.write(windows_command)
+
+                subprocess.call(windows_command, shell=True)  # as above, relies on exiting completing before loading
+                self.exit(icon)
+            else:
+                os.remove(CMD_FILE_PATH)
+
         else:
-            pass  # platforms other than macOS not currently supported
+            pass  # see https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677 for Linux options
 
     @staticmethod
     def started_at_login(_):
@@ -1225,6 +1242,10 @@ class App:
                     if 'Disabled' in plist:
                         return not plist['Disabled']
                     return True  # job is loaded and is not disabled
+
+        elif sys.platform == "win32":
+            return CMD_FILE_PATH.exists()  # we assume that the file's contents are correct
+
         return False
 
     @staticmethod
