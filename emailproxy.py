@@ -54,15 +54,19 @@ APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 
 VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup here)
-CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # must be byte type string
+CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces credentials; must be a byte-type string
 
 CONFIG_FILE_NAME = '%s.config' % APP_SHORT_NAME
 CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(os.path.realpath(__file__)), CONFIG_FILE_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
-MAX_CONNECTIONS = 0  # IMAP/SMTP connections to accept (clients often open several); 0 = no limit; limit is per server
-CONNECTION_TIMEOUT = 15  # in seconds - timeout for socket connections
-RECEIVE_BUFFER_SIZE = 65536  # in bytes, limit is per socket
+MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
+CONNECTION_TIMEOUT = 15  # timeout for socket connections (seconds)
+
+# maximum number of bytes to read from the socket at once (limit is per socket) - note that we assume clients send one
+# line at once (at least during the authentication phase), and we don't handle clients that flush the connection after
+# each individual character (e.g., the inbuilt Windows telnet client)
+RECEIVE_BUFFER_SIZE = 65536
 
 # seconds to wait before cancelling authentication requests (i.e., the user has this long to log in) - note that the
 # actual server timeout is often around 60 seconds, so the connection may be closed in the background and immediately
@@ -77,18 +81,19 @@ IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(r'(?P<tag>\w+) OK AUTHENTICATE
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from client web view
-WEBVIEW_QUEUE = queue.Queue()  # authentication window events
+WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 
-EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested exit
+EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
 
 
 class Log:
-    """Simple logging that also appears in macOS syslog/Console.app"""
+    """Simple logging to syslog/Console.app on Linux/macOS and to a local file on Windows"""
+
     _LOGGER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
     _DEFAULT_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
@@ -111,11 +116,11 @@ class Log:
         message = ' '.join(map(str, args))
         print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
 
-        # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macO
+        # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
         severity = Log._LOGGER.warning if sys.platform == 'darwin' else level
         if len(message) > 2048:
-            truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run with' \
-                                 ' --debug option in a terminal to see the full output ] '
+            truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run `%s' \
+                                 ' --debug` in a terminal to see the full output ] ' % os.path.basename(__file__)
             message = message[0:2048 - len(Log._DEFAULT_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
         severity(message)
 
@@ -135,6 +140,7 @@ class Log:
 
 class AppConfig:
     """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
+
     _PARSER = None
     _LOADED = False
 
@@ -181,13 +187,13 @@ class AppConfig:
 class OAuth2Helper:
     @staticmethod
     def get_oauth2_credentials(username, password, connection_info, recurse_retries=True):
-        """Using the given username (i.e., email address) and password, reads account details from CONFIG_FILE and
-        handles OAuth 2.0 token request and renewal, saving the updated details back to CONFIG_FILE (or removing them
-        if invalid). Returns either (True, 'OAuth2 string for authentication') or (False, 'Error message')"""
+        """Using the given username (i.e., email address) and password, reads account details from AppConfig and
+        handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
+        if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
         if username not in AppConfig.accounts():
             Log.info('Proxy config file entry missing for account', username, '- aborting login')
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
-                           'for permission_url, token_url, oauth2_scope, redirect_uri, client_id, and '
+                           'for permission_url, token_url, oauth2_scope, redirect_uri, client_id and '
                            'client_secret' % (APP_NAME, username))
 
         config = AppConfig.get()
@@ -203,7 +209,7 @@ class OAuth2Helper:
         if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
             Log.info('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
-                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id, '
+                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
                            'and client_secret)' % (APP_NAME, username))
 
         token_salt = config.get(username, 'token_salt', fallback=None)
@@ -215,7 +221,7 @@ class OAuth2Helper:
         if not token_salt:
             token_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
 
-        # generate encryptor/decrypter based on password and random salt
+        # generate encrypter/decrypter based on password and random salt
         key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
                                              salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000,
                                              backend=default_backend())
@@ -257,8 +263,8 @@ class OAuth2Helper:
                 else:
                     access_token = OAuth2Helper.decrypt(cryptographer, access_token)
 
-            # send authentication command to server (response checked in ServerConnection)
-            # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
+            # send authentication command to server (response checked in ServerConnection) - note: we only support
+            # single-trip authentication (SASL) without actually checking the server's capabilities - improve?
             oauth2_string = OAuth2Helper.construct_oauth2_string(username, access_token)
             return True, oauth2_string
 
@@ -275,6 +281,9 @@ class OAuth2Helper:
                 return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
 
         except Exception as e:
+            # note that we don't currently remove cached credentials here, as failures on the initial request are
+            # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
+            # network errors) rather than e.g., bad requests
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
             return False, '%s: Login failure - saved authentication data invalid for account %s' % (
                 APP_NAME, username)
@@ -342,8 +351,9 @@ class OAuth2Helper:
 
     @staticmethod
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code):
-        """Requests OAuth 2.0 access refresh tokens from token_url using the given client_id, client_secret and
-        authorisation_code, returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success"""
+        """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
+        authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
+        on success, or throwing an exception on failure (e.g., HTTP 400)"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
                   'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
         response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
@@ -351,8 +361,8 @@ class OAuth2Helper:
 
     @staticmethod
     def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
-        """Obtains a new access token from token_url using the given refresh token, returning a dict with
-        'access_token', 'expires_in', and 'refresh_token' on success"""
+        """Obtains a new access token from token_url using the given client_id, client_secret and refresh token,
+        returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
         response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
@@ -366,9 +376,10 @@ class OAuth2Helper:
     @staticmethod
     def encode_oauth2_string(input_string):
         """We use encode() from imaplib's _Authenticator, but it is a private class so we can't just import it. That
-        method's docstring is: Invoke binascii.b2a_base64 iteratively with short even length buffers, strip the
-        trailing line feed from the result and append. 'Even' means a number that factors to both 6 and 8, so
-        when it gets to the end of the 8-bit input there's no partial 6-bit output."""
+        method's docstring is:
+            Invoke binascii.b2a_base64 iteratively with short even length buffers, strip the trailing line feed from
+            the result and append. 'Even' means a number that factors to both 6 and 8, so when it gets to the end of
+            the 8-bit input there's no partial 6-bit output."""
         output_bytes = b''
         if isinstance(input_string, str):
             input_string = input_string.encode('utf-8')
@@ -386,14 +397,14 @@ class OAuth2Helper:
 
     @staticmethod
     def strip_quotes(text):
-        """Remove double quotes (i.e., ") around a string - used for IMAP LOGIN command"""
+        """Remove double quotes (i.e., " characters) around a string - used for IMAP LOGIN command"""
         if text.startswith('"') and text.endswith('"'):
             return text[1:-1].replace('\\"', '"')  # also need to fix any escaped quotes within the string
         return text
 
     @staticmethod
     def decode_credentials(str_data):
-        """Decode credentials passed as a base64-encoded string: <some data we don't need>\x00username\x00password"""
+        """Decode credentials passed as a base64-encoded string: [some data we don't need]\x00username\x00password"""
         try:
             (_, bytes_username, bytes_password) = base64.b64decode(str_data).split(b'\x00')
             return bytes_username.decode('utf-8'), bytes_password.decode('utf-8')
@@ -403,6 +414,9 @@ class OAuth2Helper:
 
 
 class OAuth2ClientConnection(asyncore.dispatcher_with_send):
+    """The base client-side connection that is subclassed to handle IMAP/SMTP client interaction (note that there is
+    some IMAP-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
+
     def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
                  custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, connection, map=socket_map)
@@ -473,7 +487,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
 
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
-    """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth2.0 SASL"""
+    """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth 2.0 SASL"""
 
     def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
         super().__init__('IMAP', connection, socket_map, connection_info, server_connection, proxy_parent,
@@ -549,7 +563,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
 
 
 class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
-    """The client side of the connection - intercept AUTH LOGIN commands and replace with OAuth2.0"""
+    """The client side of the connection - intercept AUTH LOGIN commands and replace with OAuth 2.0"""
 
     class AUTH(enum.Enum):
         PENDING = 1
@@ -567,7 +581,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
         str_data_lower = str_data.lower()
 
-        # intercept EHLO so we can add STARTTLS
+        # intercept EHLO so we can add STARTTLS (in parent class)
         if self.server_connection.ehlo is None and self.custom_configuration['starttls']:
             if str_data_lower.startswith('ehlo') or str_data_lower.startswith('helo'):
                 self.server_connection.ehlo = str_data  # save the command so we can replay later from the server side
@@ -621,6 +635,8 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 
 
 class OAuth2ServerConnection(asyncore.dispatcher_with_send):
+    """The base server-side connection, setting up STARTTLS if requested, subclassed for IMAP/SMTP server interaction"""
+
     def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, map=socket_map)  # note: establish connection later due to STARTTLS
         self.proxy_type = proxy_type
@@ -643,7 +659,7 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         new_socket = socket.socket(socket_family, socket_type)
         new_socket.setblocking(True)
 
-        # connections can either wrapped via the STARTTLS command, or SSL from the start
+        # connections can either be wrapped via the STARTTLS command, or SSL from the start
         if self.custom_configuration['starttls']:
             self.set_socket(new_socket)
         else:
@@ -758,7 +774,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         # SMTP setup and authentication involves a little more back-and-forth than IMAP as the default is STARTTLS...
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
-        # before we can do anything we need to intercept EHLO/HELO and add STARTTLS
+        # before we can do anything we need to intercept EHLO/HELO and add STARTTLS...
         if self.ehlo is not None and self.starttls is not self.STARTTLS.COMPLETE:
             if self.starttls is self.STARTTLS.PENDING:
                 self.send(b'STARTTLS\r\n')
@@ -776,9 +792,9 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     super().process_data(byte_data)  # an error occurred - just send to the client and exit
                     self.client_connection.close()
 
-        # then, once we have the username and password we can respond to the '334 ' response with credentials
+        # ...then, once we have the username and password we can respond to the '334 ' response with credentials
         elif self.authentication_state is self.AUTH.STARTED and self.username is not None and self.password is not None:
-            if str_data.startswith('334'):  # 334 = "please send credentials"
+            if str_data.startswith('334'):  # 334 = 'please send credentials' (note startswith; actually '334 ')
                 (success, result) = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
                                                                         self.connection_info)
                 if success:
@@ -903,7 +919,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.start()
 
     def handle_close(self):
-        # if we encounter an exception in asyncore, handle_close() is called - restart this server - typically one of:
+        # if we encounter an exception in asyncore, handle_close() is called; restart this server - typically one of:
         # - (<class 'socket.gaierror'>:[Errno 8] nodename nor servname provided, or not known (asyncore.py|read)
         # - (<class 'TimeoutError'>:[Errno 60] Operation timed out (asyncore.py|read)
         # note - intentionally not overriding handle_error() so we see errors in the log rather than hiding them
@@ -959,7 +975,7 @@ class RetinaIcon(pystray.Icon):
 
     def _assert_image(self):
         # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
-        # PIL to NSImage - duplicates what we do to load the icon, but kept to preserve platform compatibility
+        # PIL to NSImage - partly duplicates what we do to load the icon, but kept to preserve platform compatibility
         bytes_image = BytesIO()
         self.icon.save(bytes_image, 'png')
         data = Foundation.NSData(bytes_image.getvalue())
@@ -972,14 +988,14 @@ class RetinaIcon(pystray.Icon):
 
 
 class App:
-    """Manage the menu bar icon, web view authorisation popup, notifications and start the main proxy thread"""
+    """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self):
         Log.initialise()
 
         parser = argparse.ArgumentParser(description=APP_NAME)
         parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
-                                                                  'initial account authorisation will fail)')
+                                                                  'account authorisation requests will fail)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
         self.args = parser.parse_args()
@@ -1040,7 +1056,7 @@ class App:
                 minimum_font_size = current_font_size
             else:
                 break
-        if font_width > icon_width:  # because we need to round font sizes we need one final check for oversize width
+        if font_width > icon_width:  # because we have to round font sizes we need one final check for oversize width
             font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
 
         icon_image = Image.new('RGBA', (icon_background_width, icon_background_height))
@@ -1097,11 +1113,11 @@ class App:
     @staticmethod
     def edit_config(_):
         if sys.platform == 'darwin':
-            os.system("""open {}""".format(CONFIG_FILE_PATH))
+            os.system('open %s' % CONFIG_FILE_PATH)
         elif sys.platform == 'win32':
             os.startfile(CONFIG_FILE_PATH)
         elif sys.platform.startswith('linux'):
-            os.system("""xdg-open {}""".format(CONFIG_FILE_PATH))  # not tested but is apparently near-universal
+            os.system('xdg-open %s' % CONFIG_FILE_PATH)
         else:
             pass  # nothing we can do
 
@@ -1121,7 +1137,7 @@ class App:
         for request in self.authorisation_requests:
             if str(item) == request['username']:  # use str(item) because item.text() hangs
                 if not self.web_view_started:
-                    # pywebview on macOS needs start() to be called only once so we use a dummy window to keep it open
+                    # pywebview on macOS needs start() to be called only once, so we use a dummy window to keep it open
                     # Windows is the opposite - the macOS technique freezes the tray icon; Linux is fine either way
                     self.create_authorisation_window(request)
                     if sys.platform == 'darwin':
@@ -1178,12 +1194,17 @@ class App:
             window.destroy()
             self.icon.update_menu()
 
+            # note that in this part of the interaction we don't actually check the *use* of the authorisation code,
+            # but just whether it was successfully acquired - if there is an error in the subsequent access/refresh
+            # token request then we still send an 'authentication completed' notification here, but in the background
+            # we close the connection with a failure message and re-request authorisation next time the client
+            # interacts, which may potentially lead to repeated and conflicting (and confusing) notifications - improve?
             if len(self.authorisation_requests) > 0:
                 self.notify(APP_NAME,
-                            'Authentication successful for %s. Please authorise an additional account %s from the '
+                            'Authentication completed for %s. Please authorise an additional account %s from the '
                             'menu' % (completed_request['username'], self.authorisation_requests[0]['username']))
             else:
-                self.notify(APP_NAME, 'Authentication successful for %s' % completed_request['username'])
+                self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
 
     def toggle_start_at_login(self, icon):
         if sys.platform == 'darwin':
@@ -1192,7 +1213,7 @@ class App:
                 plist = {
                     'Label': APP_PACKAGE,
                     'ProgramArguments': [
-                        subprocess.check_output("which python3", shell=True).decode('utf-8').strip(),
+                        subprocess.check_output('which python3', shell=True).decode('utf-8').strip(),
                         os.path.realpath(__file__)],
                     'RunAtLoad': True
                 }
@@ -1212,10 +1233,10 @@ class App:
                 launchctl.load(PLIST_FILE_PATH)
                 self.exit(icon)
 
-        elif sys.platform == "win32":
+        elif sys.platform == 'win32':
             if not CMD_FILE_PATH.exists():
                 windows_command = 'start %s %s' % (
-                    subprocess.check_output("where pythonw", shell=True).decode('utf-8').strip(),
+                    subprocess.check_output('where pythonw', shell=True).decode('utf-8').strip(),
                     os.path.realpath(__file__))
 
                 with open(CMD_FILE_PATH, 'w') as cmd_file:
@@ -1243,7 +1264,7 @@ class App:
                         return not plist['Disabled']
                     return True  # job is loaded and is not disabled
 
-        elif sys.platform == "win32":
+        elif sys.platform == 'win32':
             return CMD_FILE_PATH.exists()  # we assume that the file's contents are correct
 
         return False
@@ -1258,7 +1279,7 @@ class App:
             self.icon.remove_notification()
             self.icon.notify('%s: %s' % (title, text))
         elif sys.platform == 'darwin':
-            os.system("""osascript -e 'display notification "{}" with title "{}"'""".format(text, title))
+            os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
         else:
             Log.info(title, text)  # last resort
 
@@ -1355,8 +1376,8 @@ class App:
         while not EXITING:
             try:
                 # loop for main proxy servers, accepting requests and starting connection threads
-                # note: we need to make sure there are always proxy servers running (i.e., exit on configuration
-                # file parse/load failure), otherwise this will throw an error every time and loop infinitely
+                # note: we need to make sure there are always proxy servers started when run_proxy is called (i.e., must
+                # exit on config parse/load failure), otherwise this will throw an error every time and loop infinitely
                 asyncore.loop(timeout=CONNECTION_TIMEOUT)
             except Exception as e:
                 if not EXITING:
@@ -1378,7 +1399,7 @@ class App:
                 window.show()
                 window.destroy()
 
-        for proxy in self.proxies:  # no need to copy - proxies are never removed; we just restart them on error
+        for proxy in self.proxies:  # no need to copy - proxies are never removed, we just restart them on error
             proxy.stop()
             proxy.close()
 
