@@ -4,6 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
+__version__ = '2021-05-28'  # ISO 8601
 
 import argparse
 import asyncore
@@ -998,6 +999,8 @@ class App:
                                                                   'account authorisation requests will fail)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
+        parser.add_argument('--manual-auth', action='store_true', help='handle authorisation via an external browser '
+                                                                       'rather than within this script')
         self.args = parser.parse_args()
         if self.args.debug:
             global VERBOSE
@@ -1152,8 +1155,23 @@ class App:
 
     def create_authorisation_window(self, request):
         # note that the webview title *must* end with a space and then the email address/username
-        authorisation_window = webview.create_window('Authorise your account: %s' % request['username'],
-                                                     request['permission_url'], on_top=True)
+        window_title = 'Authorise your account: %s' % request['username']
+        if not self.args.manual_auth:
+            manual_auth_html = '''<html>
+                <p>Visit the following link in your browser to authorise the login request for %s:
+                <textarea rows="3" style="width:100%%">%s</textarea></p>
+                <form onsubmit="window.location.assign(document.forms[0].auth.value); return false">
+                <p>After logging in and authorising your account, enter the result URL from the browser 
+                address bar in the box below. Note that your browser may show a navigation error (e.g., 404) 
+                at the end of the login process, but the URL is the important part (typically 
+                <em>http://localhost [...] &amp;code=[code] &amp; [...]</em>)</p>
+                <label for="auth">Authorisation URL: </label><input type="text" id="auth">
+                <input type="submit">
+                </form>
+                </html>''' % (request['username'], request['permission_url'])
+            authorisation_window = webview.create_window(window_title, html=manual_auth_html, on_top=True)
+        else:
+            authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
         setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
         authorisation_window.loaded += self.authorisation_loaded
 
