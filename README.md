@@ -60,7 +60,6 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 ## Known issues
 - On Windows there is a known incompatibility between [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/) that prevents account authentication – the proxy will crash when an authorisation window is opened. Until the change in [this pull request](https://github.com/r0x0r/pywebview/pull/724) is released in a new version of that library, you can resolve the issue by editing your local copy of pywebview to make [this minor edit](https://github.com/r0x0r/pywebview/pull/724/commits/10e2876e8e58d01a297fa1ef83c34d0aad8a7fbb), which prevents the crash. It is normally easiest to achieve this by using a [Python virtual environment](https://docs.python.org/3/library/venv.html).
-- The proxy currently relies on [pywebview](https://github.com/r0x0r/pywebview/) to display account login and authorisation pages. On macOS (and perhaps other platforms), for reasons that are currently not clear, the system component that pywebview uses can get into a state where the local login completion redirection URL does not load (pywebview simply hangs). A system restart seems to be the only reliable fix for this.
 
 
 ## Potential improvements (pull requests welcome)
