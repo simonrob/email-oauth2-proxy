@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2021-05-28'  # ISO 8601
+__version__ = '2021-06-03'  # ISO 8601
 
 import argparse
 import asyncore
@@ -173,7 +173,7 @@ class AppConfig:
 
         config_sections = AppConfig._PARSER.sections()
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
-        AppConfig._ACCOUNTS = [s for s in config_sections if not CONFIG_SERVER_MATCHER.match(s)]
+        AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
 
     @staticmethod
@@ -962,6 +962,8 @@ class AuthorisationWindow:
 class ProvisionalNavigationBrowserDelegate:
     """Used to dynamically give pywebview the ability to navigate to unresolved localhost URLs"""
 
+    # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
+    # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
     def webView_didStartProvisionalNavigation_(self, web_view, nav):
         # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
         browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
