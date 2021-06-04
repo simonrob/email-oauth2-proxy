@@ -4,6 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
+__version__ = '2021-06-03'  # ISO 8601
 
 import argparse
 import asyncore
@@ -88,6 +89,24 @@ PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 
+EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-height:1.3;font-family:sans-serif;
+    font-size:16px;color:#444;padding:0 24px}</style>
+    <h3 style="margin:0.3em 0;">Login authorisation request for %s</h3>
+    <p style="margin-top:0">Click the following link to open your browser and approve the request:</p>
+    <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a></p>
+    <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the 
+    resulting URL from the browser’s address bar using the box below to allow the %s script to transparently handle 
+    login requests on your behalf in future.</p>
+    <p>Note that your browser may show a navigation error (e.g., <em>“localhost refused to connect”</em>) after 
+    successfully logging in, but the final URL is the only important part, and as long as this begins with the correct 
+    redirection URI and contains a valid authorisation code your email client's request will succeed.</p>
+    <p style="margin-top:2em">According to your %s configuration file, the expected final URL will be of the form:</p>
+    <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
+    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); return false">
+    <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL: 
+    </label><input type="text" name="url" id="url" style="flex:1; margin:0 5px"><input type="submit"></div>
+    </form></html>'''
+
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
 
 
@@ -154,7 +173,7 @@ class AppConfig:
 
         config_sections = AppConfig._PARSER.sections()
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
-        AppConfig._ACCOUNTS = [s for s in config_sections if not CONFIG_SERVER_MATCHER.match(s)]
+        AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
 
     @staticmethod
@@ -939,6 +958,25 @@ class AuthorisationWindow:
         return self.title
 
 
+# noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming,PyUnusedLocal
+class ProvisionalNavigationBrowserDelegate:
+    """Used to dynamically give pywebview the ability to navigate to unresolved localhost URLs"""
+
+    # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
+    # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
+    def webView_didStartProvisionalNavigation_(self, web_view, nav):
+        # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
+        browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
+        if browser_view_instance:
+            browser_view_instance.loaded.set()
+
+    def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, nav):
+        # called when the server initiates a local redirect
+        browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
+        if browser_view_instance:
+            browser_view_instance.loaded.set()
+
+
 # noinspection PyPackageRequirements,PyUnresolvedReferences,PyProtectedMember
 class RetinaIcon(pystray.Icon):
     """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
@@ -971,7 +1009,7 @@ class RetinaIcon(pystray.Icon):
                         if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
-                return True
+                return Foundation.YES
 
     def _assert_image(self):
         # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
@@ -983,7 +1021,7 @@ class RetinaIcon(pystray.Icon):
 
         thickness = self._status_bar.thickness()  # macOS menu bar size - default = 22px, but can be scaled
         self._icon_image.setSize_((int(thickness), int(thickness)))
-        self._icon_image.setTemplate_(True)  # so macOS applies the default shading and inverse on click
+        self._icon_image.setTemplate_(Foundation.YES)  # so macOS applies the default shading and inverse on click
         self._status_item.button().setImage_(self._icon_image)
 
 
@@ -998,6 +1036,8 @@ class App:
                                                                   'account authorisation requests will fail)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
+        parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
+                                                                         'rather than within this script')
         self.args = parser.parse_args()
         if self.args.debug:
             global VERBOSE
@@ -1142,7 +1182,7 @@ class App:
                     self.create_authorisation_window(request)
                     if sys.platform == 'darwin':
                         webview.start(self.handle_authorisation_windows)
-                        self.web_view_started = True
+                        self.web_view_started = True  # note: not set for other platforms so we start() every time
                     else:
                         webview.start()
                 else:
@@ -1152,15 +1192,32 @@ class App:
 
     def create_authorisation_window(self, request):
         # note that the webview title *must* end with a space and then the email address/username
-        authorisation_window = webview.create_window('Authorise your account: %s' % request['username'],
-                                                     request['permission_url'], on_top=True)
+        window_title = 'Authorise your account: %s' % request['username']
+        if self.args.external_auth:
+            auth_page = EXTERNAL_AUTH_HTML % (request['username'], request['permission_url'], request['permission_url'],
+                                              APP_NAME, CONFIG_FILE_NAME, request['redirect_uri'])
+            authorisation_window = webview.create_window(window_title, html=auth_page, on_top=True, text_select=True)
+        else:
+            authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
         setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
-        authorisation_window.loaded += self.authorisation_loaded
+        authorisation_window.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
-        # needed on macOS because otherwise closing the last remaining webview window exits the application
+        if not sys.platform == 'darwin':
+            return
+
+        # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
+        # pywebview window can get into a state in which http://localhost navigation, rather than failing, just hangs
+        import webview.platforms.cocoa
+        setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didStartProvisionalNavigation_',
+                ProvisionalNavigationBrowserDelegate.webView_didStartProvisionalNavigation_)
+        setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
+                                                                     'Navigation_',
+                ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
+
+        # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
-        dummy_window.hide()  # hidden=True (above) doesn't seem to work on Linux
+        dummy_window.hide()  # hidden=True (above) doesn't seem to work in all cases
 
         while True:
             data = WEBVIEW_QUEUE.get()  # note: blocking call
@@ -1169,7 +1226,7 @@ class App:
             else:
                 self.create_authorisation_window(data)
 
-    def authorisation_loaded(self):
+    def authorisation_window_loaded(self):
         for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
             if not hasattr(window, 'get_title'):
                 continue  # skip dummy window
@@ -1337,9 +1394,9 @@ class App:
                 break
 
         if server_load_error or len(self.proxies) <= 0:
-            Log.info('No (or invalid) server details found - exiting')
-            self.notify(APP_NAME, 'No (or invalid) server details found. Please add your accounts and servers in %s' %
-                        CONFIG_FILE_NAME)
+            Log.info('No (or invalid) server details found, or the proxy is already running - exiting')
+            self.notify(APP_NAME, 'No (or invalid) server details found, or the proxy is already running. '
+                                  'Please verify your account and server details in %s' % CONFIG_FILE_NAME)
             self.exit(icon)
             return False
 
