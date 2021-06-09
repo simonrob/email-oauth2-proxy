@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2021-06-03'  # ISO 8601
+__version__ = '2021-06-09'  # ISO 8601
 
 import argparse
 import asyncore
@@ -62,7 +62,6 @@ CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(os.path.realpath(__file__)), CONFI
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
-CONNECTION_TIMEOUT = 15  # timeout for socket connections (seconds)
 
 # maximum number of bytes to read from the socket at once (limit is per socket) - note that we assume clients send one
 # line at once (at least during the authentication phase), and we don't handle clients that flush the connection after
@@ -88,6 +87,7 @@ QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
+AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
 
 EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-height:1.3;font-family:sans-serif;
     font-size:16px;color:#444;padding:0 24px}</style>
@@ -95,17 +95,17 @@ EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-
     <p style="margin-top:0">Click the following link to open your browser and approve the request:</p>
     <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a></p>
     <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the 
-    resulting URL from the browser’s address bar using the box below to allow the %s script to transparently handle 
+    resulting URL from the browser's address bar using the box below to allow the %s script to transparently handle 
     login requests on your behalf in future.</p>
-    <p>Note that your browser may show a navigation error (e.g., <em>“localhost refused to connect”</em>) after 
+    <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after 
     successfully logging in, but the final URL is the only important part, and as long as this begins with the correct 
     redirection URI and contains a valid authorisation code your email client's request will succeed.</p>
     <p style="margin-top:2em">According to your %s configuration file, the expected final URL will be of the form:</p>
     <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
     <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); return false">
     <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL: 
-    </label><input type="text" name="url" id="url" style="flex:1; margin:0 5px"><input type="submit"></div>
-    </form></html>'''
+    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px"><input type="submit" value="Submit">
+    </div></form></html>'''
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
 
@@ -168,6 +168,7 @@ class AppConfig:
 
     @staticmethod
     def _load():
+        AppConfig.unload()
         AppConfig._PARSER = configparser.ConfigParser()
         AppConfig._PARSER.read(CONFIG_FILE_PATH)
 
@@ -183,8 +184,16 @@ class AppConfig:
         return AppConfig._PARSER
 
     @staticmethod
-    def reload():
+    def unload():
+        AppConfig._PARSER = None
         AppConfig._LOADED = False
+
+        AppConfig._SERVERS = []
+        AppConfig._ACCOUNTS = []
+
+    @staticmethod
+    def reload():
+        AppConfig.unload()
         return AppConfig.get()
 
     @staticmethod
@@ -199,8 +208,9 @@ class AppConfig:
 
     @staticmethod
     def save():
-        with open(CONFIG_FILE_PATH, 'w') as config_output:
-            AppConfig._PARSER.write(config_output)
+        if AppConfig._LOADED:
+            with open(CONFIG_FILE_PATH, 'w') as config_output:
+                AppConfig._PARSER.write(config_output)
 
 
 class OAuth2Helper:
@@ -883,7 +893,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 self.client_connections.append(new_client_connection)
 
                 threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
-                                 name='EmailOAuth2Proxy-connection-%d' % address[1]).start()
+                                 name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
             except ssl.SSLError:
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
@@ -900,7 +910,7 @@ class OAuth2Proxy(asyncore.dispatcher):
     @staticmethod
     def run_server(client, socket_map, address):
         try:
-            asyncore.loop(map=socket_map, timeout=CONNECTION_TIMEOUT)  # loop for a single connection thread
+            asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
                 Log.info('Caught asyncore exception in', address, 'thread loop:', Log.error_string(e))
@@ -980,21 +990,21 @@ class ProvisionalNavigationBrowserDelegate:
 # noinspection PyPackageRequirements,PyUnresolvedReferences,PyProtectedMember
 class RetinaIcon(pystray.Icon):
     """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
-    regeneration of certain parts of the menu each time the icon is clicked """
-
-    def _create_menu(self, descriptors, callbacks):
-        # we add a new delegate to each created menu/submenu so that we can respond to menuNeedsUpdate
-        menu = super()._create_menu(descriptors, callbacks)
-        menu.setDelegate_(self._refresh_delegate)
-        return menu
-
-    def _mark_ready(self):
-        # in order to create the delegate *after* the NSApplication has been initialised, but only once, we override
-        # _mark_ready() to do so before the super() call that itself calls _create_menu()
-        self._refresh_delegate = self.MenuDelegate.alloc().init()
-        super()._mark_ready()
+    regeneration of the last activity time for each account every time the icon is clicked """
 
     if sys.platform == 'darwin':
+        def _create_menu(self, descriptors, callbacks):
+            # we add a new delegate to each created menu/submenu so that we can respond to menuNeedsUpdate
+            menu = super()._create_menu(descriptors, callbacks)
+            menu.setDelegate_(self._refresh_delegate)
+            return menu
+
+        def _mark_ready(self):
+            # in order to create the delegate *after* the NSApplication has been initialised, but only once, we override
+            # _mark_ready() to do so before the super() call that itself calls _create_menu()
+            self._refresh_delegate = self.MenuDelegate.alloc().init()
+            super()._mark_ready()
+
         # noinspection PyUnresolvedReferences
         class MenuDelegate(Foundation.NSObject):
             # noinspection PyMethodMayBeStatic,PyProtectedMember,PyPep8Naming
@@ -1005,24 +1015,23 @@ class RetinaIcon(pystray.Icon):
                 menu_items = sender._itemArray()
                 for item in menu_items:
                     for account in config_accounts:
-                        account_title = '\t%s (' % account  # needed to avoid matching authentication menu
+                        account_title = '    %s (' % account  # needed to avoid matching authentication menu
                         if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
                 return Foundation.YES
 
-    def _assert_image(self):
-        # pystray does some scaling here which breaks macOS retina icons - we replace that with the actual menu bar size
-        # PIL to NSImage - partly duplicates what we do to load the icon, but kept to preserve platform compatibility
-        bytes_image = BytesIO()
-        self.icon.save(bytes_image, 'png')
-        data = Foundation.NSData(bytes_image.getvalue())
-        self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
+        def _assert_image(self):
+            # pystray does some scaling which breaks macOS retina icons - we replace that with the actual menu bar size
+            bytes_image = BytesIO()
+            self.icon.save(bytes_image, 'png')
+            data = Foundation.NSData(bytes_image.getvalue())
+            self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
 
-        thickness = self._status_bar.thickness()  # macOS menu bar size - default = 22px, but can be scaled
-        self._icon_image.setSize_((int(thickness), int(thickness)))
-        self._icon_image.setTemplate_(Foundation.YES)  # so macOS applies the default shading and inverse on click
-        self._status_item.button().setImage_(self._icon_image)
+            thickness = self._status_bar.thickness()  # macOS menu bar size: default = 22px, but can be scaled
+            self._icon_image.setSize_((int(thickness), int(thickness)))
+            self._icon_image.setTemplate_(Foundation.YES)  # so macOS applies the default shading and inverse on click
+            self._status_item.button().setImage_(self._icon_image)
 
 
 class App:
@@ -1067,8 +1076,7 @@ class App:
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem('Start at login', self.toggle_start_at_login,
-                             checked=self.started_at_login, visible=sys.platform in ['darwin', 'win32']),
+            pystray.MenuItem('Start at login', self.toggle_start_at_login, checked=self.started_at_login),
             pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
@@ -1116,27 +1124,31 @@ class App:
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
         if len(self.proxies) <= 0:
-            items.append(pystray.MenuItem('\tNo servers configured', None, enabled=False))
+            items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
         else:
             for proxy in self.proxies:
-                items.append(pystray.MenuItem('\t%s:%d ➝ %s:%d' % (proxy.local_address[0], proxy.local_address[1],
-                                                                   proxy.server_address[0], proxy.server_address[1]),
+                items.append(pystray.MenuItem('    %s:%d ➝ %s:%d' % (proxy.local_address[0], proxy.local_address[1],
+                                                                     proxy.server_address[0], proxy.server_address[1]),
                                               None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)
 
         config_accounts = AppConfig.accounts()
         items.append(pystray.MenuItem('Accounts (+ last authenticated activity):', None, enabled=False))
         if len(config_accounts) <= 0:
-            items.append(pystray.MenuItem('\tNo accounts configured', None, enabled=False))
+            items.append(pystray.MenuItem('    No accounts configured', None, enabled=False))
         else:
             for account in config_accounts:
                 items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
             if not sys.platform == 'darwin':
-                items.append(pystray.MenuItem('\tRefresh activity data', self.icon.update_menu))
+                items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
         items.append(pystray.MenuItem('Edit configuration file...', self.edit_config))
-        items.append(pystray.MenuItem('Reload configuration file', self.load_servers))
+
+        # asyncore sockets on Linux have a shutdown delay (the time.sleep() call in asyncore.poll), which means we can't
+        # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
+        items.append(pystray.MenuItem('Reload configuration file',
+                                      self.restart_linux if sys.platform.startswith('linux') else self.load_servers))
         return items
 
     @staticmethod
@@ -1148,10 +1160,10 @@ class App:
                                                  datetime.datetime.now(), 'en_short')
         else:
             formatted_sync_time = 'never'
-        return '\t%s (%s)' % (account, formatted_sync_time)
+        return '    %s (%s)' % (account, formatted_sync_time)
 
     @staticmethod
-    def edit_config(_):
+    def edit_config():
         if sys.platform == 'darwin':
             os.system('open %s' % CONFIG_FILE_PATH)
         elif sys.platform == 'win32':
@@ -1171,7 +1183,15 @@ class App:
                 if not request['username'] in usernames:
                     items.append(pystray.MenuItem(request['username'], self.authorise_account))
                     usernames.append(request['username'])
+        items.append(pystray.Menu.SEPARATOR)
+        items.append(pystray.MenuItem('External authorisation mode', self.toggle_external_auth,
+                                      checked=lambda _: self.args.external_auth))
         return items
+
+    def toggle_external_auth(self):
+        self.args.external_auth = not self.args.external_auth
+        if self.started_at_login(None):
+            self.toggle_start_at_login(self.icon, True)  # update launch command to preserve external auth preference
 
     def authorise_account(self, _, item):
         for request in self.authorisation_requests:
@@ -1184,7 +1204,10 @@ class App:
                         webview.start(self.handle_authorisation_windows)
                         self.web_view_started = True  # note: not set for other platforms so we start() every time
                     else:
-                        webview.start()
+                        # on Windows, most pywebview engine options return None for get_current_url() on pages created
+                        # using 'html=' even on redirection to an actual URL; 'mshtml', though archaic, does work
+                        forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
+                        webview.start(gui=forced_gui)
                 else:
                     WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
                 return
@@ -1263,54 +1286,106 @@ class App:
             else:
                 self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
 
-    def toggle_start_at_login(self, icon):
+    def toggle_start_at_login(self, icon, force_rewrite=False):
+        # we reuse this function to force-overwrite the startup file when changing the external auth option, but pystray
+        # verifies actions have a maximum of two parameters (_assert_action()), so we must use 'item' and check its type
+        recreate_login_file = False if isinstance(force_rewrite, pystray.MenuItem) else force_rewrite
+
+        python_command, script_command = self.get_script_start_commands()
+
         if sys.platform == 'darwin':
-            if not PLIST_FILE_PATH.exists():
+            if recreate_login_file or not PLIST_FILE_PATH.exists():
                 # need to create and load the plist
                 plist = {
                     'Label': APP_PACKAGE,
-                    'ProgramArguments': [
-                        subprocess.check_output('which python3', shell=True).decode('utf-8').strip(),
-                        os.path.realpath(__file__)],
                     'RunAtLoad': True
                 }
             else:
-                # just toggle the disabled value rather than loading/unloading, so we don't need to restart the app
+                # just toggle the disabled value rather than loading/unloading, so we don't need to restart the proxy
                 with open(PLIST_FILE_PATH, 'rb') as plist_file:
                     plist = plistlib.load(plist_file)
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
+            plist['ProgramArguments'] = [python_command, script_command]
+
+            os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
             with open(PLIST_FILE_PATH, 'wb') as plist_file:
                 plistlib.dump(plist, plist_file)
 
-            # if loading, need to exit so we're not running twice (note: relies on exiting completing before loading)
+            # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
             # noinspection PyPackageRequirements
             import launchctl
             if not launchctl.job(APP_PACKAGE):
-                launchctl.load(PLIST_FILE_PATH)
-                self.exit(icon)
+                self.exit(icon, restart_callback=launchctl.load(PLIST_FILE_PATH))
 
         elif sys.platform == 'win32':
-            if not CMD_FILE_PATH.exists():
-                windows_command = 'start %s %s' % (
-                    subprocess.check_output('where pythonw', shell=True).decode('utf-8').strip(),
-                    os.path.realpath(__file__))
+            if recreate_login_file or not CMD_FILE_PATH.exists():
+                windows_command = 'start %s %s' % (python_command, script_command)
 
+                os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
                 with open(CMD_FILE_PATH, 'w') as cmd_file:
                     cmd_file.write(windows_command)
 
-                subprocess.call(windows_command, shell=True)  # as above, relies on exiting completing before loading
-                self.exit(icon)
+                # on Windows we don't have a service to run, but it is still useful to exit the terminal instance
+                if sys.stdin.isatty() and not recreate_login_file:
+                    self.exit(icon, restart_callback=lambda: subprocess.call(windows_command, shell=True))
             else:
                 os.remove(CMD_FILE_PATH)
 
+        elif sys.platform.startswith('linux'):
+            # see https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677 for systemctl option
+            if recreate_login_file or not AUTOSTART_FILE_PATH.exists():
+                linux_command = '%s %s' % (python_command, script_command)
+                xdg_autostart = {
+                    'Type': 'Application',
+                    'Name': APP_NAME,
+                    'Exec': linux_command,
+                    'NoDisplay': 'true'
+                }
+
+                os.makedirs(AUTOSTART_FILE_PATH.parent, exist_ok=True)
+                with open(AUTOSTART_FILE_PATH, 'w') as desktop_file:
+                    desktop_file.write('[Desktop Entry]\n')
+                    for key, value in xdg_autostart.items():
+                        desktop_file.write('%s=%s\n' % (key, value))
+
+                # like on Windows we don't have a service to run, but it is still useful to exit the terminal instance
+                if sys.stdin.isatty() and not recreate_login_file:
+                    AppConfig.save()  # because restart_linux needs to unload to prevent saving on exit
+                    self.restart_linux(icon)
+            else:
+                os.remove(AUTOSTART_FILE_PATH)
+
         else:
-            pass  # see https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677 for Linux options
+            pass  # nothing we can do
+
+    def get_script_start_commands(self):
+        which_python = 'which python3'
+        if sys.platform == 'win32':
+            # pythonw to avoid a terminal when background launching; split (below) for first result only (inc. venv)
+            which_python = 'where.exe pythonw'
+        python_command = subprocess.check_output(which_python, shell=True).decode('utf-8').split('\r\n')[0].strip()
+
+        # preserve the external auth option if starting automatically (note: could do the same for --debug but unlikely
+        # to be useful; similarly for --no-gui, but that makes no sense as the GUI is needed for this interaction)
+        script_command = os.path.realpath(__file__)
+        script_command += ' --external-auth' if self.args.external_auth else ''
+
+        return python_command, script_command
+
+    def restart_linux(self, icon):
+        # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
+        AppConfig.unload()  # so that we don't overwrite the just-updated file when exiting
+        python_command, script_command = self.get_script_start_commands()
+        linux_command = '%s %s' % (python_command, script_command)
+        self.exit(icon,
+                  restart_callback=lambda: subprocess.call('nohup %s </dev/null >/dev/null 2>&1 &' % linux_command,
+                                                           shell=True))
 
     @staticmethod
     def started_at_login(_):
+        # note: menu state will be stale if changed externally, but clicking menu items forces a refresh
         if sys.platform == 'darwin':
-            # note: menu state will be stale if changed externally, but clicking menu item forces a refresh
             if PLIST_FILE_PATH.exists():
                 # noinspection PyPackageRequirements
                 import launchctl
@@ -1323,6 +1398,9 @@ class App:
 
         elif sys.platform == 'win32':
             return CMD_FILE_PATH.exists()  # we assume that the file's contents are correct
+
+        elif sys.platform.startswith('linux'):
+            return AUTOSTART_FILE_PATH.exists()  # we assume that the file's contents are correct
 
         return False
 
@@ -1397,12 +1475,13 @@ class App:
             Log.info('No (or invalid) server details found, or the proxy is already running - exiting')
             self.notify(APP_NAME, 'No (or invalid) server details found, or the proxy is already running. '
                                   'Please verify your account and server details in %s' % CONFIG_FILE_NAME)
+            AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
             self.exit(icon)
             return False
 
         if self.icon:
             self.icon.update_menu()  # force refresh the menu to show running proxy servers
-        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main').start()
+        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
         return True
 
     def post_create(self, icon):
@@ -1435,12 +1514,12 @@ class App:
                 # loop for main proxy servers, accepting requests and starting connection threads
                 # note: we need to make sure there are always proxy servers started when run_proxy is called (i.e., must
                 # exit on config parse/load failure), otherwise this will throw an error every time and loop infinitely
-                asyncore.loop(timeout=CONNECTION_TIMEOUT)
+                asyncore.loop()
             except Exception as e:
                 if not EXITING:
                     Log.info('Caught asyncore exception in main loop:', Log.error_string(e))
 
-    def exit(self, icon):
+    def exit(self, icon, restart_callback=None):
         Log.info('Stopping', APP_NAME)
         global EXITING
         EXITING = True
@@ -1462,6 +1541,13 @@ class App:
 
         if icon:
             icon.stop()
+
+        # for the 'Start at login' option we need a callback to restart the script the first time this preference is
+        # configured (macOS) or every time (other platforms) - note that just as in toggle_start_at_login(), pystray
+        # verifies that actions have a maximum of two parameters, so we must override the 'item' one but check its type
+        if restart_callback and not isinstance(restart_callback, pystray.MenuItem):
+            Log.info('Restarted', APP_NAME, 'as a background task')
+            restart_callback()
 
 
 if __name__ == '__main__':
