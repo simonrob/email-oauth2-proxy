@@ -8,3 +8,6 @@ timeago
 # used to toggle launch on login, hide the dock icon and improve the menu bar icon and menu on macOS
 launchctl; sys_platform == 'darwin'
 pyobjc; sys_platform == 'darwin'
+
+# force version 3.5+ of pywebview on Windows to fix authentication window crash bug
+pywebview>=3.5; sys_platform == 'win32'
