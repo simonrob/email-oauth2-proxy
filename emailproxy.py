@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2021-06-09'  # ISO 8601
+__version__ = '2021-09-03'  # ISO 8601
 
 import argparse
 import asyncore
@@ -394,8 +394,13 @@ class OAuth2Helper:
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
-        response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
-        return json.loads(response)
+        try:
+            response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
+            return json.loads(response)
+        except urllib.error.HTTPError as e:
+            if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
+                raise InvalidToken
+            raise e
 
     @staticmethod
     def construct_oauth2_string(username, access_token):
