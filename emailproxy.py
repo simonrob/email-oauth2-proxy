@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2021-09-03'  # ISO 8601
+__version__ = '2021-09-29'  # ISO 8601
 
 import argparse
 import asyncore
@@ -995,7 +995,7 @@ class ProvisionalNavigationBrowserDelegate:
 # noinspection PyPackageRequirements,PyUnresolvedReferences,PyProtectedMember
 class RetinaIcon(pystray.Icon):
     """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
-    regeneration of the last activity time for each account every time the icon is clicked """
+    regeneration of the last activity time for each account every time the icon is clicked"""
 
     if sys.platform == 'darwin':
         def _create_menu(self, descriptors, callbacks):
@@ -1486,7 +1486,10 @@ class App:
 
         if self.icon:
             self.icon.update_menu()  # force refresh the menu to show running proxy servers
-        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
+
+        # use a daemon thread only if we have an icon to ensure that we don't just exit on startup when in no-gui mode
+        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main',
+                         daemon=True if self.icon else False).start()
         return True
 
     def post_create(self, icon):
