@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2021-09-29'  # ISO 8601
+__version__ = '2021-10-18'  # ISO 8601
 
 import argparse
 import asyncore
@@ -1365,11 +1365,10 @@ class App:
             pass  # nothing we can do
 
     def get_script_start_commands(self):
-        which_python = 'which python3'
+        python_command = sys.executable
         if sys.platform == 'win32':
-            # pythonw to avoid a terminal when background launching; split (below) for first result only (inc. venv)
-            which_python = 'where.exe pythonw'
-        python_command = subprocess.check_output(which_python, shell=True).decode('utf-8').split('\r\n')[0].strip()
+            # pythonw to avoid a terminal when background launching on Windows
+            python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
         # preserve the external auth option if starting automatically (note: could do the same for --debug but unlikely
         # to be useful; similarly for --no-gui, but that makes no sense as the GUI is needed for this interaction)
