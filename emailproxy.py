@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2021-10-18'  # ISO 8601
+__version__ = '2022-01-24'  # ISO 8601
 
 import argparse
 import asyncore
@@ -48,13 +48,12 @@ from cryptography.hazmat.backends import default_backend
 # for macOS-specific functionality: retina icon; updating menu on click
 if sys.platform == 'darwin':
     import AppKit
-    from AppKit import Foundation
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 
-VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup here)
+VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup: --debug)
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces credentials; must be a byte-type string
 
 CONFIG_FILE_NAME = '%s.config' % APP_SHORT_NAME
@@ -63,7 +62,7 @@ CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
 
-# maximum number of bytes to read from the socket at once (limit is per socket) - note that we assume clients send one
+# maximum number of bytes to read from the socket at a time (limit is per socket) - note that we assume clients send one
 # line at once (at least during the authentication phase), and we don't handle clients that flush the connection after
 # each individual character (e.g., the inbuilt Windows telnet client)
 RECEIVE_BUFFER_SIZE = 65536
@@ -339,7 +338,7 @@ class OAuth2Helper:
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
                   'access_type': 'offline'}
         param_pairs = []
-        for param in sorted(iter(params.items()), key=lambda x: x[0]):
+        for param in params:
             param_pairs.append('%s=%s' % (param[0], OAuth2Helper.oauth2_url_escape(param[1])))
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
@@ -975,7 +974,7 @@ class AuthorisationWindow:
 
 # noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming,PyUnusedLocal
 class ProvisionalNavigationBrowserDelegate:
-    """Used to dynamically give pywebview the ability to navigate to unresolved localhost URLs"""
+    """Used to dynamically give pywebview the ability to navigate to unresolved local URLs (only required for macOS)"""
 
     # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
     # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
@@ -1011,7 +1010,7 @@ class RetinaIcon(pystray.Icon):
             super()._mark_ready()
 
         # noinspection PyUnresolvedReferences
-        class MenuDelegate(Foundation.NSObject):
+        class MenuDelegate(AppKit.NSObject):
             # noinspection PyMethodMayBeStatic,PyProtectedMember,PyPep8Naming
             def menuNeedsUpdate_(self, sender):
                 # update account menu items' last activity times from config cache - it would be better to delegate this
@@ -1024,18 +1023,18 @@ class RetinaIcon(pystray.Icon):
                         if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
-                return Foundation.YES
+                return AppKit.YES
 
         def _assert_image(self):
             # pystray does some scaling which breaks macOS retina icons - we replace that with the actual menu bar size
             bytes_image = BytesIO()
             self.icon.save(bytes_image, 'png')
-            data = Foundation.NSData(bytes_image.getvalue())
+            data = AppKit.NSData(bytes_image.getvalue())
             self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
 
             thickness = self._status_bar.thickness()  # macOS menu bar size: default = 22px, but can be scaled
             self._icon_image.setSize_((int(thickness), int(thickness)))
-            self._icon_image.setTemplate_(Foundation.YES)  # so macOS applies the default shading and inverse on click
+            self._icon_image.setTemplate_(AppKit.YES)  # so macOS applies default shading + inverse on click
             self._status_item.button().setImage_(self._icon_image)
 
 
@@ -1057,11 +1056,7 @@ class App:
             global VERBOSE
             VERBOSE = True
 
-        if sys.platform == 'darwin':
-            # hide dock icon (but not LSBackgroundOnly as we need input via webview)
-            # noinspection PyUnresolvedReferences
-            info = AppKit.NSBundle.mainBundle().infoDictionary()
-            info['LSUIElement'] = '1'
+        self.init_platforms()
 
         self.proxies = []
         self.authorisation_requests = []
@@ -1070,10 +1065,20 @@ class App:
 
         if self.args.no_gui:
             self.icon = None
-            self.load_servers(self.icon)
+            self.load_and_start_servers(self.icon)
         else:
             self.icon = self.create_icon()
             self.icon.run(self.post_create)
+
+    # noinspection PyUnresolvedReferences
+    @staticmethod
+    def init_platforms():
+        if sys.platform == 'darwin':
+            # hide dock icon (but not LSBackgroundOnly as we need input via webview)
+            info = AppKit.NSBundle.mainBundle().infoDictionary()
+            info['LSUIElement'] = '1'
+        else:
+            pass  # currently no special initialisation/configuration required for other platforms
 
     def create_icon(self):
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
@@ -1152,8 +1157,8 @@ class App:
 
         # asyncore sockets on Linux have a shutdown delay (the time.sleep() call in asyncore.poll), which means we can't
         # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
-        items.append(pystray.MenuItem('Reload configuration file',
-                                      self.restart_linux if sys.platform.startswith('linux') else self.load_servers))
+        items.append(pystray.MenuItem('Reload configuration file', self.restart_linux if sys.platform.startswith(
+            'linux') else self.load_and_start_servers))
         return items
 
     @staticmethod
@@ -1418,12 +1423,14 @@ class App:
             self.icon.remove_notification()
             self.icon.notify('%s: %s' % (title, text))
         elif sys.platform == 'darwin':
+            for replacement in (('\\', '\\\\'), ('"', '\\"')):  # direct use of osascript requires a bit of sanitisation
+                text = text.replace(*replacement)
+                title = title.replace(*replacement)
             os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
         else:
             Log.info(title, text)  # last resort
 
-    def load_servers(self, icon):
-        # we allow reloading, so must first stop any existing servers
+    def stop_servers(self):
         global RESPONSE_QUEUE
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
@@ -1433,6 +1440,9 @@ class App:
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
+    def load_and_start_servers(self, icon=None):
+        # we allow reloading, so must first stop any existing servers
+        self.stop_servers()
         config = AppConfig.reload()
 
         # load server types and configurations
@@ -1494,7 +1504,7 @@ class App:
     def post_create(self, icon):
         icon.visible = True
 
-        if not self.load_servers(icon):
+        if not self.load_and_start_servers(icon):
             return
 
         Log.info('Initialised', APP_NAME, '- listening for authentication requests')

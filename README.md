@@ -1,5 +1,5 @@
 # Email OAuth 2.0 Proxy
-An IMAP/SMTP proxy that transparently adds OAuth 2.0 authentication for clients that don't support this method.
+An IMAP/SMTP proxy that transparently adds OAuth 2.0 authentication for client applications that don't support this method. The proxy works in the background with a menu bar/taskbar helper or as a system service, and is compatible with macOS, Windows and Linux.
 
 
 ## Motivation and capabilities
@@ -23,7 +23,7 @@ After successful authentication and authorisation you should have IMAP/SMTP acce
 ## Starting the proxy automatically
 The simplest way to start the proxy automatically is to click its menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the script, configuring it to run each time you log in. A different approach is used to achieve this depending on whether you are using macOS, Windows or Linux.
 
-On macOS, if you stop the proxy's service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`. On more recent macOS versions, you may find that you need to manually load the launch agent file the first time in order to trigger a permission prompt about python access. To do this, run the unload command listed above, followed by `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`. After this (and approving access via the permission prompt), the menu bar option should work as normal.
+On macOS, if you stop the proxy's service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`. On more recent macOS versions, you may find that you need to manually load the launch agent file the first time in order to trigger a permission prompt about python access. To do this, click `Start at login` from the app's menu bar icon, then run the unload command listed above followed by `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`. After this (and approving access via the permission prompt), the menu bar option should work as normal.
 
 On Windows the auto-start functionality is achieved via a shortcut in your user account's startup folder. Pressing the Windows key and `r` and entering `shell:startup` (and then clicking OK) will open this folder – from here you can either double-click the `ac.robinson.email-oauth2-proxy.cmd` file to relaunch the proxy, or delete this file (either manually or by deselecting the option in the proxy's menu) to remove the script from your startup items.
 
