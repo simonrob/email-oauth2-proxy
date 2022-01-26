@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-01-24'  # ISO 8601
+__version__ = '2022-01-26'  # ISO 8601
 
 import argparse
 import asyncore
@@ -1071,14 +1071,36 @@ class App:
             self.icon.run(self.post_create)
 
     # noinspection PyUnresolvedReferences
-    @staticmethod
-    def init_platforms():
+    def init_platforms(self):
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
+
+            # track shutdown/sleep/wake events and stop/start servers appropriately (also saving activity+configuration)
+            # note: no need to manually remove this observer after OS X 10.11 (https://developer.apple.com/library
+            # /archive/releasenotes/Foundation/RN-FoundationOlderNotes/index.html#10_11NotificationCenter)
+            notification_centre = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+            notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
+                                                                  AppKit.NSWorkspaceWillPowerOffNotification, None)
+            notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
+                                                                  AppKit.NSWorkspaceWillSleepNotification, None)
+            notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
+                                                                  AppKit.NSWorkspaceDidWakeNotification, None)
+
         else:
             pass  # currently no special initialisation/configuration required for other platforms
+
+    # noinspection PyUnresolvedReferences
+    def macos_nsworkspace_notification_listener_(self, notification):
+        notification_name = notification.name()
+        if notification_name in [AppKit.NSWorkspaceWillSleepNotification, AppKit.NSWorkspaceWillPowerOffNotification]:
+            Log.info('Detected imminent workspace sleep or shutdown - saving configuration and stopping servers')
+            AppConfig.save()
+            self.stop_servers()
+        elif notification_name == AppKit.NSWorkspaceDidWakeNotification:
+            Log.info('Detected resume from workspace sleep - restarting servers')
+            self.load_and_start_servers(self.icon)
 
     def create_icon(self):
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
