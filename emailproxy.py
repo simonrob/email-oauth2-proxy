@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-01-26'  # ISO 8601
+__version__ = '2022-01-27'  # ISO 8601
 
 import argparse
 import asyncore
@@ -339,7 +339,7 @@ class OAuth2Helper:
                   'access_type': 'offline'}
         param_pairs = []
         for param in params:
-            param_pairs.append('%s=%s' % (param[0], OAuth2Helper.oauth2_url_escape(param[1])))
+            param_pairs.append('%s=%s' % (param, OAuth2Helper.oauth2_url_escape(params[param])))
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
