@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-01-27'  # ISO 8601
+__version__ = '2022-02-07'  # ISO 8601
 
 import argparse
 import asyncore
@@ -614,7 +614,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
         str_data_lower = str_data.lower()
 
-        # intercept EHLO so we can add STARTTLS (in parent class)
+        # intercept EHLO so we can add STARTTLS (in server connection class)
         if self.server_connection.ehlo is None and self.custom_configuration['starttls']:
             if str_data_lower.startswith('ehlo') or str_data_lower.startswith('helo'):
                 self.server_connection.ehlo = str_data  # save the command so we can replay later from the server side
@@ -692,7 +692,7 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         new_socket = socket.socket(socket_family, socket_type)
         new_socket.setblocking(True)
 
-        # connections can either be wrapped via the STARTTLS command, or SSL from the start
+        # connections can either be upgraded (wrapped) after setup via the STARTTLS command, or secure from the start
         if self.custom_configuration['starttls']:
             self.set_socket(new_socket)
         else:
@@ -880,8 +880,11 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.client_connections = []
 
     def info_string(self):
-        return '%s server at %s:%d proxying %s:%d' % (self.proxy_type, self.local_address[0], self.local_address[1],
-                                                      self.server_address[0], self.server_address[1])
+        secure = self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']
+        return '%s server at %s:%d (%s) proxying %s:%d (%s)' % (
+            self.proxy_type, self.local_address[0], self.local_address[1], 'TLS' if secure else 'unsecured',
+            self.server_address[0], self.server_address[1],
+            'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS')
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
@@ -926,6 +929,19 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.set_reuse_addr()
         self.bind(self.local_address)
         self.listen(1)
+
+    def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
+        if self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']:
+            new_socket = socket.socket(socket_family, socket_type)
+            new_socket.setblocking(False)
+
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(
+                certfile=self.custom_configuration['local_certificate_path'],
+                keyfile=self.custom_configuration['local_key_path'])
+            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True))
+        else:
+            super().create_socket(socket_family, socket_type)
 
     def remove_client(self, client):
         if client in self.client_connections:  # remove closed clients
@@ -1197,7 +1213,9 @@ class App:
     @staticmethod
     def edit_config():
         if sys.platform == 'darwin':
-            os.system('open %s' % CONFIG_FILE_PATH)
+            result = os.system('open %s' % CONFIG_FILE_PATH)
+            if result != 0:  # no default editor found for this file type; open as a text file
+                os.system('open -t %s' % CONFIG_FILE_PATH)
         elif sys.platform == 'win32':
             os.startfile(CONFIG_FILE_PATH)
         elif sys.platform.startswith('linux'):
@@ -1490,7 +1508,9 @@ class App:
                 break
 
             custom_configuration = {
-                'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False
+                'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False,
+                'local_certificate_path': config.get(section, 'local_certificate_path', fallback=None),
+                'local_key_path': config.get(section, 'local_key_path', fallback=None)
             }
 
             if server_address:  # all other values are checked, regex matched or have a fallback above

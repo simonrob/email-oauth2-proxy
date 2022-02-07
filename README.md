@@ -13,7 +13,7 @@ You can remove details from the sample configuration file for services you don't
 
 Next, from a terminal, install the script's requirements: `python3 -m pip install -r requirements.txt`, and start the proxy: `python3 emailproxy.py` – a menu bar/taskbar icon should appear. If instead of the icon you see an error in the terminal, it is likely that your system is missing dependencies for the `pywebview` or `pystray` packages. See the [Dependencies and setup](https://github.com/simonrob/email-oauth2-proxy#dependencies-and-setup) section below to resolve this. Once any missing dependencies have been installed, starting the proxy should create a menu bar icon.
 
-Finally, open your email client and configure your account's server details to match the ones you set in the proxy's configuration file. For example, using the sample Office 365 details, this would be `localhost` on port `1993` for IMAP and `localhost` on port `1587` for SMTP. The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is secured (SSL for IMAP; SSL or STARTTLS for SMTP).
+Finally, open your email client and configure your account's server details to match the ones you set in the proxy's configuration file. For example, using the sample Office 365 details, this would be `localhost` on port `1993` for IMAP and `localhost` on port `1587` for SMTP. The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is secured (implicit SSL/TLS for IMAP; implicit or explicit (STARTTLS) SSL/TLS for SMTP).
 
 The first time your email client makes a request you should see a notification from the proxy about authorising your account. (Note that the notification is not itself clickable, but pull requests to improve this are very welcome). Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup browser window that appears. The window will close itself once the process is complete.
 
@@ -23,7 +23,9 @@ After successful authentication and authorisation you should have IMAP/SMTP acce
 ## Starting the proxy automatically
 The simplest way to start the proxy automatically is to click its menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the script, configuring it to run each time you log in. A different approach is used to achieve this depending on whether you are using macOS, Windows or Linux.
 
-On macOS, if you stop the proxy's service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`. On more recent macOS versions, you may find that you need to manually load the launch agent file the first time in order to trigger a permission prompt about python access. To do this, click `Start at login` from the app's menu bar icon, then run the unload command listed above followed by `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`. After this (and approving access via the permission prompt), the menu bar option should work as normal.
+On macOS, if you stop the proxy's service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon options, or using `launchctl unload ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`.
+
+On more recent macOS versions (10.14 and later), you may find that you need to manually load the proxy's launch agent in order to trigger a permission prompt when first running as a service. You will know if this is necessary if the proxy exits (rather than restarts) the first time you click `Start at login` from its menu bar icon. To resolve this, exit the proxy and then run `launchctl start ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist` from a terminal. A permission pop-up should appear requesting access for python. Once this has been approved, the proxy's menu bar icon will appear as normal (though you may need to run the command again). In some cases — particularly when running the proxy in a python virtual environment — the permission prompt does not appear. If this happens it is worth first trying to `unload` and then `load` the service via `launchctl`. If this still does not cause the prompt to appear, the only currently-known resolution is to run the proxy outside of a virtual environment and manually grant Full Disk Access to your python executable via the privacy settings in the macOS System Preferences. You may also need to edit the proxy's launch agent plist file, which is found at the location given in the command above, to set the path to your python executable – it must be the real path rather than a symlink (the `readlink` command can help here). Fortunately this is a one-time fix, and once the proxy loads successfully via this method you will not need to adjust its startup configuration again (except perhaps when upgrading to a newer major macOS version, in which case just repeat the procedure).
 
 On Windows the auto-start functionality is achieved via a shortcut in your user account's startup folder. Pressing the Windows key and `r` and entering `shell:startup` (and then clicking OK) will open this folder – from here you can either double-click the `ac.robinson.email-oauth2-proxy.cmd` file to relaunch the proxy, or delete this file (either manually or by deselecting the option in the proxy's menu) to remove the script from your startup items.
 
@@ -64,11 +66,10 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 
 ## Potential improvements (pull requests welcome)
-- Full feature parity on different platforms (e.g., live menu updating)
+- Full feature parity on different platforms (e.g., live menu updating; suspend on sleep)
 - Testing with different providers (currently verified only with Office 365 and Gmail)
 - STARTTLS for IMAP?
 - POP3?
-- Encrypted local connections?
 - Package as .app/.exe etc?
 
 
