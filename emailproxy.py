@@ -1273,7 +1273,7 @@ class App:
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
         setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
-        authorisation_window.loaded += self.authorisation_window_loaded
+        authorisation_window.events.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
         if not sys.platform == 'darwin':
