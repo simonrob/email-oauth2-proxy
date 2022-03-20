@@ -35,6 +35,9 @@ import pystray
 import timeago
 import webview
 
+# get password
+from getpass import getpass
+
 # for drawing the menu bar icon
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
@@ -347,6 +350,12 @@ class OAuth2Helper:
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
         token_request = {'connection': connection_info, 'permission_url': permission_url,
                          'redirect_uri': redirect_uri, 'username': username, 'expired': False}
+        
+        if (connection_info=='manual-auth'):
+            print(token_request['permission_url'])
+            authorisation_code = input('code:')
+            return True, authorisation_code
+            
         REQUEST_QUEUE.put(token_request)
         wait_time = 0
         while True:
@@ -1067,10 +1076,21 @@ class App:
                                                                  'interaction to the system log')
         parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
                                                                          'rather than within this script')
+        parser.add_argument('--manual-auth', action='store_true', help='manual authentication')
+
         self.args = parser.parse_args()
         if self.args.debug:
             global VERBOSE
             VERBOSE = True
+            
+        if self.args.manual_auth:
+            print("Manual authentication")
+            user=input('user:')
+            password=getpass('pass:')
+            (success, result) = OAuth2Helper.get_oauth2_credentials(user, password, 'manual-auth')
+            if success:
+                 print("Success")
+            os._exit(0)
 
         self.init_platforms()
 
@@ -1273,7 +1293,7 @@ class App:
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
         setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
-        authorisation_window.loaded += self.authorisation_window_loaded
+        authorisation_window.events.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
         if not sys.platform == 'darwin':
