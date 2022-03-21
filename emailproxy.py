@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-02-07'  # ISO 8601
+__version__ = '2022-03-21'  # ISO 8601
 
 import argparse
 import asyncore
@@ -31,6 +31,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+import pkg_resources
 import pystray
 import timeago
 import webview
@@ -1084,7 +1085,13 @@ class App:
             self.load_and_start_servers(self.icon)
         else:
             self.icon = self.create_icon()
-            self.icon.run(self.post_create)
+            try:
+                self.icon.run(self.post_create)
+            except NotImplementedError:
+                Log.info('Error initialising icon - did you mean to run in --no-gui mode?')
+                self.exit(None)
+                # noinspection PyProtectedMember
+                self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
 
     # noinspection PyUnresolvedReferences
     def init_platforms(self):
@@ -1273,7 +1280,13 @@ class App:
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
         setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
-        authorisation_window.loaded += self.authorisation_window_loaded
+
+        # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
+        if pkg_resources.parse_version(
+                pkg_resources.get_distribution('pywebview').version) < pkg_resources.parse_version('3.6'):
+            authorisation_window.loaded += self.authorisation_window_loaded
+        else:
+            authorisation_window.events.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
         if not sys.platform == 'darwin':
@@ -1544,6 +1557,9 @@ class App:
         return True
 
     def post_create(self, icon):
+        if EXITING:
+            return  # to handle launch in pystray 'dummy' mode without --no-gui option (partial initialisation failure)
+
         icon.visible = True
 
         if not self.load_and_start_servers(icon):
