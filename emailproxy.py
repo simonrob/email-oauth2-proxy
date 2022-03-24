@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-21'  # ISO 8601
+__version__ = '2022-03-24'  # ISO 8601
 
 import argparse
 import asyncore
@@ -906,6 +906,9 @@ class OAuth2Proxy(asyncore.dispatcher):
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
                 Log.info(error_text)
+                if sys.platform == 'darwin':
+                    Log.info('If you repeatedly encounter this error, please check that you have correctly configured '
+                             'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
         else:
@@ -1471,15 +1474,25 @@ class App:
         global VERBOSE
         VERBOSE = not item.checked
 
+    # noinspection PyUnresolvedReferences
     def notify(self, title, text):
         if self.icon and self.icon.HAS_NOTIFICATION:
             self.icon.remove_notification()
             self.icon.notify('%s: %s' % (title, text))
+
         elif sys.platform == 'darwin':
-            for replacement in (('\\', '\\\\'), ('"', '\\"')):  # direct use of osascript requires a bit of sanitisation
-                text = text.replace(*replacement)
-                title = title.replace(*replacement)
-            os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+            user_notification = AppKit.NSUserNotification.alloc().init()
+            user_notification.setTitle_(title)
+            user_notification.setInformativeText_(text)
+            notification_centre = AppKit.NSUserNotificationCenter.defaultUserNotificationCenter()
+            try:
+                notification_centre.deliverNotification_(user_notification)
+            except Exception:
+                for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires a bit of sanitisation
+                    text = text.replace(*replacement)
+                    title = title.replace(*replacement)
+                os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+
         else:
             Log.info(title, text)  # last resort
 

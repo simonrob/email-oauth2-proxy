@@ -52,7 +52,7 @@ Please note that debug mode may also result in your login credentials being prin
 It is often helpful to be able to view the raw connection details when debugging (i.e., without using your email client). This can be achieved using `telnet` on macOS/Linux, or [Putty](https://www.chiark.greenend.org.uk/~sgtatham/putty/) on Windows. For example, to test the Office 365 IMAP server from the [example configuration](emailproxy.config), first open a connection using `telnet localhost 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant). If you have already authorised your account with the proxy you should see a response starting with `a1 OK LOGIN`; if not, this command should trigger a notification from the proxy about authorising your account.
 
 ### Dependencies and setup
-On macOS the setup and installation instructions above should automatically install all required dependencies. Any error messages you may encounter (for example, with your `pip` version and `cryptograpy`, or `pillow` and `imagingft` dependencies) normally point to clear explanations of how to resolve these issues. Please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) if you encounter any other problems here.
+On macOS the setup and installation instructions above should automatically install all required dependencies. Any error messages you may encounter (for example, with your `pip` version and `cryptograpy`, or `pillow` and `imagingft` dependencies, or [macOS SSL failures](https://github.com/simonrob/email-oauth2-proxy/issues/14#issuecomment-1077379254)) normally give clear explanations of the issues and point to instructions for resolving these problems. Please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) if you encounter any other problems here.
 
 When first launching on Linux you may encounter errors similar to `Namespace […] not available`. This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and login windows. See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) page and [issue 1](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) in this repository for a summary and suggestions about how to resolve this.
 
@@ -68,6 +68,7 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 ## Potential improvements (pull requests welcome)
 - Full feature parity on different platforms (e.g., live menu updating; suspend on sleep)
 - Testing with different providers (currently verified only with Office 365 and Gmail)
+- Clickable account authorisation notifications
 - STARTTLS for IMAP?
 - POP3?
 - Package as .app/.exe etc?
