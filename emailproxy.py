@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-22'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-03-25'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -360,8 +360,8 @@ class OAuth2Helper:
                                                                    RedirectionReceiverWSGIApplication(),
                                                                    handler_class=LoggingWSGIRequestHandler)
             token_request['local_server_auth_wsgi'] = redirection_server
-            Log.info('Please vist the following URL to authenticate account %s:' % token_request['username'],
-                     token_request['permission_url'])
+            Log.info('Please visit the following URL to authenticate account %s: %s' %
+                     (token_request['username'], token_request['permission_url']))
             redirection_server.handle_request()
             redirection_server.server_close()
 
@@ -959,6 +959,9 @@ class OAuth2Proxy(asyncore.dispatcher):
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
                 Log.info(error_text)
+                if sys.platform == 'darwin':
+                    Log.info('If you encounter this error repeatedly, please check that you have correctly configured '
+                             'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
         else:
@@ -1529,17 +1532,32 @@ class App:
         global VERBOSE
         VERBOSE = not item.checked
 
+    # noinspection PyUnresolvedReferences
     def notify(self, title, text):
-        if self.icon and self.icon.HAS_NOTIFICATION:
-            self.icon.remove_notification()
-            self.icon.notify('%s: %s' % (title, text))
-        elif sys.platform == 'darwin':
-            for replacement in (('\\', '\\\\'), ('"', '\\"')):  # direct use of osascript requires a bit of sanitisation
-                text = text.replace(*replacement)
-                title = title.replace(*replacement)
-            os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+        if self.icon:
+            if self.icon.HAS_NOTIFICATION:
+                self.icon.remove_notification()
+                self.icon.notify('%s: %s' % (title, text))
+
+            elif sys.platform == 'darwin':
+                user_notification = AppKit.NSUserNotification.alloc().init()
+                user_notification.setTitle_(title)
+                user_notification.setInformativeText_(text)
+                notification_centre = AppKit.NSUserNotificationCenter.defaultUserNotificationCenter()
+
+                # noinspection PyBroadException
+                try:
+                    notification_centre.deliverNotification_(user_notification)
+                except Exception:
+                    for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
+                        text = text.replace(*replacement)
+                        title = title.replace(*replacement)
+                    os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+
+            else:
+                Log.info(title, text)  # last resort
         else:
-            Log.info(title, text)  # last resort
+            Log.info(title, text)
 
     def stop_servers(self):
         global RESPONSE_QUEUE
@@ -1635,6 +1653,8 @@ class App:
                     if self.args.local_server_auth:
                         data['local_server_auth'] = True
                         RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                        self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
+                                    data['username'])
                     else:
                         self.authorisation_requests.append(data)
                         self.icon.update_menu()  # force refresh the menu
