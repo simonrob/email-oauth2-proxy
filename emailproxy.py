@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-24'  # ISO 8601
+__version__ = '2022-03-25'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -30,6 +30,8 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
+import wsgiref.simple_server
+import wsgiref.util
 
 import pkg_resources
 import pystray
@@ -334,6 +336,48 @@ class OAuth2Helper:
         return urllib.parse.unquote(text)
 
     @staticmethod
+    def start_redirection_receiver_server(token_request):
+        """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
+        parsed_uri = urllib.parse.urlparse(token_request['redirect_uri'])
+        Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
+            parsed_uri.hostname, parsed_uri.port))
+
+        class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
+            def log_message(self, format_string, *args):
+                Log.debug('Local server auth mode (%s:%d): received authentication response' % (
+                    parsed_uri.hostname, parsed_uri.port), *args)
+
+        class RedirectionReceiverWSGIApplication:
+            def __call__(self, environ, start_response):
+                start_response('200 OK', [('Content-type', 'text/plain; charset=utf-8')])
+                token_request['response_url'] = wsgiref.util.request_uri(environ)
+                return [('%s successfully authenticated account %s. You can now close this window.' % (
+                    APP_NAME, token_request['username'])).encode('utf-8')]
+
+        try:
+            wsgiref.simple_server.WSGIServer.allow_reuse_address = False
+            redirection_server = wsgiref.simple_server.make_server(parsed_uri.hostname, parsed_uri.port,
+                                                                   RedirectionReceiverWSGIApplication(),
+                                                                   handler_class=LoggingWSGIRequestHandler)
+            token_request['local_server_auth_wsgi'] = redirection_server
+            Log.info('Please visit the following URL to authenticate account %s: %s' %
+                     (token_request['username'], token_request['permission_url']))
+            redirection_server.handle_request()
+            redirection_server.server_close()
+
+            Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
+                parsed_uri.hostname, parsed_uri.port), token_request['response_url'])
+            del token_request['local_server_auth']
+            del token_request['local_server_auth_wsgi']
+            RESPONSE_QUEUE.put(token_request)
+
+        except socket.error:
+            Log.debug('Local server auth mode (%s:%d): error; unable to start local server. Please check that the '
+                      'redirect_uri for account %s is correct and not already in use. When using this mode, the '
+                      'redirect_uri for each account must also be unique (e.g., a different port per account)' % (
+                          parsed_uri.hostname, parsed_uri.port, token_request['username']))
+
+    @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope):
         """Constructs and returns the URL to request permission for this client to access the given scope"""
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
@@ -359,6 +403,8 @@ class OAuth2Helper:
                     continue
                 else:
                     token_request['expired'] = True
+                    if 'local_server_auth_wsgi' in token_request:
+                        token_request['local_server_auth_wsgi'].server_close()
                     REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
                     return False, None
 
@@ -367,12 +413,19 @@ class OAuth2Helper:
                 return False, None
 
             elif data['connection'] == connection_info:  # found an authentication response meant for us
-                if data['response_url'] and 'code=' in data['response_url']:
-                    authorisation_code = OAuth2Helper.oauth2_url_unescape(
-                        data['response_url'].split('code=')[1].split('&')[0])
-                    if authorisation_code:
-                        return True, authorisation_code
-                return False, None
+                # to improve non-GUI mode we also support the use of a local server to receive the OAuth redirection
+                # (note: not enabled by default because GUI mode is typically unattended, but useful in some cases)
+                if 'local_server_auth' in data:
+                    threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
+                                     name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
+
+                else:
+                    if 'response_url' in data and 'code=' in data['response_url']:
+                        authorisation_code = OAuth2Helper.oauth2_url_unescape(
+                            data['response_url'].split('code=')[1].split('&')[0])
+                        if authorisation_code:
+                            return True, authorisation_code
+                    return False, None
 
             else:  # not for this thread - put back into queue
                 RESPONSE_QUEUE.put(data)
@@ -444,7 +497,7 @@ class OAuth2Helper:
             return bytes_username.decode('utf-8'), bytes_password.decode('utf-8')
         except (ValueError, binascii.Error):
             # ValueError is from incorrect number of arguments; binascii.Error from incorrect encoding
-            return '', ''  # no or invalid credentials provided
+            return '', ''  # no (or invalid) credentials provided
 
 
 class OAuth2ClientConnection(asyncore.dispatcher_with_send):
@@ -907,7 +960,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
                 Log.info(error_text)
                 if sys.platform == 'darwin':
-                    Log.info('If you repeatedly encounter this error, please check that you have correctly configured '
+                    Log.info('If you encounter this error repeatedly, please check that you have correctly configured '
                              'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
@@ -1065,10 +1118,15 @@ class App:
         Log.initialise()
 
         parser = argparse.ArgumentParser(description=APP_NAME)
-        parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
-                                                                  'account authorisation requests will fail)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
+        parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
+                                                                  'account authorisation requests will fail unless '
+                                                                  'a pre-authorised configuration file is used, or you '
+                                                                  'enable --local-server-auth and monitor log output')
+        parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
+                                                                             'URLs to the log and starting a local web '
+                                                                             'server on demand to receive responses')
         parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
                                                                          'rather than within this script')
         self.args = parser.parse_args()
@@ -1104,7 +1162,7 @@ class App:
             info['LSUIElement'] = '1'
 
             # track shutdown/sleep/wake events and stop/start servers appropriately (also saving activity+configuration)
-            # note: no need to manually remove this observer after OS X 10.11 (https://developer.apple.com/library
+            # note: no need to explicitly remove this observer after OS X 10.11 (https://developer.apple.com/library
             # /archive/releasenotes/Foundation/RN-FoundationOlderNotes/index.html#10_11NotificationCenter)
             notification_centre = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
             notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
@@ -1476,25 +1534,30 @@ class App:
 
     # noinspection PyUnresolvedReferences
     def notify(self, title, text):
-        if self.icon and self.icon.HAS_NOTIFICATION:
-            self.icon.remove_notification()
-            self.icon.notify('%s: %s' % (title, text))
+        if self.icon:
+            if self.icon.HAS_NOTIFICATION:
+                self.icon.remove_notification()
+                self.icon.notify('%s: %s' % (title, text))
 
-        elif sys.platform == 'darwin':
-            user_notification = AppKit.NSUserNotification.alloc().init()
-            user_notification.setTitle_(title)
-            user_notification.setInformativeText_(text)
-            notification_centre = AppKit.NSUserNotificationCenter.defaultUserNotificationCenter()
-            try:
-                notification_centre.deliverNotification_(user_notification)
-            except Exception:
-                for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires a bit of sanitisation
-                    text = text.replace(*replacement)
-                    title = title.replace(*replacement)
-                os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+            elif sys.platform == 'darwin':
+                user_notification = AppKit.NSUserNotification.alloc().init()
+                user_notification.setTitle_(title)
+                user_notification.setInformativeText_(text)
+                notification_centre = AppKit.NSUserNotificationCenter.defaultUserNotificationCenter()
 
+                # noinspection PyBroadException
+                try:
+                    notification_centre.deliverNotification_(user_notification)
+                except Exception:
+                    for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
+                        text = text.replace(*replacement)
+                        title = title.replace(*replacement)
+                    os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+
+            else:
+                Log.info(title, text)  # last resort
         else:
-            Log.info(title, text)  # last resort
+            Log.info(title, text)
 
     def stop_servers(self):
         global RESPONSE_QUEUE
@@ -1585,10 +1648,17 @@ class App:
                 break
             else:
                 if not data['expired']:
-                    Log.info('Authorisation request received for', data['username'])
-                    self.authorisation_requests.append(data)
-                    self.icon.update_menu()  # force refresh the menu
-                    self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
+                    Log.info('Authorisation request received for', data['username'],
+                             '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
+                    if self.args.local_server_auth:
+                        data['local_server_auth'] = True
+                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                        self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
+                                    data['username'])
+                    else:
+                        self.authorisation_requests.append(data)
+                        self.icon.update_menu()  # force refresh the menu
+                        self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
                 else:
                     for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
                         if request['connection'] == data['connection']:
