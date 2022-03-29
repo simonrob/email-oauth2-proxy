@@ -543,32 +543,35 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         else:
             try:
                 self.receive_buffer += byte_data
+                complete_lines = b''
                 while True:
                     terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
                     if terminator_index != -1:
                         split_position = terminator_index + LINE_TERMINATOR_LENGTH
-                        byte_data = self.receive_buffer[:split_position]
+                        complete_lines += self.receive_buffer[:split_position]
                         self.receive_buffer = self.receive_buffer[split_position:]
-
-                        # try to remove credentials from logged data - both inline (via regex) and as separate requests
-                        if self.censor_next_log:
-                            log_data = CENSOR_MESSAGE
-                            self.censor_next_log = False
-                        else:
-                            # IMAP LOGIN command with inline username/password, and IMAP/SMTP AUTH(ENTICATE) command
-                            log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data,
-                                              flags=re.IGNORECASE)
-                            log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
-                                              b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
-                                              flags=re.IGNORECASE)
-
-                        Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
-                        self.process_data(byte_data)
                     else:
-                        return  # wait for more data
-            except BlockingIOError as e:
+                        break
+
+                if complete_lines:
+                    # try to remove credentials from logged data - both inline (via regex) and as separate requests
+                    if self.censor_next_log:
+                        log_data = CENSOR_MESSAGE
+                        self.censor_next_log = False
+                    else:
+                        # IMAP LOGIN command with inline username/password, and IMAP/SMTP AUTH(ENTICATE) command
+                        log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE,
+                                          complete_lines, flags=re.IGNORECASE)
+                        log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
+                                          b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
+                                          flags=re.IGNORECASE)
+
+                    Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
+                    self.process_data(complete_lines)
+
+            except BlockingIOError:
                 return
-            except OSError as e:
+            except OSError:
                 self.handle_error()
                 return
 
@@ -800,20 +803,23 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         else:
             try:
                 self.receive_buffer += byte_data
+                complete_lines = b''
                 while True:
                     terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
                     if terminator_index != -1:
                         split_position = terminator_index + LINE_TERMINATOR_LENGTH
-                        byte_data = self.receive_buffer[:split_position]
+                        complete_lines += self.receive_buffer[:split_position]
                         self.receive_buffer = self.receive_buffer[split_position:]
-
-                        Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # (log before our edits)
-                        self.process_data(byte_data)
                     else:
-                        return  # wait for more data
-            except BlockingIOError as e:
+                        break
+
+                if complete_lines:
+                    Log.debug(self.proxy_type, self.connection_info, '    <--', complete_lines)  # (log before edits)
+                    self.process_data(complete_lines)
+
+            except BlockingIOError:
                 return
-            except OSError as e:
+            except OSError:
                 self.handle_error()
                 return
 
