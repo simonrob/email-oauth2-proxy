@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-25'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-03-29'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -65,10 +65,12 @@ CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
 
-# maximum number of bytes to read from the socket at a time (limit is per socket) - note that we assume clients send one
-# line at once (at least during the authentication phase), and we don't handle clients that flush the connection after
-# each individual character (e.g., the inbuilt Windows telnet client)
+# maximum number of bytes to read from the socket at a time (limit is per socket)
 RECEIVE_BUFFER_SIZE = 65536
+
+# IMAP and SMTP require \r\n as a line terminator (we use lines only pre-authentication; afterwards just pass through)
+LINE_TERMINATOR = b'\r\n'
+LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 
 # seconds to wait before cancelling authentication requests (i.e., the user has this long to log in) - note that the
 # actual server timeout is often around 60 seconds, so the connection may be closed in the background and immediately
@@ -507,6 +509,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
                  custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, connection, map=socket_map)
+        self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.server_connection = server_connection
@@ -520,7 +523,6 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         pass
 
     def handle_read(self):
-        # note: we don't handle clients that send one character at a time (e.g., inbuilt Windows telnet client)
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
 
         # client is established after server; this state should not happen unless already closing
@@ -531,26 +533,44 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             self.close()
             return
 
-        # we have already authenticated - nothing to do; just pass data directly to server (slightly more involved
-        # than the server connection because we censor commands that contain passwords or authentication tokens)
+        # we have already authenticated - nothing to do; just pass data directly to server
         if self.authenticated:
             Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)
             OAuth2ClientConnection.process_data(self, byte_data)
 
+        # if not authenticated, buffer incoming data and process line-by-line (slightly more involved than the server
+        # connection because we censor commands that contain passwords or authentication tokens)
         else:
-            # try to remove credentials from logged data - both inline (via regex) and those as a separate request
-            if self.censor_next_log:
-                log_data = CENSOR_MESSAGE
-                self.censor_next_log = False
-            else:
-                # IMAP LOGIN command with username/password in plain text inline, and IMAP/SMTP AUTH(ENTICATE) command
-                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data,
-                                  flags=re.IGNORECASE)
-                log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
-                                  b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
+            try:
+                self.receive_buffer += byte_data
+                while True:
+                    terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                    if terminator_index != -1:
+                        split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                        byte_data = self.receive_buffer[:split_position]
+                        self.receive_buffer = self.receive_buffer[split_position:]
 
-            Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
-            self.process_data(byte_data)
+                        # try to remove credentials from logged data - both inline (via regex) and as separate requests
+                        if self.censor_next_log:
+                            log_data = CENSOR_MESSAGE
+                            self.censor_next_log = False
+                        else:
+                            # IMAP LOGIN command with inline username/password, and IMAP/SMTP AUTH(ENTICATE) command
+                            log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data,
+                                              flags=re.IGNORECASE)
+                            log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
+                                              b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
+                                              flags=re.IGNORECASE)
+
+                        Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
+                        self.process_data(byte_data)
+                    else:
+                        return  # wait for more data
+            except BlockingIOError as e:
+                return
+            except OSError as e:
+                self.handle_error()
+                return
 
     def process_data(self, byte_data, censor_server_log=False):
         self.server_connection.send(byte_data, censor_server_log)  # by default just send everything straight to server
@@ -726,6 +746,7 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
     def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, map=socket_map)  # note: establish connection later due to STARTTLS
+        self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.client_connection = None
@@ -754,7 +775,6 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
 
     def handle_read(self):
-        # note: we don't handle servers that send one character at a time (no known instances, but see client side note)
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
 
         # data received before client is connected (or after client has disconnected) - ignore
@@ -775,9 +795,27 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
                     config = AppConfig.get()
                     config.set(self.authenticated_username, 'last_activity', str(activity_time))
                     self.last_activity = activity_time
+
+        # if not authenticated, buffer incoming data and process line-by-line
         else:
-            Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # command received before editing
-            self.process_data(byte_data)
+            try:
+                self.receive_buffer += byte_data
+                while True:
+                    terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                    if terminator_index != -1:
+                        split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                        byte_data = self.receive_buffer[:split_position]
+                        self.receive_buffer = self.receive_buffer[split_position:]
+
+                        Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # (log before our edits)
+                        self.process_data(byte_data)
+                    else:
+                        return  # wait for more data
+            except BlockingIOError as e:
+                return
+            except OSError as e:
+                self.handle_error()
+                return
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
