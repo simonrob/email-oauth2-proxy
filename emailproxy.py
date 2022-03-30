@@ -522,8 +522,18 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def handle_connect(self):
         pass
 
+    def get_data(self):
+        try:
+            byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+            return byte_data
+        except BlockingIOError:
+            return
+        except OSError:
+            self.handle_error()
+            return
+
     def handle_read(self):
-        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+        byte_data = self.get_data()
 
         # client is established after server; this state should not happen unless already closing
         if not self.server_connection:
@@ -541,39 +551,32 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         # if not authenticated, buffer incoming data and process line-by-line (slightly more involved than the server
         # connection because we censor commands that contain passwords or authentication tokens)
         else:
-            try:
-                self.receive_buffer += byte_data
-                complete_lines = b''
-                while True:
-                    terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
-                    if terminator_index != -1:
-                        split_position = terminator_index + LINE_TERMINATOR_LENGTH
-                        complete_lines += self.receive_buffer[:split_position]
-                        self.receive_buffer = self.receive_buffer[split_position:]
-                    else:
-                        break
+            self.receive_buffer += byte_data
+            complete_lines = b''
+            while True:
+                terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                if terminator_index != -1:
+                    split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                    complete_lines += self.receive_buffer[:split_position]
+                    self.receive_buffer = self.receive_buffer[split_position:]
+                else:
+                    break
 
-                if complete_lines:
-                    # try to remove credentials from logged data - both inline (via regex) and as separate requests
-                    if self.censor_next_log:
-                        log_data = CENSOR_MESSAGE
-                        self.censor_next_log = False
-                    else:
-                        # IMAP LOGIN command with inline username/password, and IMAP/SMTP AUTH(ENTICATE) command
-                        log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE,
-                                          complete_lines, flags=re.IGNORECASE)
-                        log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
-                                          b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
-                                          flags=re.IGNORECASE)
+            if complete_lines:
+                # try to remove credentials from logged data - both inline (via regex) and as separate requests
+                if self.censor_next_log:
+                    log_data = CENSOR_MESSAGE
+                    self.censor_next_log = False
+                else:
+                    # IMAP LOGIN command with inline username/password, and IMAP/SMTP AUTH(ENTICATE) command
+                    log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE,
+                                      complete_lines, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
+                                      b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
+                                      flags=re.IGNORECASE)
 
-                    Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
-                    self.process_data(complete_lines)
-
-            except BlockingIOError:
-                return
-            except OSError:
-                self.handle_error()
-                return
+                Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
+                self.process_data(complete_lines)
 
     def process_data(self, byte_data, censor_server_log=False):
         self.server_connection.send(byte_data, censor_server_log)  # by default just send everything straight to server
@@ -777,8 +780,18 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             ssl_context = ssl.create_default_context()
             self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
 
+    def get_data(self):
+        try:
+            byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+            return byte_data
+        except BlockingIOError:
+            return
+        except OSError:
+            self.handle_error()
+            return
+
     def handle_read(self):
-        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+        byte_data = self.get_data()
 
         # data received before client is connected (or after client has disconnected) - ignore
         if not self.client_connection:
@@ -801,27 +814,20 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
         # if not authenticated, buffer incoming data and process line-by-line
         else:
-            try:
-                self.receive_buffer += byte_data
-                complete_lines = b''
-                while True:
-                    terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
-                    if terminator_index != -1:
-                        split_position = terminator_index + LINE_TERMINATOR_LENGTH
-                        complete_lines += self.receive_buffer[:split_position]
-                        self.receive_buffer = self.receive_buffer[split_position:]
-                    else:
-                        break
+            self.receive_buffer += byte_data
+            complete_lines = b''
+            while True:
+                terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                if terminator_index != -1:
+                    split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                    complete_lines += self.receive_buffer[:split_position]
+                    self.receive_buffer = self.receive_buffer[split_position:]
+                else:
+                    break
 
-                if complete_lines:
-                    Log.debug(self.proxy_type, self.connection_info, '    <--', complete_lines)  # (log before edits)
-                    self.process_data(complete_lines)
-
-            except BlockingIOError:
-                return
-            except OSError:
-                self.handle_error()
-                return
+            if complete_lines:
+                Log.debug(self.proxy_type, self.connection_info, '    <--', complete_lines)  # (log before edits)
+                self.process_data(complete_lines)
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
