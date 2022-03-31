@@ -5,6 +5,14 @@ An IMAP/SMTP proxy that transparently adds OAuth 2.0 authentication for client a
 ## Motivation and capabilities
 Many email services that provide IMAP/SMTP access require the use of OAuth 2.0 to authenticate the connection, but not all clients support this method. This script creates a simple local proxy that intercepts the standard IMAP/SMTP authentication commands and transparently replaces them with the appropriate (X)OAuth 2.0 commands and credentials. Your email client can continue to use the traditional `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence.
 
+### Example use-cases
+- You need to use an Office 365 email account, but don't get on with Outlook. The email client you like doesn't support OAuth2.
+- You currently use Gmail with your raw account credentials (i.e., username/password). You've received a notification that Google is disabling this access at the end of May 2022, but you don't want to use an [App Password](https://support.google.com/accounts/answer/185833) (or cannot enable this option).
+- You have an account already set up in an email client, but you need to switch it to OAuth2 authentication. You can edit the server details, but the client forces you to delete and re-add the account to enable OAuth2, and you don't want to do this.
+- You run a server with multiple services that use IMAP/SMTP, and you don't want to have to set up OAuth2 independently on each one.
+
+In all of these cases and more, this proxy script can help. Follow the instructions below to get started, and please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) with any problems or suggestions.
+
 
 ## Getting started
 After [downloading](https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip) the contents of this repository, start by editing the file `emailproxy.config` to add configuration details for each server and account you want to use with the proxy. [Documentation and example account configurations](emailproxy.config) are provided for Office 365 and Gmail, but you will need to register a new [Microsoft identity](https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app) or [Google API](https://developers.google.com/identity/protocols/oauth2/native-app) desktop app client (or use your existing desktop app's client ID and secret). Make sure your client is set up to use an OAuth scope that will give it permission to access IMAP/SMTP – see the sample configuration file for examples.
