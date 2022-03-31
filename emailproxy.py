@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-29'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-03-30'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -1193,7 +1193,7 @@ class App:
 
         if self.args.no_gui:
             self.icon = None
-            self.load_and_start_servers(self.icon)
+            self.post_create(None)
         else:
             self.icon = self.create_icon()
             try:
@@ -1674,19 +1674,18 @@ class App:
             self.exit(icon)
             return False
 
-        if self.icon:
-            self.icon.update_menu()  # force refresh the menu to show running proxy servers
+        if icon:
+            icon.update_menu()  # force refresh the menu to show running proxy servers
 
-        # use a daemon thread only if we have an icon to ensure that we don't just exit on startup when in no-gui mode
-        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main',
-                         daemon=True if self.icon else False).start()
+        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
         return True
 
     def post_create(self, icon):
         if EXITING:
             return  # to handle launch in pystray 'dummy' mode without --no-gui option (partial initialisation failure)
 
-        icon.visible = True
+        if icon:
+            icon.visible = True
 
         if not self.load_and_start_servers(icon):
             return
@@ -1705,9 +1704,9 @@ class App:
                         RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
                         self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
                                     data['username'])
-                    else:
+                    elif icon:
                         self.authorisation_requests.append(data)
-                        self.icon.update_menu()  # force refresh the menu
+                        icon.update_menu()  # force refresh the menu
                         self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
                 else:
                     for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
