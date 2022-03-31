@@ -526,20 +526,22 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             byte_data = self.recv(RECEIVE_BUFFER_SIZE)
             return byte_data
-        except BlockingIOError:
+        except ssl.SSLWantReadError:
+            Log.info(
+                'Warning: ignoring client-side SSLWantReadError (see github.com/simonrob/email-oauth2-proxy/issues/9)')
             return
         except OSError:
             self.handle_error()
-            return
 
     def handle_read(self):
         byte_data = self.get_data()
+        if not byte_data:
+            return
 
         # client is established after server; this state should not happen unless already closing
         if not self.server_connection:
-            if byte_data:
-                Log.debug(self.proxy_type, self.connection_info,
-                          'Data received without server connection - ignoring and closing:', byte_data)
+            Log.debug(self.proxy_type, self.connection_info,
+                      'Data received without server connection - ignoring and closing:', byte_data)
             self.close()
             return
 
@@ -788,16 +790,16 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             return
         except OSError:
             self.handle_error()
-            return
 
     def handle_read(self):
         byte_data = self.get_data()
+        if not byte_data:
+            return
 
         # data received before client is connected (or after client has disconnected) - ignore
         if not self.client_connection:
-            if byte_data:
-                Log.debug(self.proxy_type, self.connection_info, 'Data received without client connection - ignoring:',
-                          byte_data)
+            Log.debug(self.proxy_type, self.connection_info, 'Data received without client connection - ignoring:',
+                      byte_data)
             return
 
         # we have already authenticated - nothing to do; just pass data directly to client, ignoring overridden method
