@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2021 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-30'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-03-31'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -97,17 +97,19 @@ EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-
     <p style="margin-top:0">Click the following link to open your browser and approve the request:</p>
     <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a></p>
     <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the 
-    resulting URL from the browser's address bar using the box below to allow the %s script to transparently handle 
-    login requests on your behalf in future.</p>
+    resulting URL from the browser's address bar using the box below to allow the %s script to transparently 
+    handle login requests on your behalf in future.</p>
     <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after 
-    successfully logging in, but the final URL is the only important part, and as long as this begins with the correct 
-    redirection URI and contains a valid authorisation code your email client's request will succeed.</p>
+    successfully logging in, but the final URL is the only important part, and as long as this begins with the  
+    correct redirection URI and contains a valid authorisation code your email client's request will succeed.''' + (
+    ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p> 
     <p style="margin-top:2em">According to your %s configuration file, the expected final URL will be of the form:</p>
     <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
-    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); return false">
+    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); 
+    document.auth.submit.value='Submitting...'; document.auth.submit.disabled=true; return false">
     <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL: 
-    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px"><input type="submit" value="Submit">
-    </div></form></html>'''
+    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit" 
+    id="submit" value="Submit"></div></form></html>'''
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
 
