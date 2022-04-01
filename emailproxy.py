@@ -526,12 +526,10 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             byte_data = self.recv(RECEIVE_BUFFER_SIZE)
             return byte_data
-        except ssl.SSLWantReadError:
-            Log.info(
-                'Warning: ignoring client-side SSLWantReadError (see github.com/simonrob/email-oauth2-proxy/issues/9)')
-            return
-        except OSError:
-            self.handle_error()
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
+            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL recv error ' +
+                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
+            return None
 
     def handle_read(self):
         byte_data = self.get_data()
@@ -586,7 +584,17 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def send(self, byte_data):
         if not self.authenticated:  # after authentication these are identical to server-side logs (in process_data)
             Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
-        super().send(byte_data)
+        try:
+            super().send(byte_data)
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
+            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL send error ' +
+                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
+            while True:
+                try:
+                    super().send(byte_data)
+                    break
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                    time.sleep(1)
 
     def handle_close(self):
         Log.debug(self.proxy_type, self.connection_info, '--> [ Client disconnected ]')
@@ -782,17 +790,8 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             ssl_context = ssl.create_default_context()
             self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
 
-    def get_data(self):
-        try:
-            byte_data = self.recv(RECEIVE_BUFFER_SIZE)
-            return byte_data
-        except BlockingIOError:
-            return
-        except OSError:
-            self.handle_error()
-
     def handle_read(self):
-        byte_data = self.get_data()
+        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
         if not byte_data:
             return
 
@@ -949,7 +948,6 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     super().process_data(
                         b'535 5.7.8  Authentication credentials invalid. %s\r\n' % result.encode('utf-8'))
                     self.client_connection.close()
-                    return
 
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -1230,7 +1228,7 @@ class App:
     # noinspection PyUnresolvedReferences
     def macos_nsworkspace_notification_listener_(self, notification):
         notification_name = notification.name()
-        if notification_name in [AppKit.NSWorkspaceWillSleepNotification, AppKit.NSWorkspaceWillPowerOffNotification]:
+        if notification_name in (AppKit.NSWorkspaceWillSleepNotification, AppKit.NSWorkspaceWillPowerOffNotification):
             Log.info('Detected imminent workspace sleep or shutdown - saving configuration and stopping servers')
             AppConfig.save()
             self.stop_servers()
