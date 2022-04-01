@@ -2,9 +2,9 @@
 SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2021 Simon Robinson'
+__copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-03-31'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-04-01'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -341,8 +341,9 @@ class OAuth2Helper:
     def start_redirection_receiver_server(token_request):
         """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
         parsed_uri = urllib.parse.urlparse(token_request['redirect_uri'])
+        parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
         Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
-            parsed_uri.hostname, parsed_uri.port))
+            parsed_uri.hostname, parsed_port))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
             def log_message(self, format_string, *args):
@@ -358,7 +359,7 @@ class OAuth2Helper:
 
         try:
             wsgiref.simple_server.WSGIServer.allow_reuse_address = False
-            redirection_server = wsgiref.simple_server.make_server(parsed_uri.hostname, parsed_uri.port,
+            redirection_server = wsgiref.simple_server.make_server(parsed_uri.hostname, parsed_port,
                                                                    RedirectionReceiverWSGIApplication(),
                                                                    handler_class=LoggingWSGIRequestHandler)
             token_request['local_server_auth_wsgi'] = redirection_server
@@ -368,16 +369,19 @@ class OAuth2Helper:
             redirection_server.server_close()
 
             Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
-                parsed_uri.hostname, parsed_uri.port), token_request['response_url'])
+                parsed_uri.hostname, parsed_port), token_request['response_url'])
             del token_request['local_server_auth']
             del token_request['local_server_auth_wsgi']
             RESPONSE_QUEUE.put(token_request)
 
         except socket.error:
-            Log.debug('Local server auth mode (%s:%d): error; unable to start local server. Please check that the '
-                      'redirect_uri for account %s is correct and not already in use. When using this mode, the '
-                      'redirect_uri for each account must also be unique (e.g., a different port per account)' % (
-                          parsed_uri.hostname, parsed_uri.port, token_request['username']))
+            Log.info('Local server auth mode (%s:%d): error; unable to start local server. Please check that the '
+                     'redirect_uri for account %s is correct and not already in use. A port number should normally '
+                     'be specified (e.g., http://localhost:8080) unless you intend to use the implicit default port '
+                     '80, and the port number must be above 1023 (unless the proxy script is run via sudo). In '
+                     'addition, when using this mode, the redirect_uri value for each account must also be unique '
+                     '(e.g., a different port per account)' % (
+                         parsed_uri.hostname, parsed_port, token_request['username']))
 
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope):
@@ -1125,7 +1129,7 @@ class App:
         parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
                                                                   'account authorisation requests will fail unless '
                                                                   'a pre-authorised configuration file is used, or you '
-                                                                  'enable --local-server-auth and monitor log output')
+                                                                  'enable `--local-server-auth` and monitor log output')
         parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
                                                                              'URLs to the log and starting a local web '
                                                                              'server on demand to receive responses')
