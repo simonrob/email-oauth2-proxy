@@ -49,6 +49,8 @@ When starting the proxy there are several optional arguments that can be set to 
 
 `--local-server-auth` instructs the proxy to print account authorisation links to its log (i.e., `syslog`) and temporarily start an internal web server on demand to receive responses, rather than displaying a browser popup window or relying on any GUI interaction. This option is useful primarily in conjunction with the `--no-gui` option and some form of log monitoring. The `--external-auth` option is ignored in this mode.
 
+`--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load. If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
+
 `--debug` enables debug mode, printing more verbose output to the log as discussed in the next section. This argument is identical to enabling debug mode from the menu bar icon.
 
 

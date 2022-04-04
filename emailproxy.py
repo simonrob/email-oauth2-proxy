@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-04-01'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-04-04'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -20,6 +20,7 @@ import os
 import pathlib
 import plistlib
 import queue
+import signal
 import socket
 import ssl
 import re
@@ -59,8 +60,7 @@ APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup: --debug)
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces credentials; must be a byte-type string
 
-CONFIG_FILE_NAME = '%s.config' % APP_SHORT_NAME
-CONFIG_FILE_PATH = '%s/%s' % (os.path.dirname(os.path.realpath(__file__)), CONFIG_FILE_NAME)
+CONFIG_FILE_PATH = '%s/%s.config' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
@@ -87,6 +87,7 @@ WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
+PLIST_UNLOAD_ON_EXIT = False  # any changes need reloading, but this must be scheduled on exit (see discussion below)
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
@@ -103,7 +104,7 @@ EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-
     successfully logging in, but the final URL is the only important part, and as long as this begins with the  
     correct redirection URI and contains a valid authorisation code your email client's request will succeed.''' + (
     ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p> 
-    <p style="margin-top:2em">According to your %s configuration file, the expected final URL will be of the form:</p>
+    <p style="margin-top:2em">According to your proxy configuration file, the expected URL will be of the form:</p>
     <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
     <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); 
     document.auth.submit.value='Submitting...'; document.auth.submit.disabled=true; return false">
@@ -376,11 +377,8 @@ class OAuth2Helper:
 
         except socket.error:
             Log.info('Local server auth mode (%s:%d): error; unable to start local server. Please check that the '
-                     'redirect_uri for account %s is correct and not already in use. A port number should normally '
-                     'be specified (e.g., http://localhost:8080) unless you intend to use the implicit default port '
-                     '80, and the port number must be above 1023 (unless the proxy script is run via sudo). In '
-                     'addition, when using this mode, the redirect_uri value for each account must also be unique '
-                     '(e.g., a different port per account)' % (
+                     'redirect_uri for account %s is unique across accounts, specifies a port number, and is not '
+                     'already in use. See the documentation in the proxy\'s configuration file for further detail' % (
                          parsed_uri.hostname, parsed_port, token_request['username']))
 
     @staticmethod
@@ -444,8 +442,12 @@ class OAuth2Helper:
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
                   'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
-        response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
-        return json.loads(response)
+        try:
+            response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
+            return json.loads(response)
+        except urllib.error.HTTPError as e:
+            Log.debug('Error requesting access token - received invalid response:', json.loads(e.read()))
+            raise e
 
     @staticmethod
     def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
@@ -457,6 +459,7 @@ class OAuth2Helper:
             response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
+            Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
                 raise InvalidToken
             raise e
@@ -1123,22 +1126,30 @@ class App:
     def __init__(self):
         Log.initialise()
 
+        global CONFIG_FILE_PATH
         parser = argparse.ArgumentParser(description=APP_NAME)
-        parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
-                                                                 'interaction to the system log')
+        parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
+                                                                         'rather than this script\'s own popup window')
         parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
-                                                                  'account authorisation requests will fail unless '
-                                                                  'a pre-authorised configuration file is used, or you '
-                                                                  'enable `--local-server-auth` and monitor log output')
+                                                                  'account authorisation requests will fail unless a '
+                                                                  'pre-authorised configuration file is used, or you '
+                                                                  'enable `--local-server-auth` and monitor output)')
         parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
                                                                              'URLs to the log and starting a local web '
                                                                              'server on demand to receive responses')
-        parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
-                                                                         'rather than within this script')
+        parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
+                                                                '(optional; default: `%s` in the same directory as the '
+                                                                'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
+        parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
+                                                                 'interaction to the system log')
         self.args = parser.parse_args()
         if self.args.debug:
             global VERBOSE
             VERBOSE = True
+
+        if self.args.config_file:
+            CONFIG_FILE_PATH = self.args.config_file
+        Log.info('Initialising %s from config file %s' % (APP_NAME, CONFIG_FILE_PATH))
 
         self.init_platforms()
 
@@ -1181,16 +1192,27 @@ class App:
         else:
             pass  # currently no special initialisation/configuration required for other platforms
 
+        # try to exit gracefully when SIGTERM is received
+        if sys.platform == 'darwin' and not self.args.no_gui:
+            # on macOS, catching SIGTERM while pystray's main loop is running needs a mach message handler
+            import PyObjCTools
+            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
+        else:
+            signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
+
     # noinspection PyUnresolvedReferences
     def macos_nsworkspace_notification_listener_(self, notification):
         notification_name = notification.name()
-        if notification_name in [AppKit.NSWorkspaceWillSleepNotification, AppKit.NSWorkspaceWillPowerOffNotification]:
-            Log.info('Detected imminent workspace sleep or shutdown - saving configuration and stopping servers')
+        if notification_name == AppKit.NSWorkspaceWillSleepNotification:
+            Log.info('Detected imminent workspace sleep - saving configuration and stopping servers')
             AppConfig.save()
             self.stop_servers()
         elif notification_name == AppKit.NSWorkspaceDidWakeNotification:
             Log.info('Detected resume from workspace sleep - restarting servers')
             self.load_and_start_servers(self.icon)
+        elif notification.name == AppKit.NSWorkspaceWillPowerOffNotification:
+            Log.info('Received power off notification; exiting %s' % APP_NAME)
+            self.exit(self.icon)
 
     def create_icon(self):
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
@@ -1342,7 +1364,7 @@ class App:
         window_title = 'Authorise your account: %s' % request['username']
         if self.args.external_auth:
             auth_page = EXTERNAL_AUTH_HTML % (request['username'], request['permission_url'], request['permission_url'],
-                                              APP_NAME, CONFIG_FILE_NAME, request['redirect_uri'])
+                                              APP_NAME, request['redirect_uri'])
             authorisation_window = webview.create_window(window_title, html=auth_page, on_top=True, text_select=True)
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
@@ -1421,7 +1443,7 @@ class App:
         # verifies actions have a maximum of two parameters (_assert_action()), so we must use 'item' and check its type
         recreate_login_file = False if isinstance(force_rewrite, pystray.MenuItem) else force_rewrite
 
-        python_command, script_command = self.get_script_start_commands()
+        start_command = self.get_script_start_command()
 
         if sys.platform == 'darwin':
             if recreate_login_file or not PLIST_FILE_PATH.exists():
@@ -1436,7 +1458,8 @@ class App:
                     plist = plistlib.load(plist_file)
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
-            plist['ProgramArguments'] = [python_command, script_command]
+            plist['Program'] = start_command[0]
+            plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
             with open(PLIST_FILE_PATH, 'wb') as plist_file:
@@ -1447,29 +1470,37 @@ class App:
             import launchctl
             if not launchctl.job(APP_PACKAGE):
                 self.exit(icon, restart_callback=launchctl.load(PLIST_FILE_PATH))
+            elif recreate_login_file:
+                # Launch Agents need to be unloaded and reloaded to reflect changes in their plist file, but we can't
+                # do this ourselves because 1) unloading exits the agent; and, 2) we can't launch a completely separate
+                # subprocess (see man launchd.plist) - instead, we schedule the unload action when we next exit, because
+                # this is likely to be caused by a system restart, and unloaded Launch Agents still run at startup (only
+                # an issue if calling `launchctl start` after exiting, which will error until the Agent is reloaded)
+                Log.info('Updating %s requires unloading and reloading; scheduling on next exit' % PLIST_FILE_PATH)
+                global PLIST_UNLOAD_ON_EXIT
+                PLIST_UNLOAD_ON_EXIT = True
 
         elif sys.platform == 'win32':
             if recreate_login_file or not CMD_FILE_PATH.exists():
-                windows_command = 'start %s %s' % (python_command, script_command)
+                windows_start_command = 'start %s' % ' '.join(start_command)
 
                 os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
                 with open(CMD_FILE_PATH, 'w') as cmd_file:
-                    cmd_file.write(windows_command)
+                    cmd_file.write(windows_start_command)
 
                 # on Windows we don't have a service to run, but it is still useful to exit the terminal instance
                 if sys.stdin.isatty() and not recreate_login_file:
-                    self.exit(icon, restart_callback=lambda: subprocess.call(windows_command, shell=True))
+                    self.exit(icon, restart_callback=lambda: subprocess.call(windows_start_command, shell=True))
             else:
                 os.remove(CMD_FILE_PATH)
 
         elif sys.platform.startswith('linux'):
             # see https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677 for systemctl option
             if recreate_login_file or not AUTOSTART_FILE_PATH.exists():
-                linux_command = '%s %s' % (python_command, script_command)
                 xdg_autostart = {
                     'Type': 'Application',
                     'Name': APP_NAME,
-                    'Exec': linux_command,
+                    'Exec': ' '.join(start_command),
                     'NoDisplay': 'true'
                 }
 
@@ -1489,27 +1520,31 @@ class App:
         else:
             pass  # nothing we can do
 
-    def get_script_start_commands(self):
+    def get_script_start_command(self):
         python_command = sys.executable
         if sys.platform == 'win32':
             # pythonw to avoid a terminal when background launching on Windows
             python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
-        # preserve the external auth option if starting automatically (note: could do the same for --debug but unlikely
+        # preserve selected options if starting automatically (note: could do the same for --debug but that is unlikely
         # to be useful; similarly for --no-gui, but that makes no sense as the GUI is needed for this interaction)
-        script_command = os.path.realpath(__file__)
-        script_command += ' --external-auth' if self.args.external_auth else ''
+        script_command = [python_command, os.path.realpath(__file__)]
+        if self.args.external_auth:
+            script_command.append('--external-auth')
+        if self.args.local_server_auth:
+            script_command.append('--local-server-auth')
+        if self.args.config_file:
+            script_command.append('--config-file')
+            script_command.append(CONFIG_FILE_PATH)
 
-        return python_command, script_command
+        return script_command
 
     def restart_linux(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
         AppConfig.unload()  # so that we don't overwrite the just-updated file when exiting
-        python_command, script_command = self.get_script_start_commands()
-        linux_command = '%s %s' % (python_command, script_command)
-        self.exit(icon,
-                  restart_callback=lambda: subprocess.call('nohup %s </dev/null >/dev/null 2>&1 &' % linux_command,
-                                                           shell=True))
+        command = ' '.join(self.get_script_start_command())
+        self.exit(icon, restart_callback=lambda: subprocess.call('nohup %s </dev/null >/dev/null 2>&1 &' % command,
+                                                                 shell=True))
 
     @staticmethod
     def started_at_login(_):
@@ -1625,7 +1660,7 @@ class App:
         if server_load_error or len(self.proxies) <= 0:
             Log.info('No (or invalid) server details found, or the proxy is already running - exiting')
             self.notify(APP_NAME, 'No (or invalid) server details found, or the proxy is already running. '
-                                  'Please verify your account and server details in %s' % CONFIG_FILE_NAME)
+                                  'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
             self.exit(icon)
             return False
@@ -1711,6 +1746,12 @@ class App:
         if restart_callback and not isinstance(restart_callback, pystray.MenuItem):
             Log.info('Restarted', APP_NAME, 'as a background task')
             restart_callback()
+
+        # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
+        if PLIST_UNLOAD_ON_EXIT and sys.platform == 'darwin':
+            # noinspection PyPackageRequirements
+            import launchctl
+            launchctl.unload(APP_PACKAGE)
 
 
 if __name__ == '__main__':
