@@ -65,10 +65,12 @@ CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
 
-# maximum number of bytes to read from the socket at a time (limit is per socket) - note that we assume clients send one
-# line at once (at least during the authentication phase), and we don't handle clients that flush the connection after
-# each individual character (e.g., the inbuilt Windows telnet client)
+# maximum number of bytes to read from the socket at a time (limit is per socket)
 RECEIVE_BUFFER_SIZE = 65536
+
+# IMAP and SMTP require \r\n as a line terminator (we use lines only pre-authentication; afterwards just pass through)
+LINE_TERMINATOR = b'\r\n'
+LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 
 # seconds to wait before cancelling authentication requests (i.e., the user has this long to log in) - note that the
 # actual server timeout is often around 60 seconds, so the connection may be closed in the background and immediately
@@ -516,6 +518,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
                  custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, connection, map=socket_map)
+        self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.server_connection = server_connection
@@ -528,38 +531,61 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def handle_connect(self):
         pass
 
+    def get_data(self):
+        try:
+            byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+            return byte_data
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
+            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL recv error ' +
+                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
+            return None
+
     def handle_read(self):
-        # note: we don't handle clients that send one character at a time (e.g., inbuilt Windows telnet client)
-        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+        byte_data = self.get_data()
+        if not byte_data:
+            return
 
         # client is established after server; this state should not happen unless already closing
         if not self.server_connection:
-            if byte_data:
-                Log.debug(self.proxy_type, self.connection_info,
-                          'Data received without server connection - ignoring and closing:', byte_data)
+            Log.debug(self.proxy_type, self.connection_info,
+                      'Data received without server connection - ignoring and closing:', byte_data)
             self.close()
             return
 
-        # we have already authenticated - nothing to do; just pass data directly to server (slightly more involved
-        # than the server connection because we censor commands that contain passwords or authentication tokens)
+        # we have already authenticated - nothing to do; just pass data directly to server
         if self.authenticated:
             Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)
             OAuth2ClientConnection.process_data(self, byte_data)
 
+        # if not authenticated, buffer incoming data and process line-by-line (slightly more involved than the server
+        # connection because we censor commands that contain passwords or authentication tokens)
         else:
-            # try to remove credentials from logged data - both inline (via regex) and those as a separate request
-            if self.censor_next_log:
-                log_data = CENSOR_MESSAGE
-                self.censor_next_log = False
-            else:
-                # IMAP LOGIN command with username/password in plain text inline, and IMAP/SMTP AUTH(ENTICATE) command
-                log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE, byte_data,
-                                  flags=re.IGNORECASE)
-                log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
-                                  b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
+            self.receive_buffer += byte_data
+            complete_lines = b''
+            while True:
+                terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                if terminator_index != -1:
+                    split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                    complete_lines += self.receive_buffer[:split_position]
+                    self.receive_buffer = self.receive_buffer[split_position:]
+                else:
+                    break
 
-            Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
-            self.process_data(byte_data)
+            if complete_lines:
+                # try to remove credentials from logged data - both inline (via regex) and as separate requests
+                if self.censor_next_log:
+                    log_data = CENSOR_MESSAGE
+                    self.censor_next_log = False
+                else:
+                    # IMAP LOGIN command with inline username/password, and IMAP/SMTP AUTH(ENTICATE) command
+                    log_data = re.sub(b'(\\w+) (LOGIN) (.*)\r\n', b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE,
+                                      complete_lines, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(\\w*)( ?)(AUTH)(ENTICATE)? (PLAIN) (.*)\r\n',
+                                      b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
+                                      flags=re.IGNORECASE)
+
+                Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
+                self.process_data(complete_lines)
 
     def process_data(self, byte_data, censor_server_log=False):
         self.server_connection.send(byte_data, censor_server_log)  # by default just send everything straight to server
@@ -567,7 +593,17 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def send(self, byte_data):
         if not self.authenticated:  # after authentication these are identical to server-side logs (in process_data)
             Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
-        super().send(byte_data)
+        try:
+            super().send(byte_data)
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
+            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL send error ' +
+                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
+            while True:
+                try:
+                    super().send(byte_data)
+                    break
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                    time.sleep(1)
 
     def handle_close(self):
         Log.debug(self.proxy_type, self.connection_info, '--> [ Client disconnected ]')
@@ -735,6 +771,7 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
     def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
         asyncore.dispatcher_with_send.__init__(self, map=socket_map)  # note: establish connection later due to STARTTLS
+        self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
         self.client_connection = None
@@ -763,14 +800,14 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
 
     def handle_read(self):
-        # note: we don't handle servers that send one character at a time (no known instances, but see client side note)
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+        if not byte_data:
+            return
 
         # data received before client is connected (or after client has disconnected) - ignore
         if not self.client_connection:
-            if byte_data:
-                Log.debug(self.proxy_type, self.connection_info, 'Data received without client connection - ignoring:',
-                          byte_data)
+            Log.debug(self.proxy_type, self.connection_info, 'Data received without client connection - ignoring:',
+                      byte_data)
             return
 
         # we have already authenticated - nothing to do; just pass data directly to client, ignoring overridden method
@@ -784,9 +821,23 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
                     config = AppConfig.get()
                     config.set(self.authenticated_username, 'last_activity', str(activity_time))
                     self.last_activity = activity_time
+
+        # if not authenticated, buffer incoming data and process line-by-line
         else:
-            Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # command received before editing
-            self.process_data(byte_data)
+            self.receive_buffer += byte_data
+            complete_lines = b''
+            while True:
+                terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                if terminator_index != -1:
+                    split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                    complete_lines += self.receive_buffer[:split_position]
+                    self.receive_buffer = self.receive_buffer[split_position:]
+                else:
+                    break
+
+            if complete_lines:
+                Log.debug(self.proxy_type, self.connection_info, '    <--', complete_lines)  # (log before edits)
+                self.process_data(complete_lines)
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
@@ -906,7 +957,6 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     super().process_data(
                         b'535 5.7.8  Authentication credentials invalid. %s\r\n' % result.encode('utf-8'))
                     self.client_connection.close()
-                    return
 
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
