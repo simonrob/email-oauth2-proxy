@@ -79,9 +79,9 @@ AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
 
-IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(r'(?P<tag>[^\s(){%*"\\+]+) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)',
+IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(r'(?P<tag>[^\x00-\x1f\x20\x7f(){%*"\\+]+) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)',
                                                  flags=re.IGNORECASE)
-IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(r'(?P<tag>[^\s(){%*"\\+]+) OK AUTHENTICATE.*', flags=re.IGNORECASE)
+IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(r'(?P<tag>[^\x00-\x1f\x20\x7f(){%*"\\+]+) OK AUTHENTICATE.*', flags=re.IGNORECASE)
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from client web view
