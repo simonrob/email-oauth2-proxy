@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-04-04'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-04-15'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -49,9 +49,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
-# for macOS-specific functionality: retina icon; updating menu on click
+# for macOS-specific functionality
 if sys.platform == 'darwin':
-    import AppKit
+    # noinspection PyPackageRequirements
+    import launchctl  # managing start at login
+    import AppKit  # retina icon, menu update on click, native notifications and receiving system events
+    import PyObjCTools  # SIGTERM handling
+    import SystemConfiguration  # network availability monitoring
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -61,7 +65,7 @@ VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' op
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces credentials; must be a byte-type string
 
 CONFIG_FILE_PATH = '%s/%s.config' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME)
-CONFIG_SERVER_MATCHER = re.compile(r'(?P<type>(IMAP|SMTP))-(?P<port>[\d]{4,5})')
+CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|SMTP))-(?P<port>\d+)')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
 
@@ -89,7 +93,6 @@ WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
-PLIST_UNLOAD_ON_EXIT = False  # any changes need reloading, but this must be scheduled on exit (see discussion below)
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
@@ -319,7 +322,7 @@ class OAuth2Helper:
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are
             # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
-            # network errors) rather than e.g., bad requests
+            # network errors: URLError(OSError(50, 'Network is down'))) rather than e.g., bad requests
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
             return False, '%s: Login failure - saved authentication data invalid for account %s' % (
                 APP_NAME, username)
@@ -536,7 +539,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             byte_data = self.recv(RECEIVE_BUFFER_SIZE)
             return byte_data
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL recv error ' +
+            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL recv error',
                      '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
             return None
 
@@ -596,7 +599,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             super().send(byte_data)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL send error ' +
+            Log.info(self.proxy_type, self.connection_info, 'Warning: caught client-side SSL send error',
                      '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
             while True:
                 try:
@@ -604,6 +607,12 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                     break
                 except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
                     time.sleep(1)
+
+    def log_info(self, message, message_type='info'):
+        # override to redirect error messages to our own log
+        if message_type not in self.ignore_log_types:
+            Log.info(self.proxy_type, self.connection_info, 'Caught asyncore info message (client) -', message_type,
+                     ':', message)
 
     def handle_close(self):
         Log.debug(self.proxy_type, self.connection_info, '--> [ Client disconnected ]')
@@ -683,7 +692,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             # send authentication command to server (response checked in ServerConnection)
             # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
             super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
-            super().process_data(OAuth2Helper.encode_oauth2_string(result), True)
+            super().process_data(OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
             super().process_data(b'\r\n')
             self.server_connection.authenticated_username = username
 
@@ -849,6 +858,22 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
             Log.debug(self.proxy_type, self.connection_info, '    -->', CENSOR_MESSAGE if censor_log else byte_data)
         super().send(byte_data)
 
+    def handle_error(self):
+        error_type, value, _traceback = sys.exc_info()
+        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        if error_type == TimeoutError and value.errno == 60:  # "Operation timed out"
+            Log.info(self.proxy_type, self.connection_info, 'Caught timeout error (server) - is there a network',
+                     'connection? Error message:', value)
+            self.handle_close()
+        else:
+            super().handle_error()
+
+    def log_info(self, message, message_type='info'):
+        # override to redirect error messages to our own log
+        if message_type not in self.ignore_log_types:
+            Log.info(self.proxy_type, self.connection_info, 'Caught asyncore info message (server) -', message_type,
+                     ':', message)
+
     def handle_close(self):
         Log.debug(self.proxy_type, self.connection_info, '<-- [ Server disconnected ]')
         if self.client_connection:
@@ -1002,6 +1027,7 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             try:
+                Log.debug('Accepting new connection to', self.info_string(), 'via', connection.getpeername())
                 socket_map = {}
                 server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
                 new_server_connection = server_class(socket_map, self.server_address, address, self,
@@ -1040,7 +1066,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 client.close()
 
     def start(self):
-        Log.info('Starting %s' % self.info_string())
+        Log.info('Starting', self.info_string())
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
@@ -1072,28 +1098,41 @@ class OAuth2Proxy(asyncore.dispatcher):
         else:
             return ''
 
-    def stop(self):
-        Log.info('Stopping %s' % self.info_string())
+    def close_clients(self):
         for connection in self.client_connections[:]:  # iterate over a copy; remove (in close()) from original
             connection.send(b'%s\r\n' % self.bye_message().encode('utf-8'))  # try to exit gracefully
             connection.close()  # closes both client and server
+
+    def stop(self):
+        Log.info('Stopping', self.info_string())
+        self.close_clients()
         self.close()
 
     def restart(self):
         self.stop()
         self.start()
 
+    def handle_error(self):
+        error_type, value, _traceback = sys.exc_info()
+        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        if error_type == socket.gaierror and value.errno == 8:  # "nodename nor servname provided, or not known"
+            Log.info('Caught socket address info error in', self.info_string(), '- is there a network connection?',
+                     'Error message:', value)
+        else:
+            super().handle_error()
+
+    def log_info(self, message, message_type='info'):
+        # override to redirect error messages to our own log
+        if message_type not in self.ignore_log_types:
+            Log.info('Caught asyncore info message in', self.info_string(), '-', message_type, ':', message)
+
     def handle_close(self):
-        # if we encounter an exception in asyncore, handle_close() is called; restart this server - typically one of:
-        # - (<class 'socket.gaierror'>:[Errno 8] nodename nor servname provided, or not known (asyncore.py|read)
-        # - (<class 'TimeoutError'>:[Errno 60] Operation timed out (asyncore.py|read)
-        # note - intentionally not overriding handle_error() so we see errors in the log rather than hiding them
-        Log.info('Unexpected close of proxy connection - restarting %s' % self.info_string())
+        # if we encounter an unhandled exception in asyncore, handle_close() is called; restart this server
+        Log.info('Unexpected close of proxy connection - restarting', self.info_string())
         try:
             self.restart()
         except Exception as e:
-            Log.info('Abandoning server restart of %s due to repeated exception: %s' % (self.info_string(),
-                                                                                        Log.error_string(e)))
+            Log.info('Abandoning restart of', self.info_string(), 'due to repeated exception:', Log.error_string(e))
 
 
 class AuthorisationWindow:
@@ -1199,14 +1238,14 @@ class App:
 
         if self.args.config_file:
             CONFIG_FILE_PATH = self.args.config_file
-        Log.info('Initialising %s from config file %s' % (APP_NAME, CONFIG_FILE_PATH))
-
-        self.init_platforms()
+        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
 
         self.proxies = []
         self.authorisation_requests = []
 
         self.web_view_started = False
+
+        self.init_platforms()
 
         if self.args.no_gui:
             self.icon = None
@@ -1221,23 +1260,43 @@ class App:
                 # noinspection PyProtectedMember
                 self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
 
-    # noinspection PyUnresolvedReferences
+    # PyAttributeOutsideInit inspection suppressed because init_platforms() is itself called from __init__()
+    # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
         if sys.platform == 'darwin':
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
 
-            # track shutdown/sleep/wake events and stop/start servers appropriately (also saving activity+configuration)
+            # any launchctl plist changes need reloading, but this must be scheduled on exit (see discussion below)
+            self.macos_unload_plist_on_exit = False
+
+            # track shutdown and network loss events and exit or close proxy connections appropriately
             # note: no need to explicitly remove this observer after OS X 10.11 (https://developer.apple.com/library
             # /archive/releasenotes/Foundation/RN-FoundationOlderNotes/index.html#10_11NotificationCenter)
+            notification_listener = 'macos_nsworkspace_notification_listener:'
             notification_centre = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
-            notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
+            notification_centre.addObserver_selector_name_object_(self, notification_listener,
                                                                   AppKit.NSWorkspaceWillPowerOffNotification, None)
-            notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
-                                                                  AppKit.NSWorkspaceWillSleepNotification, None)
-            notification_centre.addObserver_selector_name_object_(self, 'macos_nsworkspace_notification_listener:',
-                                                                  AppKit.NSWorkspaceDidWakeNotification, None)
+            notification_centre.addObserver_selector_name_object_(self, notification_listener,
+                                                                  SystemConfiguration.SCNetworkReachabilityRef, None)
+
+            # we use a zero/blank address because we only care about general availability rather than a specific host
+            # see reachabilityForInternetConnection: https://developer.apple.com/library/archive/samplecode/Reachability
+            # use of SCNetworkReachabilityRef is a little hacky (requires a callback name) but it works
+            address = ('', 0)
+            post_reachability_update = notification_centre.postNotificationName_object_
+            self.macos_reachability_target = SystemConfiguration.SCNetworkReachabilityCreateWithAddress(None, address)
+            SystemConfiguration.SCNetworkReachabilitySetCallback(self.macos_reachability_target,
+                                                                 lambda _target, flags, _info: post_reachability_update(
+                                                                     SystemConfiguration.SCNetworkReachabilityRef,
+                                                                     flags), address)
+            success, result = SystemConfiguration.SCNetworkReachabilityGetFlags(self.macos_reachability_target, None)
+            if success:
+                post_reachability_update(SystemConfiguration.SCNetworkReachabilityRef, result)  # update initial state
+            SystemConfiguration.SCNetworkReachabilityScheduleWithRunLoop(self.macos_reachability_target,
+                                                                         SystemConfiguration.CFRunLoopGetCurrent(),
+                                                                         SystemConfiguration.kCFRunLoopCommonModes)
 
         else:
             pass  # currently no special initialisation/configuration required for other platforms
@@ -1245,23 +1304,23 @@ class App:
         # try to exit gracefully when SIGTERM is received
         if sys.platform == 'darwin' and not self.args.no_gui:
             # on macOS, catching SIGTERM while pystray's main loop is running needs a mach message handler
-            import PyObjCTools
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
         else:
             signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
 
-    # noinspection PyUnresolvedReferences
+    # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
         notification_name = notification.name()
-        if notification_name == AppKit.NSWorkspaceWillSleepNotification:
-            Log.info('Detected imminent workspace sleep - saving configuration and stopping servers')
-            AppConfig.save()
-            self.stop_servers()
-        elif notification_name == AppKit.NSWorkspaceDidWakeNotification:
-            Log.info('Detected resume from workspace sleep - restarting servers')
-            self.load_and_start_servers(self.icon)
-        elif notification.name == AppKit.NSWorkspaceWillPowerOffNotification:
-            Log.info('Received power off notification; exiting %s' % APP_NAME)
+        if notification_name == SystemConfiguration.SCNetworkReachabilityRef:
+            flags = notification.object()
+            if flags & SystemConfiguration.kSCNetworkReachabilityFlagsReachable == 0:
+                Log.info('Received network unreachable notification - closing existing proxy connections')
+                for proxy in self.proxies:
+                    proxy.close_clients()
+            else:
+                Log.debug('Received network reachable notification - status:', flags)
+        elif notification_name == AppKit.NSWorkspaceWillPowerOffNotification:
+            Log.info('Received power off notification; exiting', APP_NAME)
             self.exit(self.icon)
 
     def create_icon(self):
@@ -1516,8 +1575,6 @@ class App:
                 plistlib.dump(plist, plist_file)
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
-            # noinspection PyPackageRequirements
-            import launchctl
             if not launchctl.job(APP_PACKAGE):
                 self.exit(icon, restart_callback=launchctl.load(PLIST_FILE_PATH))
             elif recreate_login_file:
@@ -1526,9 +1583,9 @@ class App:
                 # subprocess (see man launchd.plist) - instead, we schedule the unload action when we next exit, because
                 # this is likely to be caused by a system restart, and unloaded Launch Agents still run at startup (only
                 # an issue if calling `launchctl start` after exiting, which will error until the Agent is reloaded)
-                Log.info('Updating %s requires unloading and reloading; scheduling on next exit' % PLIST_FILE_PATH)
-                global PLIST_UNLOAD_ON_EXIT
-                PLIST_UNLOAD_ON_EXIT = True
+                # noinspection PyAttributeOutsideInit
+                self.macos_unload_plist_on_exit = True
+                Log.info('Updating', PLIST_FILE_PATH, 'requires unloading and reloading; scheduling on next exit')
 
         elif sys.platform == 'win32':
             if recreate_login_file or not CMD_FILE_PATH.exists():
@@ -1601,8 +1658,6 @@ class App:
         # note: menu state will be stale if changed externally, but clicking menu items forces a refresh
         if sys.platform == 'darwin':
             if PLIST_FILE_PATH.exists():
-                # noinspection PyPackageRequirements
-                import launchctl
                 if launchctl.job(APP_PACKAGE):
                     with open(PLIST_FILE_PATH, 'rb') as plist_file:
                         plist = plistlib.load(plist_file)
@@ -1667,25 +1722,27 @@ class App:
 
         # load server types and configurations
         server_load_error = False
+        server_start_error = False
         for section in AppConfig.servers():
             match = CONFIG_SERVER_MATCHER.match(section)
             server_type = match.group('type')
 
             local_address = config.get(section, 'local_address', fallback='localhost')
             str_local_port = match.group('port')
+            local_port = -1
             try:
                 local_port = int(str_local_port)
                 if local_port <= 0 or local_port > 65535:
                     raise ValueError
             except ValueError:
+                Log.info('Error: invalid value', str_local_port, 'for local server port in section', match.string)
                 server_load_error = True
-                break
 
             server_address = config.get(section, 'server_address', fallback=None)
             server_port = config.getint(section, 'server_port', fallback=-1)
             if server_port <= 0 or server_port > 65535:
+                Log.info('Error: invalid value', server_port, 'for remote server port in section', match.string)
                 server_load_error = True
-                break
 
             custom_configuration = {
                 'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False,
@@ -1693,24 +1750,28 @@ class App:
                 'local_key_path': config.get(section, 'local_key_path', fallback=None)
             }
 
-            if server_address:  # all other values are checked, regex matched or have a fallback above
+            if not server_address:  # all other values are checked, regex matched or have a fallback above
+                Log.info('Error: remote server address is missing in section', match.string)
+                server_load_error = True
+
+            if not server_load_error:
                 new_proxy = OAuth2Proxy(server_type, (local_address, local_port), (server_address, server_port),
                                         custom_configuration)
                 try:
                     new_proxy.start()
                     self.proxies.append(new_proxy)
                 except Exception as e:
-                    Log.info('Unable to start server:', Log.error_string(e))
-                    server_load_error = True
-                    break
-            else:
-                server_load_error = True
-                break
+                    Log.info('Error: unable to start server:', Log.error_string(e))
+                    server_start_error = True
 
-        if server_load_error or len(self.proxies) <= 0:
-            Log.info('No (or invalid) server details found, or the proxy is already running - exiting')
-            self.notify(APP_NAME, 'No (or invalid) server details found, or the proxy is already running. '
-                                  'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
+        if server_start_error or server_load_error or len(self.proxies) <= 0:
+            if server_start_error:
+                Log.info('Abandoning setup because one or more servers failed to start - is the proxy already running?')
+            else:
+                error_text = 'Invalid' if len(AppConfig.servers()) > 0 else 'No'
+                Log.info(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
+                self.notify(APP_NAME, error_text + ' server configuration(s) found. ' +
+                            'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
             self.exit(icon)
             return False
@@ -1758,14 +1819,17 @@ class App:
     @staticmethod
     def run_proxy():
         while not EXITING:
+            error_count = 0
             try:
                 # loop for main proxy servers, accepting requests and starting connection threads
                 # note: we need to make sure there are always proxy servers started when run_proxy is called (i.e., must
-                # exit on config parse/load failure), otherwise this will throw an error every time and loop infinitely
+                # exit on server start failure), otherwise this will throw an error every time and loop indefinitely
                 asyncore.loop()
             except Exception as e:
                 if not EXITING:
-                    Log.info('Caught asyncore exception in main loop:', Log.error_string(e))
+                    Log.info('Caught asyncore exception in main loop; attempting to continue:', Log.error_string(e))
+                    error_count += 1
+                    time.sleep(error_count)
 
     def exit(self, icon, restart_callback=None):
         Log.info('Stopping', APP_NAME)
@@ -1773,6 +1837,12 @@ class App:
         EXITING = True
 
         AppConfig.save()
+
+        if sys.platform == 'darwin':
+            # noinspection PyUnresolvedReferences
+            SystemConfiguration.SCNetworkReachabilityUnscheduleFromRunLoop(self.macos_reachability_target,
+                                                                           SystemConfiguration.CFRunLoopGetCurrent(),
+                                                                           SystemConfiguration.kCFRunLoopDefaultMode)
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
@@ -1798,9 +1868,7 @@ class App:
             restart_callback()
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
-        if PLIST_UNLOAD_ON_EXIT and sys.platform == 'darwin':
-            # noinspection PyPackageRequirements
-            import launchctl
+        if sys.platform == 'darwin' and self.macos_unload_plist_on_exit:
             launchctl.unload(APP_PACKAGE)
 
 
