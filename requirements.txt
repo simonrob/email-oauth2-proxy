@@ -5,9 +5,10 @@ pystray
 pywebview
 timeago
 
-# used to toggle launch on login, hide the dock icon and improve the menu bar icon and menu on macOS
+# used to toggle launch on login, improve menu bar interaction, provide native notifications and handle system events
 launchctl; sys_platform == 'darwin'
-pyobjc; sys_platform == 'darwin'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'
 
-# force version 3.5+ of pywebview on Windows to fix authentication window crash bug
+# force pywebview 3.5+ on Windows to fix authentication window crash bug (https://github.com/r0x0r/pywebview/issues/720)
 pywebview>=3.5; sys_platform == 'win32'
