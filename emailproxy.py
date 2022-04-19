@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-04-15'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-04-19'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -13,6 +13,7 @@ import binascii
 import configparser
 import datetime
 import enum
+import errno
 import json
 import logging
 import logging.handlers
@@ -20,17 +21,17 @@ import os
 import pathlib
 import plistlib
 import queue
+import re
 import signal
 import socket
 import ssl
-import re
 import subprocess
 import sys
 import threading
 import time
-import urllib.request
-import urllib.parse
 import urllib.error
+import urllib.parse
+import urllib.request
 import wsgiref.simple_server
 import wsgiref.util
 
@@ -45,14 +46,12 @@ from PIL import Image, ImageDraw, ImageFont
 
 # for encrypting/decrypting the locally-stored credentials
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.backends import default_backend
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
-    # noinspection PyPackageRequirements
-    import launchctl  # managing start at login
     import AppKit  # retina icon, menu update on click, native notifications and receiving system events
     import PyObjCTools  # SIGTERM handling
     import SystemConfiguration  # network availability monitoring
@@ -136,6 +135,8 @@ class Log:
             handler = logging.FileHandler('%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         else:
+            # Unified Logging would be better on macOS - see: https://github.com/ronaldoussoren/pyobjc/issues/377
+            # e.g.: log stream --predicate 'senderImagePath contains "python"' --level debug --style syslog
             handler = logging.handlers.SysLogHandler(
                 address='/var/run/syslog' if sys.platform == 'darwin' else '/dev/log')
             handler.setFormatter(logging.Formatter(Log._DEFAULT_MESSAGE_FORMAT))
@@ -862,9 +863,11 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if error_type == TimeoutError and value.errno == 60:  # "Operation timed out"
-            Log.info(self.proxy_type, self.connection_info, 'Caught timeout error (server) - is there a network',
-                     'connection? Error message:', value)
+        if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
+                error_type == OSError and value.errno == errno.ENETDOWN:
+            # TimeoutError 60 = 'Operation timed out'; OSError 50 = 'Network is down'
+            Log.info(self.proxy_type, self.connection_info, 'Caught network error (server) - is there a network',
+                     'connection? Error type', error_type, 'with message:', value)
             self.handle_close()
         else:
             super().handle_error()
@@ -1116,9 +1119,13 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if error_type == socket.gaierror and value.errno == 8:  # "nodename nor servname provided, or not known"
-            Log.info('Caught socket address info error in', self.info_string(), '- is there a network connection?',
-                     'Error message:', value)
+        if error_type == socket.gaierror and value.errno == 8 or \
+                error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
+                error_type == ConnectionResetError and value.errno == errno.ECONNRESET:
+            # gaierror 8 = 'nodename nor servname provided, or not known'; TimeoutError 60 = 'Operation timed out';
+            # ConnectionResetError 54 = 'Connection reset by peer'
+            Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
+                     'Error type', error_type, 'with message:', value)
         else:
             super().handle_error()
 
@@ -1401,7 +1408,7 @@ class App:
 
         # asyncore sockets on Linux have a shutdown delay (the time.sleep() call in asyncore.poll), which means we can't
         # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
-        items.append(pystray.MenuItem('Reload configuration file', self.restart_linux if sys.platform.startswith(
+        items.append(pystray.MenuItem('Reload configuration file', self.linux_restart if sys.platform.startswith(
             'linux') else self.load_and_start_servers))
         return items
 
@@ -1576,8 +1583,8 @@ class App:
                 plistlib.dump(plist, plist_file)
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
-            if not launchctl.job(APP_PACKAGE):
-                self.exit(icon, restart_callback=launchctl.load(PLIST_FILE_PATH))
+            if not self.macos_launchctl('list'):
+                self.exit(icon, restart_callback=self.macos_launchctl('load'))
             elif recreate_login_file:
                 # Launch Agents need to be unloaded and reloaded to reflect changes in their plist file, but we can't
                 # do this ourselves because 1) unloading exits the agent; and, 2) we can't launch a completely separate
@@ -1620,8 +1627,8 @@ class App:
 
                 # like on Windows we don't have a service to run, but it is still useful to exit the terminal instance
                 if sys.stdin.isatty() and not recreate_login_file:
-                    AppConfig.save()  # because restart_linux needs to unload to prevent saving on exit
-                    self.restart_linux(icon)
+                    AppConfig.save()  # because linux_restart needs to unload to prevent saving on exit
+                    self.linux_restart(icon)
             else:
                 os.remove(AUTOSTART_FILE_PATH)
 
@@ -1647,7 +1654,7 @@ class App:
 
         return script_command
 
-    def restart_linux(self, icon):
+    def linux_restart(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
         AppConfig.unload()  # so that we don't overwrite the just-updated file when exiting
         command = ' '.join(self.get_script_start_command())
@@ -1655,11 +1662,25 @@ class App:
                                                                  shell=True))
 
     @staticmethod
+    def macos_launchctl(command='list'):
+        # this used to use the python launchctl package, but it has a bug (github.com/andrewp-as-is/values.py/pull/2)
+        # in a sub-package, so we reproduce just the core features - supported commands are 'list', 'load' and 'unload'
+        proxy_command = APP_PACKAGE if command == 'list' else PLIST_FILE_PATH
+        try:
+            output = subprocess.check_output(['/bin/launchctl', command, proxy_command], stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError:
+            return False
+        else:
+            if output and command != 'list':
+                return False  # load/unload gives no output unless unsuccessful (return code is always 0 regardless)
+            return True
+
+    @staticmethod
     def started_at_login(_):
         # note: menu state will be stale if changed externally, but clicking menu items forces a refresh
         if sys.platform == 'darwin':
             if PLIST_FILE_PATH.exists():
-                if launchctl.job(APP_PACKAGE):
+                if App.macos_launchctl('list'):
                     with open(PLIST_FILE_PATH, 'rb') as plist_file:
                         plist = plistlib.load(plist_file)
                     if 'Disabled' in plist:
@@ -1870,7 +1891,7 @@ class App:
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
         if sys.platform == 'darwin' and self.macos_unload_plist_on_exit:
-            launchctl.unload(APP_PACKAGE)
+            self.macos_launchctl('unload')
 
 
 if __name__ == '__main__':
