@@ -3,7 +3,7 @@ Transparently add OAuth 2.0 support to IMAP/SMTP client applications, scripts or
 
 
 ## Motivation and capabilities
-Email services that support IMAP and/or SMTP access are increasingly requiring the use of OAuth 2.0 to authenticate connections, but not all clients support this method. This script creates a simple local proxy that intercepts the traditional IMAP/SMTP authentication commands and transparently replaces them with the appropriate (X)OAuth 2.0 commands and credentials. Your email client can continue to use the `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence. The proxy works in the background with a menu bar/taskbar helper or as a system service, and is compatible with macOS, Windows and Linux.
+Email services that support IMAP and/or SMTP access are increasingly requiring the use of OAuth 2.0 to authenticate connections, but not all clients support this method. This script creates a simple local proxy that intercepts the traditional IMAP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials. Your email client can continue to use the `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence. The proxy works in the background with a menu bar/taskbar helper or as a system service, and is compatible with macOS, Windows and Linux.
 
 ### Example use-cases
 - You need to use an Office 365 email account, but don't get on with Outlook. The email client you like doesn't support OAuth 2.0.
@@ -32,7 +32,7 @@ After your accounts are fully set-up and authorised, no further proxy interactio
 ### OAuth 2.0 client credentials
 As part of the proxy setup process you need to provide an OAuth 2.0 `client_id` and `client_secret` to allow it to authenticate with email servers on your behalf.
 
-If you have an existing client ID and secret for a desktop app, you can use these directly in the proxy. You can also use the client ID and secret from any email client that supports IMAP/SMTP OAuth 2.0 authentication with the email server you would like to connect to.
+If you have an existing client ID and secret for a desktop app, you can use these directly in the proxy. You can also reuse the client ID and secret from any email client that supports IMAP/SMTP OAuth 2.0 authentication with the email server you would like to connect to.
 
 If you do not have access to credentials for an  existing client you will need to register your own. The process to do this is different for each provider, but the registration guides for several common ones are linked below. In all cases, when registering, make sure your client is set up to use an OAuth scope that will give it permission to access IMAP/SMTP – see the sample configuration file for examples.
 
@@ -56,7 +56,7 @@ When starting the proxy there are several optional arguments that can be set to 
 
 
 ### Starting the proxy automatically
-In order for the proxy to authenticate background requests from your email client it needs to be kept running constantly. The easiest way to do this is to start the script automatically. The proxy has basic support for this built-in: click its menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the script, configuring it to run each time you log in. On macOS, f you are presented with a prompt about file access here, make sure you grant this so that python can run the script in the background. For more advanced configurations, you may want to customise the startup behaviour and edit the script's parameters – see the sections below for further information on how to achieve this using macOS, Windows or Linux.
+In order for the proxy to authenticate background requests from your email client it needs to be kept running constantly. The easiest way to do this is to start the script automatically. The proxy has basic support for this built-in: click its menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the script, configuring it to run each time you log in. On macOS, if you are presented with a prompt about file access here, make sure you grant this so that python can run the script in the background. For more advanced configurations, you may want to customise the startup behaviour and edit the script's parameters – see the sections below for further information on how to achieve this using macOS, Windows or Linux.
 
 On macOS, the file `~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist` is used to configure automatic starting of the proxy. If you stop the proxy's service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal. You can stop, disable or remove the service from your startup items either via the menu bar icon option, or using `launchctl unload [plist path]`. If you edit the plist file manually, make sure you `unload` and then `load` it to update the system with your changes. If the `Start at login` option appears not to be working for you on macOS, see the [known issues](#known-issues) section below for potential solutions.
 
