@@ -84,8 +84,8 @@ TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 
 
 IMAP_TAG_PATTERN = r"^(?P<tag>[!#$&',-\[\]-z|}~]+)"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(IMAP_TAG_PATTERN + r' (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)',
-                                                 flags=re.IGNORECASE)
-IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(IMAP_TAG_PATTERN + r' OK AUTHENTICATE.*', flags=re.IGNORECASE)
+                                                 flags=re.IGNORECASE | re.MULTILINE)
+IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(IMAP_TAG_PATTERN + r' OK .*', flags=re.IGNORECASE | re.MULTILINE)
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from client web view
@@ -900,21 +900,15 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
         # as with SMTP, but it doesn't seem like any well-known servers support this, so left unimplemented for now
         str_response = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
-        if str_response.startswith('* CAPABILITY'):
-            # intercept CAPABILITY response and replace with what we can actually do
-            updated_response = re.sub(r'(AUTH=[\w]+ )+', 'AUTH=PLAIN ', str_response, flags=re.IGNORECASE)
-            byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
-
-        else:
-            # if authentication succeeds, remove our proxy from the client and ignore all further communication
-            match = IMAP_AUTHENTICATION_RESPONSE_MATCHER.match(str_response)
-            if match and match.group('tag') == self.client_connection.authentication_tag:
+        # if authentication succeeds, remove our proxy from the client and ignore all further communication
+        for tag in IMAP_AUTHENTICATION_RESPONSE_MATCHER.findall(str_response):
+            if tag == self.client_connection.authentication_tag:
                 Log.info(self.proxy_type, self.connection_info,
                          '[ Successfully authenticated IMAP connection - removing proxy ]')
-                if self.client_connection.authentication_command == 'login':
-                    byte_data = byte_data.replace(b'OK AUTHENTICATE', b'OK LOGIN')  # make sure response is correct
                 self.client_connection.authenticated = True
 
+        # a previous version of the proxy checked here for AUTH=PLAIN in CAPABILITY responses, but given that RFC 3501
+        # requires this always to be present, it has been removed as unnecessary for now
         super().process_data(byte_data)
 
 
