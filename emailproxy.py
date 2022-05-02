@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-04-19'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-05-02'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -84,7 +84,7 @@ TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 
 
 IMAP_TAG_PATTERN = r"^(?P<tag>[!#$&',-\[\]-z|}~]+)"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(IMAP_TAG_PATTERN + r' (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)',
-                                                 flags=re.IGNORECASE | re.MULTILINE)
+                                                 flags=re.IGNORECASE)
 IMAP_AUTHENTICATION_RESPONSE_MATCHER = re.compile(IMAP_TAG_PATTERN + r' OK .*', flags=re.IGNORECASE | re.MULTILINE)
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
@@ -509,6 +509,7 @@ class OAuth2Helper:
     def decode_credentials(str_data):
         """Decode credentials passed as a base64-encoded string: [some data we don't need]\x00username\x00password"""
         try:
+            # formal syntax: https://tools.ietf.org/html/rfc4616#section-2
             (_, bytes_username, bytes_password) = base64.b64decode(str_data).split(b'\x00')
             return bytes_username.decode('utf-8'), bytes_password.decode('utf-8')
         except (ValueError, binascii.Error):
@@ -906,9 +907,22 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
                 Log.info(self.proxy_type, self.connection_info,
                          '[ Successfully authenticated IMAP connection - removing proxy ]')
                 self.client_connection.authenticated = True
+                break
 
-        # a previous version of the proxy checked here for AUTH=PLAIN in CAPABILITY responses, but given that RFC 3501
-        # requires this always to be present, it has been removed as unnecessary for now
+        # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
+        if not self.client_connection.authenticated and 'CAPABILITY ' in str_response:
+            capability = r"[!#$&'+-\[^-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
+            updated_response = re.sub(r'( AUTH=' + capability + r')+', ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
+            if ' AUTH=PLAIN' not in updated_response:
+                # cannot just replace e.g., one 'CAPABILITY ' match because IMAP4 must be first if present (RFC 1730)
+                updated_response = re.sub(r'(IMAP4' + capability + r' )+', r'\g<1>AUTH=PLAIN ', updated_response,
+                                          flags=re.IGNORECASE)
+            updated_response = updated_response.replace(' AUTH=PLAIN', '', updated_response.count(' AUTH=PLAIN') - 1)
+            if ' SASL-IR' not in updated_response:
+                updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
+            updated_response = updated_response.replace(' LOGINDISABLED', '')
+            byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
+
         super().process_data(byte_data)
 
 
@@ -918,6 +932,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
     # SMTP: https://tools.ietf.org/html/rfc2821
     # SMTP STARTTLS: https://tools.ietf.org/html/rfc3207
     # SMTP AUTH: https://tools.ietf.org/html/rfc4954
+    # SMTP LOGIN: https://datatracker.ietf.org/doc/html/draft-murchison-sasl-login-00
     class STARTTLS(enum.Enum):
         PENDING = 1
         NEGOTIATING = 2
@@ -998,7 +1013,9 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         else:
             # intercept EHLO response AUTH capabilities and replace with what we can actually do
             if str_data.startswith('250-'):
-                updated_response = re.sub(r'250-AUTH[\w ]+', '250-AUTH PLAIN LOGIN', str_data, flags=re.IGNORECASE)
+                # formal syntax: https://tools.ietf.org/html/rfc4954#section-8
+                updated_response = re.sub(r'250-AUTH( [!-*,-<>-~]+)+\r', '250-AUTH PLAIN LOGIN\r', str_data,
+                                          flags=re.IGNORECASE)
                 super().process_data(b'%s\r\n' % updated_response.encode('utf-8'))
             else:
                 super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
@@ -1115,9 +1132,13 @@ class OAuth2Proxy(asyncore.dispatcher):
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == socket.gaierror and value.errno == 8 or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
-                error_type == ConnectionResetError and value.errno == errno.ECONNRESET:
+                error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
+                error_type == ConnectionRefusedError and value.errno == errno.ECONNREFUSED or \
+                error_type == OSError and value.errno == errno.EHOSTUNREACH or \
+                error_type == OSError and value.errno == 0:
             # gaierror 8 = 'nodename nor servname provided, or not known'; TimeoutError 60 = 'Operation timed out';
-            # ConnectionResetError 54 = 'Connection reset by peer'
+            # ConnectionResetError 54 = 'Connection reset by peer'; ConnectionRefusedError 61 = 'Connection refused';
+            # OSError 65 = 'No route to host'; OSError 0 = 'Error' (thrown if SSL handshake fails, often due to network)
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
         else:
@@ -1419,6 +1440,7 @@ class App:
 
     @staticmethod
     def edit_config():
+        AppConfig.save()  # so we are always editing the most recent version of the file
         if sys.platform == 'darwin':
             result = os.system('open %s' % CONFIG_FILE_PATH)
             if result != 0:  # no default editor found for this file type; open as a text file
