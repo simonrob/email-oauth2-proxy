@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-05-02'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-05-05'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -52,6 +52,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
+    import pyoslog  # unified logging
     import AppKit  # retina icon, menu update on click, native notifications and receiving system events
     import PyObjCTools  # SIGTERM handling
     import SystemConfiguration  # network availability monitoring
@@ -60,7 +61,6 @@ APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 
-VERBOSE = False  # whether to print verbose logs (controlled via 'Debug mode' option in menu, or at startup: --debug)
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces credentials; must be a byte-type string
 
 CONFIG_FILE_PATH = '%s/%s.config' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME)
@@ -124,45 +124,55 @@ class Log:
     """Simple logging to syslog/Console.app on Linux/macOS and to a local file on Windows"""
 
     _LOGGER = None
+    _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
-    _DEFAULT_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
+    _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
 
     @staticmethod
     def initialise():
         Log._LOGGER = logging.getLogger(APP_NAME)
-        Log._LOGGER.setLevel(logging.INFO if sys.platform == 'darwin' else logging.DEBUG)
         if sys.platform == 'win32':
             handler = logging.FileHandler('%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
+        elif sys.platform == 'darwin':
+            handler = pyoslog.Handler()
+            handler.setSubsystem(APP_PACKAGE)
         else:
-            # Unified Logging would be better on macOS - see: https://github.com/ronaldoussoren/pyobjc/issues/377
-            # e.g.: log stream --predicate 'senderImagePath contains "python"' --level debug --style syslog
-            handler = logging.handlers.SysLogHandler(
-                address='/var/run/syslog' if sys.platform == 'darwin' else '/dev/log')
-            handler.setFormatter(logging.Formatter(Log._DEFAULT_MESSAGE_FORMAT))
-        Log._LOGGER.addHandler(handler)
+            handler = logging.handlers.SysLogHandler(address='/dev/log')
+            handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
+        Log._HANDLER = handler
+        Log._LOGGER.addHandler(Log._HANDLER)
+        Log.set_level(logging.INFO)
 
     @staticmethod
-    def _log(level, *args):
-        message = ' '.join(map(str, args))
-        print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
+    def get_level():
+        return Log._LOGGER.getEffectiveLevel()
 
-        # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
-        severity = Log._LOGGER.warning if sys.platform == 'darwin' else level
-        if len(message) > 2048:
+    @staticmethod
+    def set_level(level):
+        # set both handler and logger level as we just want a direct mapping input->output
+        Log._HANDLER.setLevel(level)
+        Log._LOGGER.setLevel(level)
+
+    @staticmethod
+    def _log(level_method, level, *args):
+        message = ' '.join(map(str, args))
+        if Log.get_level() <= level:
+            print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
+
+        if len(message) > 2048 and sys.platform not in ['win32', 'darwin']:
             truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run `%s' \
                                  ' --debug` in a terminal to see the full output ] ' % os.path.basename(__file__)
-            message = message[0:2048 - len(Log._DEFAULT_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
-        severity(message)
+            message = message[0:2048 - len(Log._SYSLOG_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
+        level_method(message)
 
     @staticmethod
     def debug(*args):
-        if VERBOSE:
-            Log._log(Log._LOGGER.debug, *args)
+        Log._log(Log._LOGGER.debug, logging.DEBUG, *args)
 
     @staticmethod
     def info(*args):
-        Log._log(Log._LOGGER.info, *args)
+        Log._log(Log._LOGGER.info, logging.INFO, *args)
 
     @staticmethod
     def error_string(error):
@@ -1256,8 +1266,7 @@ class App:
                                                                  'interaction to the system log')
         self.args = parser.parse_args()
         if self.args.debug:
-            global VERBOSE
-            VERBOSE = True
+            Log.set_level(logging.DEBUG)
 
         if self.args.config_file:
             CONFIG_FILE_PATH = self.args.config_file
@@ -1353,7 +1362,7 @@ class App:
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Start at login', self.toggle_start_at_login, checked=self.started_at_login),
-            pystray.MenuItem('Debug mode', self.toggle_verbose, checked=lambda _: VERBOSE),
+            pystray.MenuItem('Debug mode', self.toggle_debug, checked=lambda _: Log.get_level() == logging.DEBUG),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
 
@@ -1712,9 +1721,8 @@ class App:
         return False
 
     @staticmethod
-    def toggle_verbose(_, item):
-        global VERBOSE
-        VERBOSE = not item.checked
+    def toggle_debug(_, item):
+        Log.set_level(logging.INFO if item.checked else logging.DEBUG)
 
     # noinspection PyUnresolvedReferences
     def notify(self, title, text):
