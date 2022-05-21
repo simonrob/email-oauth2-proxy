@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-05-05'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-05-21'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -127,6 +127,7 @@ class Log:
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
     _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
+    _MACOS_USE_SYSLOG = not pyoslog.is_supported()
 
     @staticmethod
     def initialise():
@@ -135,8 +136,12 @@ class Log:
             handler = logging.FileHandler('%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
-            handler = pyoslog.Handler()
-            handler.setSubsystem(APP_PACKAGE)
+            if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
+                handler = logging.handlers.SysLogHandler(address='/var/run/syslog')
+                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
+            else:  # unified logging in 10.12+
+                handler = pyoslog.Handler()
+                handler.setSubsystem(APP_PACKAGE)
         else:
             handler = logging.handlers.SysLogHandler(address='/dev/log')
             handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
@@ -160,11 +165,14 @@ class Log:
         if Log.get_level() <= level:
             print(datetime.datetime.now().strftime(Log._DATE_FORMAT), message)
 
-        if len(message) > 2048 and sys.platform not in ['win32', 'darwin']:
+        if len(message) > 2048 and (sys.platform not in ['win32', 'darwin'] or Log._MACOS_USE_SYSLOG):
             truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run `%s' \
                                  ' --debug` in a terminal to see the full output ] ' % os.path.basename(__file__)
             message = message[0:2048 - len(Log._SYSLOG_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
-        level_method(message)
+
+        # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
+        severity = Log._LOGGER.warning if Log._MACOS_USE_SYSLOG else level_method
+        severity(message)
 
     @staticmethod
     def debug(*args):
@@ -1051,6 +1059,7 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
+            new_server_connection = None
             try:
                 Log.debug('Accepting new connection to', self.info_string(), 'via', connection.getpeername())
                 socket_map = {}
@@ -1065,6 +1074,7 @@ class OAuth2Proxy(asyncore.dispatcher):
 
                 threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
+
             except ssl.SSLError:
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
@@ -1074,6 +1084,12 @@ class OAuth2Proxy(asyncore.dispatcher):
                              'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
+
+            except Exception:
+                connection.close()
+                if new_server_connection:
+                    new_server_connection.handle_close()
+                raise
         else:
             error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
                 self.info_string(), MAX_CONNECTIONS)
@@ -1227,7 +1243,6 @@ class RetinaIcon(pystray.Icon):
                         if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
-                return AppKit.YES
 
         def _assert_image(self):
             # pystray does some scaling which breaks macOS retina icons - we replace that with the actual menu bar size
