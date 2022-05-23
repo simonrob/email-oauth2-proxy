@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-05-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-05-23'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -127,7 +127,7 @@ class Log:
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
     _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
-    _MACOS_USE_SYSLOG = not pyoslog.is_supported()
+    _MACOS_USE_SYSLOG = not pyoslog.is_supported() if sys.platform == 'darwin' else False
 
     @staticmethod
     def initialise():
@@ -883,8 +883,9 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
-                error_type == OSError and value.errno == errno.ENETDOWN:
-            # TimeoutError 60 = 'Operation timed out'; OSError 50 = 'Network is down'
+                error_type == OSError and value.errno == errno.ENETDOWN or \
+                error_type == OSError and value.errno == errno.EHOSTUNREACH:
+            # TimeoutError 60 = 'Operation timed out'; OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info(self.proxy_type, self.connection_info, 'Caught network error (server) - is there a network',
                      'connection? Error type', error_type, 'with message:', value)
             self.handle_close()
