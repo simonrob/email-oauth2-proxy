@@ -852,10 +852,10 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
             # receiving data from the server while authenticated counts as activity (i.e., ignore pre-login negotiation)
             if self.authenticated_username is not None:
-                activity_time = int(time.time())
+                activity_time = time.time() // 10  # only update once every 10 or so seconds (timeago shows "just now")
                 if activity_time > self.last_activity:
                     config = AppConfig.get()
-                    config.set(self.authenticated_username, 'last_activity', str(activity_time))
+                    config.set(self.authenticated_username, 'last_activity', str(int(time.time())))
                     self.last_activity = activity_time
 
         # if not authenticated, buffer incoming data and process line-by-line
@@ -1088,7 +1088,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 Log.error(error_text)
                 if sys.platform == 'darwin':
                     Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
-                              'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
+                              'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
 
