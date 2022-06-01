@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-05-23'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-06-01'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -52,7 +52,9 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
+    # noinspection PyPackageRequirements
     import pyoslog  # unified logging
+    # noinspection PyPackageRequirements
     import AppKit  # retina icon, menu update on click, native notifications and receiving system events
     import PyObjCTools  # SIGTERM handling
     import SystemConfiguration  # network availability monitoring
@@ -183,6 +185,10 @@ class Log:
         Log._log(Log._LOGGER.info, logging.INFO, *args)
 
     @staticmethod
+    def error(*args):
+        Log._log(Log._LOGGER.error, logging.ERROR, *args)
+
+    @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
 
@@ -250,7 +256,7 @@ class OAuth2Helper:
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
         if username not in AppConfig.accounts():
-            Log.info('Proxy config file entry missing for account', username, '- aborting login')
+            Log.error('Proxy config file entry missing for account', username, '- aborting login')
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
                            'for permission_url, token_url, oauth2_scope, redirect_uri, client_id and '
                            'client_secret' % (APP_NAME, username))
@@ -266,7 +272,7 @@ class OAuth2Helper:
         client_secret = config.get(username, 'client_secret', fallback=None)
 
         if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
-            Log.info('Proxy config file entry incomplete for account', username, '- aborting login')
+            Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
                            'and client_secret)' % (APP_NAME, username))
@@ -295,7 +301,7 @@ class OAuth2Helper:
                 (success, authorisation_code) = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
                                                                                            username, connection_info)
                 if not success:
-                    Log.info('Authentication request failed or expired for account', username, '- aborting login')
+                    Log.error('Authentication request failed or expired for account', username, '- aborting login')
                     return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
                                   'account %s' % (APP_NAME, username)
 
@@ -385,7 +391,7 @@ class OAuth2Helper:
 
         try:
             wsgiref.simple_server.WSGIServer.allow_reuse_address = False
-            redirection_server = wsgiref.simple_server.make_server(parsed_uri.hostname, parsed_port,
+            redirection_server = wsgiref.simple_server.make_server(str(parsed_uri.hostname), parsed_port,
                                                                    RedirectionReceiverWSGIApplication(),
                                                                    handler_class=LoggingWSGIRequestHandler)
             token_request['local_server_auth_wsgi'] = redirection_server
@@ -401,10 +407,10 @@ class OAuth2Helper:
             RESPONSE_QUEUE.put(token_request)
 
         except socket.error:
-            Log.info('Local server auth mode (%s:%d): error; unable to start local server. Please check that the '
-                     'redirect_uri for account %s is unique across accounts, specifies a port number, and is not '
-                     'already in use. See the documentation in the proxy\'s configuration file for further detail' % (
-                         parsed_uri.hostname, parsed_port, token_request['username']))
+            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the '
+                      'redirect_uri for account %s is unique across accounts, specifies a port number, and is not '
+                      'already in use. See the documentation in the proxy\'s configuration file for further detail' % (
+                          parsed_uri.hostname, parsed_port, token_request['username']))
 
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope):
@@ -612,7 +618,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                 self.process_data(complete_lines)
 
     def process_data(self, byte_data, censor_server_log=False):
-        self.server_connection.send(byte_data, censor_server_log)  # by default just send everything straight to server
+        self.server_connection.send(byte_data, censor_log=censor_server_log)  # just send everything straight to server
 
     def send(self, byte_data):
         if not self.authenticated:  # after authentication these are identical to server-side logs (in process_data)
@@ -917,7 +923,7 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
     def process_data(self, byte_data):
         # note: there is no reason why IMAP STARTTLS (https://tools.ietf.org/html/rfc2595) couldn't be supported here
-        # as with SMTP, but it doesn't seem like any well-known servers support this, so left unimplemented for now
+        # as with SMTP, but all well-known servers provide a non-STARTTLS variant, so left unimplemented for now
         str_response = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
         # if authentication succeeds, remove our proxy from the client and ignore all further communication
@@ -1003,7 +1009,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                                                                         self.connection_info)
                 if success:
                     self.authentication_state = self.AUTH.CREDENTIALS_SENT
-                    self.send(OAuth2Helper.encode_oauth2_string(result), True)
+                    self.send(OAuth2Helper.encode_oauth2_string(result), censor_log=True)
                     self.send(b'\r\n')
                     self.authenticated_username = self.username
 
@@ -1079,10 +1085,10 @@ class OAuth2Proxy(asyncore.dispatcher):
             except ssl.SSLError:
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
-                Log.info(error_text)
+                Log.error(error_text)
                 if sys.platform == 'darwin':
-                    Log.info('If you encounter this error repeatedly, please check that you have correctly configured '
-                             'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
+                    Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
+                              'python root certificates - see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
 
@@ -1094,7 +1100,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         else:
             error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
                 self.info_string(), MAX_CONNECTIONS)
-            Log.info(error_text)
+            Log.error(error_text)
             connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
             connection.close()
 
@@ -1161,11 +1167,12 @@ class OAuth2Proxy(asyncore.dispatcher):
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
                 error_type == ConnectionRefusedError and value.errno == errno.ECONNREFUSED or \
-                error_type == OSError and value.errno == errno.EHOSTUNREACH or \
-                error_type == OSError and value.errno == 0:
+                error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
             # gaierror 8 = 'nodename nor servname provided, or not known'; TimeoutError 60 = 'Operation timed out';
             # ConnectionResetError 54 = 'Connection reset by peer'; ConnectionRefusedError 61 = 'Connection refused';
-            # OSError 65 = 'No route to host'; OSError 0 = 'Error' (thrown if SSL handshake fails, often due to network)
+            # OSError 0 = 'Error' (if SSL handshake fails, often due to network); OSError 22 = 'Invalid argument'
+            # (caused by getpeername() failing when there is no network connection); OSError 50 = 'Network is down';
+            # OSError 65 = 'No route to host'
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
         else:
@@ -1182,7 +1189,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         try:
             self.restart()
         except Exception as e:
-            Log.info('Abandoning restart of', self.info_string(), 'due to repeated exception:', Log.error_string(e))
+            Log.error('Abandoning restart of', self.info_string(), 'due to repeated exception:', Log.error_string(e))
 
 
 class AuthorisationWindow:
@@ -1193,31 +1200,31 @@ class AuthorisationWindow:
         return self.title
 
 
-# noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming,PyUnusedLocal
-class ProvisionalNavigationBrowserDelegate:
-    """Used to dynamically give pywebview the ability to navigate to unresolved local URLs (only required for macOS)"""
+if sys.platform == 'darwin':
+    # noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming,PyUnusedLocal
+    class ProvisionalNavigationBrowserDelegate:
+        """Used to give pywebview the ability to navigate to unresolved local URLs (only required for macOS)"""
 
-    # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
-    # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
-    def webView_didStartProvisionalNavigation_(self, web_view, nav):
-        # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
-        browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
-        if browser_view_instance:
-            browser_view_instance.loaded.set()
+        # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
+        # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
+        def webView_didStartProvisionalNavigation_(self, web_view, nav):
+            # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
+            browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
+            if browser_view_instance:
+                browser_view_instance.loaded.set()
 
-    def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, nav):
-        # called when the server initiates a local redirect
-        browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
-        if browser_view_instance:
-            browser_view_instance.loaded.set()
+        def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, nav):
+            # called when the server initiates a local redirect
+            browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
+            if browser_view_instance:
+                browser_view_instance.loaded.set()
 
+if sys.platform == 'darwin':
+    # noinspection PyUnresolvedReferences,PyProtectedMember
+    class RetinaIcon(pystray.Icon):
+        """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
+        regeneration of the last activity time for each account every time the icon is clicked"""
 
-# noinspection PyPackageRequirements,PyUnresolvedReferences,PyProtectedMember
-class RetinaIcon(pystray.Icon):
-    """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
-    regeneration of the last activity time for each account every time the icon is clicked"""
-
-    if sys.platform == 'darwin':
         def _create_menu(self, descriptors, callbacks):
             # we add a new delegate to each created menu/submenu so that we can respond to menuNeedsUpdate
             menu = super()._create_menu(descriptors, callbacks)
@@ -1303,7 +1310,7 @@ class App:
             try:
                 self.icon.run(self.post_create)
             except NotImplementedError:
-                Log.info('Error initialising icon - did you mean to run in --no-gui mode?')
+                Log.error('Unable to initialise icon - did you mean to run in --no-gui mode?')
                 self.exit(None)
                 # noinspection PyProtectedMember
                 self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
@@ -1797,13 +1804,13 @@ class App:
                 if local_port <= 0 or local_port > 65535:
                     raise ValueError
             except ValueError:
-                Log.info('Error: invalid value', str_local_port, 'for local server port in section', match.string)
+                Log.error('Error: invalid value', str_local_port, 'for local server port in section', match.string)
                 server_load_error = True
 
             server_address = config.get(section, 'server_address', fallback=None)
             server_port = config.getint(section, 'server_port', fallback=-1)
             if server_port <= 0 or server_port > 65535:
-                Log.info('Error: invalid value', server_port, 'for remote server port in section', match.string)
+                Log.error('Error: invalid value', server_port, 'for remote server port in section', match.string)
                 server_load_error = True
 
             custom_configuration = {
@@ -1813,7 +1820,7 @@ class App:
             }
 
             if not server_address:  # all other values are checked, regex matched or have a fallback above
-                Log.info('Error: remote server address is missing in section', match.string)
+                Log.error('Error: remote server address is missing in section', match.string)
                 server_load_error = True
 
             if not server_load_error:
@@ -1823,15 +1830,15 @@ class App:
                     new_proxy.start()
                     self.proxies.append(new_proxy)
                 except Exception as e:
-                    Log.info('Error: unable to start server:', Log.error_string(e))
+                    Log.error('Error: unable to start server:', Log.error_string(e))
                     server_start_error = True
 
         if server_start_error or server_load_error or len(self.proxies) <= 0:
             if server_start_error:
-                Log.info('Abandoning setup because one or more servers failed to start - is the proxy already running?')
+                Log.error('Abandoning setup as one or more servers failed to start - is the proxy already running?')
             else:
                 error_text = 'Invalid' if len(AppConfig.servers()) > 0 else 'No'
-                Log.info(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
+                Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
                 self.notify(APP_NAME, error_text + ' server configuration(s) found. ' +
                             'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
