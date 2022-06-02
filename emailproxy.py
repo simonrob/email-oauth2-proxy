@@ -621,8 +621,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.server_connection.send(byte_data, censor_log=censor_server_log)  # just send everything straight to server
 
     def send(self, byte_data):
-        if not self.authenticated:  # after authentication these are identical to server-side logs (in process_data)
-            Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
+        Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)
         try:
             super().send(byte_data)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
@@ -877,8 +876,6 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
-        if self.client_connection.authenticated:
-            Log.debug(self.proxy_type, self.connection_info, '<--', byte_data)  # command after any editing/interception
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs

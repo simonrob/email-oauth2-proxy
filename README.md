@@ -89,6 +89,10 @@ A similar issue may occur on Windows with the [pythonnet](https://github.com/pyt
 Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) reporting any bugs you find, or [submit a pull request](https://github.com/simonrob/email-oauth2-proxy/pulls) to help improve this tool.
 
 
+## Advanced / experimental features
+The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins) has a semi-experimental new feature that enables the use of separate scripts to modify IMAP/SMTP commands when they are received from the client or server before passing through to the other side of the connection. This allows a wide range of additional capabilities or triggers to be added the proxy. For example, the [IMAPIgnoreSentMessageUpload plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPIgnoreSentMessageUpload.py) intercepts any client commands to add emails to the IMAP sent messages mailbox, which resolves message duplication issues for servers that automatically do this when emails are received via SMTP (e.g., Office 365, Gmail, etc). See the documentation and examples in this branch for further details and setup instructions.
+
+
 ## Potential improvements (pull requests welcome)
 - Switch to asyncio (asyncore is currently deprecated, but [PEP 594](https://peps.python.org/pep-0594/) will remove it completely in Python 3.12)
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status)
