@@ -4,9 +4,10 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-06-01'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-06-02'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
+import ast
 import asyncore
 import base64
 import binascii
@@ -14,6 +15,7 @@ import configparser
 import datetime
 import enum
 import errno
+import importlib
 import json
 import logging
 import logging.handlers
@@ -191,6 +193,12 @@ class Log:
     @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
+
+    @staticmethod
+    def get_labelled_logs(*labels):
+        return (lambda *args: Log.debug(*labels, ':', *args),
+                lambda *args: Log.info(*labels, ':', *args),
+                lambda *args: Log.error(*labels, ':', *args))
 
 
 class AppConfig:
@@ -554,6 +562,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.server_connection = server_connection
         self.proxy_parent = proxy_parent
         self.custom_configuration = custom_configuration
+        self.has_plugins = len(self.custom_configuration['plugins']) > 0
 
         self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
@@ -584,8 +593,12 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
         # we have already authenticated - nothing to do; just pass data directly to server
         if self.authenticated:
-            Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)
-            OAuth2ClientConnection.process_data(self, byte_data)
+            Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)  # original unedited message
+            if self.has_plugins:
+                for plugin in self.custom_configuration['plugins']:
+                    byte_data = plugin.receive_from_client(byte_data)
+            if byte_data:
+                OAuth2ClientConnection.process_data(self, byte_data)
 
         # if not authenticated, buffer incoming data and process line-by-line (slightly more involved than the server
         # connection because we censor commands that contain passwords or authentication tokens)
@@ -614,7 +627,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                                       b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data,
                                       flags=re.IGNORECASE)
 
-                Log.debug(self.proxy_type, self.connection_info, '-->', log_data)
+                Log.debug(self.proxy_type, self.connection_info, '-->', log_data)  # original unedited message
                 self.process_data(complete_lines)
 
     def process_data(self, byte_data, censor_server_log=False):
@@ -813,6 +826,7 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         self.server_address = server_address
         self.proxy_parent = proxy_parent
         self.custom_configuration = custom_configuration
+        self.has_plugins = len(self.custom_configuration['plugins']) > 0
 
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
@@ -847,7 +861,12 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
         # we have already authenticated - nothing to do; just pass data directly to client, ignoring overridden method
         if self.client_connection.authenticated:
-            OAuth2ServerConnection.process_data(self, byte_data)
+            if self.has_plugins:
+                Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # original unedited message
+                for plugin in self.custom_configuration['plugins']:
+                    byte_data = plugin.receive_from_server(byte_data)
+            if byte_data:
+                OAuth2ServerConnection.process_data(self, byte_data)
 
             # receiving data from the server while authenticated counts as activity (i.e., ignore pre-login negotiation)
             if self.authenticated_username is not None:
@@ -871,14 +890,14 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
                     break
 
             if complete_lines:
-                Log.debug(self.proxy_type, self.connection_info, '    <--', complete_lines)  # (log before edits)
+                Log.debug(self.proxy_type, self.connection_info, '    <--', complete_lines)  # original unedited message
                 self.process_data(complete_lines)
 
     def process_data(self, byte_data):
         self.client_connection.send(byte_data)  # by default we just send everything straight to the client
 
     def send(self, byte_data, censor_log=False):
-        if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
+        if not self.client_connection.authenticated or self.has_plugins:  # after auth, only plugin edits require logs
             Log.debug(self.proxy_type, self.connection_info, '    -->', CENSOR_MESSAGE if censor_log else byte_data)
         super().send(byte_data)
 
@@ -1056,28 +1075,53 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def info_string(self):
         secure = self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']
-        return '%s server at %s:%d (%s) proxying %s:%d (%s)' % (
+        return '%s server at %s:%d (%s) proxying %s:%d (%s)%s' % (
             self.proxy_type, self.local_address[0], self.local_address[1], 'TLS' if secure else 'unsecured',
             self.server_address[0], self.server_address[1],
-            'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS')
+            'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS',
+            (' with plugins: %s' % list(self.custom_configuration['plugin_configuration'].keys())) if
+            self.custom_configuration['plugin_configuration'] else '')
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             new_server_connection = None
             try:
                 Log.debug('Accepting new connection to', self.info_string(), 'via', connection.getpeername())
+
+                configuration = self.custom_configuration.copy()  # each connection needs its own plugin instance
+                configuration['plugins'] = []
+                for name, options in self.custom_configuration['plugin_configuration'].items():
+                    plugin_class = getattr(options['module'], name)
+                    plugin_options = options['options']
+                    plugin_object = plugin_class(**plugin_options)
+
+                    # noinspection PyProtectedMember
+                    plugin_object._attach_log(*Log.get_labelled_logs(self.proxy_type, address, name))
+                    configuration['plugin_configuration'][name]['object'] = plugin_object
+                    configuration['plugins'].append(plugin_object)  # just for ease of access/use
+
                 socket_map = {}
                 server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
-                new_server_connection = server_class(socket_map, self.server_address, address, self,
-                                                     self.custom_configuration)
+                new_server_connection = server_class(socket_map, self.server_address, address, self, configuration)
                 client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
                 new_client_connection = client_class(connection, socket_map, address, new_server_connection, self,
-                                                     self.custom_configuration)
+                                                     configuration)
                 new_server_connection.client_connection = new_client_connection
                 self.client_connections.append(new_client_connection)
 
+                for plugin in configuration['plugins']:
+                    # noinspection PyProtectedMember
+                    plugin._register_senders(new_server_connection.send, new_client_connection.send)
+
                 threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
+
+            except TypeError as e:
+                error_text = '%s encountered a TypeError - did you specify an incorrect plugin parameter? %s' % (
+                    self.info_string(), Log.error_string(e))
+                Log.error(error_text)
+                connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
+                connection.close()
 
             except ssl.SSLError:
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
@@ -1432,8 +1476,10 @@ class App:
             items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
         else:
             for proxy in self.proxies:
-                items.append(pystray.MenuItem('    %s:%d ➝ %s:%d' % (proxy.local_address[0], proxy.local_address[1],
-                                                                     proxy.server_address[0], proxy.server_address[1]),
+                has_plugins = len(proxy.custom_configuration['plugin_configuration']) > 0
+                items.append(pystray.MenuItem('    %s:%d %s %s:%d' % (proxy.local_address[0], proxy.local_address[1],
+                                                                      '⥅' if has_plugins else '➝',
+                                                                      proxy.server_address[0], proxy.server_address[1]),
                                               None, enabled=False))
         items.append(pystray.Menu.SEPARATOR)
 
@@ -1810,10 +1856,24 @@ class App:
                 Log.error('Error: invalid value', server_port, 'for remote server port in section', match.string)
                 server_load_error = True
 
+            # note: this is a semi-experimental option that allows the use of plugins to modify IMAP/SMTP messages
+            # see the documentation in the configuration file and sample plugins for more details and setup instructions
+            plugin_configuration = ast.literal_eval(config.get(section, 'plugins', fallback='{}'))
+            imported_plugins = {}
+            for name, options in plugin_configuration.items():
+                plugin_name = 'plugins.%s' % name
+                if plugin_name in sys.modules:  # multiple servers can reuse the same modules
+                    plugin = sys.modules[plugin_name]
+                else:
+                    Log.info('Loading plugin:', name)
+                    plugin = importlib.import_module('plugins.%s' % name)
+                imported_plugins[name] = {'module': plugin, 'options': options}
+
             custom_configuration = {
                 'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False,
                 'local_certificate_path': config.get(section, 'local_certificate_path', fallback=None),
-                'local_key_path': config.get(section, 'local_key_path', fallback=None)
+                'local_key_path': config.get(section, 'local_key_path', fallback=None),
+                'plugin_configuration': imported_plugins
             }
 
             if not server_address:  # all other values are checked, regex matched or have a fallback above
