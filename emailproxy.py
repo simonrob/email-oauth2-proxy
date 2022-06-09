@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-06-01'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-06-09'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -301,7 +301,7 @@ class OAuth2Helper:
                 (success, authorisation_code) = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
                                                                                            username, connection_info)
                 if not success:
-                    Log.error('Authentication request failed or expired for account', username, '- aborting login')
+                    Log.info('Authentication request failed or expired for account', username, '- aborting login')
                     return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
                                   'account %s' % (APP_NAME, username)
 
@@ -502,7 +502,7 @@ class OAuth2Helper:
 
     @staticmethod
     def encode_oauth2_string(input_string):
-        """We use encode() from imaplib's _Authenticator, but it is a private class so we can't just import it. That
+        """We use encode() from imaplib's _Authenticator, but it is a private class so we shouldn't just import it. That
         method's docstring is:
             Invoke binascii.b2a_base64 iteratively with short even length buffers, strip the trailing line feed from
             the result and append. 'Even' means a number that factors to both 6 and 8, so when it gets to the end of
@@ -1107,8 +1107,13 @@ class OAuth2Proxy(asyncore.dispatcher):
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
-                Log.info('Caught asyncore exception in', address, 'thread loop:', Log.error_string(e))
-                client.close()
+                # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
+                if isinstance(e, OSError) and e.errno == errno.EBADF:
+                    Log.info(client.proxy_type, address, '[ Connection closed ]')
+                else:
+                    Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
+                             Log.error_string(e))
+            client.close()
 
     def start(self):
         Log.info('Starting', self.info_string())
@@ -1172,6 +1177,11 @@ class OAuth2Proxy(asyncore.dispatcher):
             # OSError 65 = 'No route to host'
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
+        elif error_type == ssl.SSLError and 'SSLV3_ALERT_BAD_CERTIFICATE' in value.args[1] and \
+                self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']:
+            Log.error('Caught SSLV3_ALERT_BAD_CERTIFICATE error in', self.info_string(), '- when using a self-signed',
+                      'local certificate you may need to disable SSL verification (and/or add an exception) in your',
+                      'client for the local host and port')
         else:
             super().handle_error()
 
