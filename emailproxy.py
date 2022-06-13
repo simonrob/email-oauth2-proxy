@@ -4,7 +4,7 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-06-09'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-06-13'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -772,17 +772,14 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
             self.send_authentication_request()
 
         elif self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('auth login'):
-            self.authentication_state = self.AUTH.LOGIN_AWAITING_USERNAME
-            self.send(b'334 %s\r\n' % base64.b64encode(b'Username:'))
+            if len(str_data) > 11:  # 11 = len('AUTH LOGIN ') - this method can have the username either inline...
+                self.decode_username_and_request_password(str_data[11:])
+            else:  # ...or requested separately
+                self.authentication_state = self.AUTH.LOGIN_AWAITING_USERNAME
+                self.send(b'334 %s\r\n' % base64.b64encode(b'Username:'))
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_USERNAME:
-            try:
-                self.server_connection.username = base64.b64decode(str_data).decode('utf-8')
-            except binascii.Error:
-                self.server_connection.username = ''
-            self.authentication_state = self.AUTH.LOGIN_AWAITING_PASSWORD
-            self.censor_next_log = True
-            self.send(b'334 %s\r\n' % base64.b64encode(b'Password:'))
+            self.decode_username_and_request_password(str_data)
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_PASSWORD:
             try:
@@ -794,6 +791,15 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         # some other command that we don't handle - pass directly to server
         else:
             super().process_data(byte_data)
+
+    def decode_username_and_request_password(self, encoded_username):
+        try:
+            self.server_connection.username = base64.b64decode(encoded_username).decode('utf-8')
+        except binascii.Error:
+            self.server_connection.username = ''
+        self.authentication_state = self.AUTH.LOGIN_AWAITING_PASSWORD
+        self.censor_next_log = True
+        self.send(b'334 %s\r\n' % base64.b64encode(b'Password:'))
 
     def send_authentication_request(self):
         self.authentication_state = self.AUTH.PENDING
