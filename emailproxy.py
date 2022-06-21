@@ -4,13 +4,14 @@ SASL authentication. Designed for apps/clients that don't support OAuth 2.0 but 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-06-02'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-06-20'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
 import asyncore
 import base64
 import binascii
+import collections
 import configparser
 import datetime
 import enum
@@ -595,8 +596,11 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         if self.authenticated:
             Log.debug(self.proxy_type, self.connection_info, '-->', byte_data)  # original unedited message
             if self.has_plugins:
+                # client -> server: process messages through plugins in ascending order
                 for plugin in self.custom_configuration['plugins']:
                     byte_data = plugin.receive_from_client(byte_data)
+                    if not byte_data:
+                        break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
             if byte_data:
                 OAuth2ClientConnection.process_data(self, byte_data)
 
@@ -862,9 +866,12 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
         # we have already authenticated - nothing to do; just pass data directly to client, ignoring overridden method
         if self.client_connection.authenticated:
             if self.has_plugins:
+                # server -> client: process messages through plugins in descending order
                 Log.debug(self.proxy_type, self.connection_info, '    <--', byte_data)  # original unedited message
-                for plugin in self.custom_configuration['plugins']:
-                    byte_data = plugin.receive_from_server(byte_data)
+                for i in range(1, len(self.custom_configuration['plugins']) + 1):
+                    byte_data = self.custom_configuration['plugins'][-i].receive_from_server(byte_data)
+                    if not byte_data:
+                        break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
             if byte_data:
                 OAuth2ServerConnection.process_data(self, byte_data)
 
@@ -1109,9 +1116,10 @@ class OAuth2Proxy(asyncore.dispatcher):
                 new_server_connection.client_connection = new_client_connection
                 self.client_connections.append(new_client_connection)
 
-                for plugin in configuration['plugins']:
+                for i, plugin in enumerate(configuration['plugins']):
                     # noinspection PyProtectedMember
-                    plugin._register_senders(new_server_connection.send, new_client_connection.send)
+                    plugin._register_senders(configuration['plugins'][i + 1:], new_server_connection.send,
+                                             list(reversed(configuration['plugins'][:i])), new_client_connection.send)
 
                 threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
@@ -1476,11 +1484,13 @@ class App:
             items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
         else:
             for proxy in self.proxies:
-                has_plugins = len(proxy.custom_configuration['plugin_configuration']) > 0
-                items.append(pystray.MenuItem('    %s:%d %s %s:%d' % (proxy.local_address[0], proxy.local_address[1],
-                                                                      '⥅' if has_plugins else '➝',
-                                                                      proxy.server_address[0], proxy.server_address[1]),
+                items.append(pystray.MenuItem('    %s:%d ➝ %s:%d' % (proxy.local_address[0], proxy.local_address[1],
+                                                                     proxy.server_address[0], proxy.server_address[1]),
                                               None, enabled=False))
+                last_plugin = len(proxy.custom_configuration['plugin_configuration']) - 1
+                for i, plugin in enumerate(proxy.custom_configuration['plugin_configuration']):
+                    items.append(pystray.MenuItem('        %s %s' % ('└' if i == last_plugin else '├', plugin), None,
+                                                  enabled=False))
         items.append(pystray.Menu.SEPARATOR)
 
         config_accounts = AppConfig.accounts()
@@ -1859,15 +1869,21 @@ class App:
             # note: this is a semi-experimental option that allows the use of plugins to modify IMAP/SMTP messages
             # see the documentation in the configuration file and sample plugins for more details and setup instructions
             plugin_configuration = ast.literal_eval(config.get(section, 'plugins', fallback='{}'))
-            imported_plugins = {}
+            imported_plugins = collections.OrderedDict()  # (note: default dict is ordered only from Python 3.7+)
             for name, options in plugin_configuration.items():
+                plugin = None
                 plugin_name = 'plugins.%s' % name
                 if plugin_name in sys.modules:  # multiple servers can reuse the same modules
                     plugin = sys.modules[plugin_name]
                 else:
                     Log.info('Loading plugin:', name)
-                    plugin = importlib.import_module('plugins.%s' % name)
-                imported_plugins[name] = {'module': plugin, 'options': options}
+                    try:
+                        plugin = importlib.import_module('plugins.%s' % name)
+                    except ModuleNotFoundError:
+                        Log.error('Failed to load plugin (ModuleNotFoundError):', name)
+                        server_load_error = True
+                if plugin:
+                    imported_plugins[name] = {'module': plugin, 'options': options}
 
             custom_configuration = {
                 'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False,
