@@ -310,7 +310,7 @@ class OAuth2Helper:
                 (success, authorisation_code) = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
                                                                                            username, connection_info)
                 if not success:
-                    Log.error('Authentication request failed or expired for account', username, '- aborting login')
+                    Log.info('Authentication request failed or expired for account', username, '- aborting login')
                     return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
                                   'account %s' % (APP_NAME, username)
 
@@ -511,7 +511,7 @@ class OAuth2Helper:
 
     @staticmethod
     def encode_oauth2_string(input_string):
-        """We use encode() from imaplib's _Authenticator, but it is a private class so we can't just import it. That
+        """We use encode() from imaplib's _Authenticator, but it is a private class so we shouldn't just import it. That
         method's docstring is:
             Invoke binascii.b2a_base64 iteratively with short even length buffers, strip the trailing line feed from
             the result and append. 'Even' means a number that factors to both 6 and 8, so when it gets to the end of
@@ -789,17 +789,14 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
             self.send_authentication_request()
 
         elif self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('auth login'):
-            self.authentication_state = self.AUTH.LOGIN_AWAITING_USERNAME
-            self.send(b'334 %s\r\n' % base64.b64encode(b'Username:'))
+            if len(str_data) > 11:  # 11 = len('AUTH LOGIN ') - this method can have the username either inline...
+                self.decode_username_and_request_password(str_data[11:])
+            else:  # ...or requested separately
+                self.authentication_state = self.AUTH.LOGIN_AWAITING_USERNAME
+                self.send(b'334 %s\r\n' % base64.b64encode(b'Username:'))
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_USERNAME:
-            try:
-                self.server_connection.username = base64.b64decode(str_data).decode('utf-8')
-            except binascii.Error:
-                self.server_connection.username = ''
-            self.authentication_state = self.AUTH.LOGIN_AWAITING_PASSWORD
-            self.censor_next_log = True
-            self.send(b'334 %s\r\n' % base64.b64encode(b'Password:'))
+            self.decode_username_and_request_password(str_data)
 
         elif self.authentication_state is self.AUTH.LOGIN_AWAITING_PASSWORD:
             try:
@@ -811,6 +808,15 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         # some other command that we don't handle - pass directly to server
         else:
             super().process_data(byte_data)
+
+    def decode_username_and_request_password(self, encoded_username):
+        try:
+            self.server_connection.username = base64.b64decode(encoded_username).decode('utf-8')
+        except binascii.Error:
+            self.server_connection.username = ''
+        self.authentication_state = self.AUTH.LOGIN_AWAITING_PASSWORD
+        self.censor_next_log = True
+        self.send(b'334 %s\r\n' % base64.b64encode(b'Password:'))
 
     def send_authentication_request(self):
         self.authentication_state = self.AUTH.PENDING
@@ -1159,8 +1165,13 @@ class OAuth2Proxy(asyncore.dispatcher):
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
-                Log.info('Caught asyncore exception in', address, 'thread loop:', Log.error_string(e))
-                client.close()
+                # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
+                if isinstance(e, OSError) and e.errno == errno.EBADF:
+                    Log.info(client.proxy_type, address, '[ Connection closed ]')
+                else:
+                    Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
+                             Log.error_string(e))
+            client.close()
 
     def start(self):
         Log.info('Starting', self.info_string())
@@ -1224,6 +1235,11 @@ class OAuth2Proxy(asyncore.dispatcher):
             # OSError 65 = 'No route to host'
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
+        elif error_type == ssl.SSLError and 'SSLV3_ALERT_BAD_CERTIFICATE' in value.args[1] and \
+                self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']:
+            Log.error('Caught SSLV3_ALERT_BAD_CERTIFICATE error in', self.info_string(), '- when using a self-signed',
+                      'local certificate you may need to disable SSL verification (and/or add an exception) in your',
+                      'client for the local host and port')
         else:
             super().handle_error()
 
