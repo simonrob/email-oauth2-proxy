@@ -66,7 +66,7 @@ APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces credentials; must be a byte-type string
 
 CONFIG_FILE_PATH = '%s/%s.config' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME)
-CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|SMTP))-(?P<port>\d+)')
+CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|SMTP|POP))-(?P<port>\d+)')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/SMTP connections; 0 = no limit; limit is per server
 
@@ -807,6 +807,40 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         super().process_data(b'AUTH XOAUTH2\r\n')
 
 
+class POPOAuth2ClientConnection(OAuth2ClientConnection):
+    """The client side of the connection - watch for USER and PASS commands and replace with OAuth 2.0"""
+
+    class AUTH(enum.Enum):
+        PENDING = 1
+        AWAITING_PASS = 2
+        AWAITING_AUTH = 3
+        CREDENTIALS_SENT = 5
+
+    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
+        super().__init__('POP', connection, socket_map, connection_info, server_connection, proxy_parent,
+                         custom_configuration)
+        self.authentication_state = self.AUTH.PENDING
+
+    def process_data(self, byte_data, censor_server_log=False):
+        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
+        str_data_lower = str_data.lower()
+
+        if self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('user'):
+            self.server_connection.username = str_data[5:]  # 5 = len('USER ')
+            self.authentication_state = self.AUTH.AWAITING_PASS
+            self.censor_next_log = True
+            self.send(b'+OK\r\n')  # request password
+
+        elif self.authentication_state is self.AUTH.AWAITING_PASS and str_data_lower.startswith('pass'):
+            self.server_connection.password = str_data[5:]  # 5 = len('PASS ')
+            self.authentication_state = self.AUTH.AWAITING_AUTH
+            super().process_data(b'AUTH XOAUTH2\r\n')
+
+        # some other command that we don't handle - pass directly to server
+        else:
+            super().process_data(byte_data)
+
+
 class OAuth2ServerConnection(asyncore.dispatcher_with_send):
     """The base server-side connection, setting up STARTTLS if requested, subclassed for IMAP/SMTP server interaction"""
 
@@ -1047,6 +1081,52 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 super().process_data(b'%s\r\n' % updated_response.encode('utf-8'))
             else:
                 super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
+
+
+class POPOAuth2ServerConnection(OAuth2ServerConnection):
+    """The POP server side - submit credentials, then watch for +OK and ignore subsequent data"""
+
+    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
+        super().__init__('POP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+        self.username = None
+        self.password = None
+
+    def process_data(self, byte_data):
+        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
+
+        if self.client_connection.authentication_state is POPOAuth2ClientConnection.AUTH.AWAITING_AUTH and \
+                self.username is not None and self.password is not None:
+            if str_data.startswith('+'):  # + = 'please send credentials'
+                (success, result) = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
+                                                                        self.connection_info)
+                if success:
+                    self.client_connection.authentication_state = POPOAuth2ClientConnection.AUTH.CREDENTIALS_SENT
+                    self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
+                    self.authenticated_username = self.username
+
+                self.username = None
+                self.password = None
+                if not success:
+                    # a local authentication error occurred - send details to the client and exit
+                    super().process_data(b'-ERR Authentication failed. %s\r\n' % result.encode('utf-8'))
+                    self.client_connection.close()
+
+            else:
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.client_connection.close()
+
+        elif self.client_connection.authentication_state is POPOAuth2ClientConnection.AUTH.CREDENTIALS_SENT:
+            if str_data.startswith('+OK'):
+                Log.info(self.proxy_type, self.connection_info,
+                         '[ Successfully authenticated POP connection - removing proxy ]')
+                self.client_connection.authenticated = True
+                super().process_data(byte_data)
+            else:
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.client_connection.close()
+
+        else:
+            super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
 
 
 class OAuth2Proxy(asyncore.dispatcher):
