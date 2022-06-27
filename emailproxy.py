@@ -730,7 +730,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
 
 
 class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
-    """The client side of the connection - intercept AUTH LOGIN commands and replace with OAuth 2.0"""
+    """The client side of the connection - intercept AUTH PLAIN and AUTH LOGIN commands and replace with OAuth 2.0"""
 
     class AUTH(enum.Enum):
         PENDING = 1
@@ -1050,7 +1050,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
 
 class OAuth2Proxy(asyncore.dispatcher):
-    """Listen on SERVER_ADDRESS:SERVER_PORT, creating a ServerConnection + ClientConnection for each new connection"""
+    """Listen on local_address, creating an OAuth2ServerConnection + OAuth2ClientConnection for each new connection"""
 
     def __init__(self, proxy_type, local_address, server_address, custom_configuration):
         asyncore.dispatcher.__init__(self)
@@ -1089,7 +1089,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
                              'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
                 Log.error(error_text)
-                if sys.platform == 'darwin':
+                if sys.platform in ['darwin', 'win32']:
                     Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
                               'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
@@ -1203,14 +1203,6 @@ class OAuth2Proxy(asyncore.dispatcher):
             self.restart()
         except Exception as e:
             Log.error('Abandoning restart of', self.info_string(), 'due to repeated exception:', Log.error_string(e))
-
-
-class AuthorisationWindow:
-    """Used to dynamically add the missing get_title method to a pywebview window"""
-
-    # noinspection PyUnresolvedReferences
-    def get_title(self):
-        return self.title
 
 
 if sys.platform == 'darwin':
@@ -1546,7 +1538,7 @@ class App:
             authorisation_window = webview.create_window(window_title, html=auth_page, on_top=True, text_select=True)
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
-        setattr(authorisation_window, 'get_title', AuthorisationWindow.get_title)  # add missing get_title method
+        setattr(authorisation_window, 'get_title', lambda window: window.title)  # add missing get_title method
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
         if pkg_resources.parse_version(
@@ -1763,11 +1755,7 @@ class App:
     # noinspection PyUnresolvedReferences
     def notify(self, title, text):
         if self.icon:
-            if self.icon.HAS_NOTIFICATION:
-                self.icon.remove_notification()
-                self.icon.notify('%s: %s' % (title, text))
-
-            elif sys.platform == 'darwin':
+            if sys.platform == 'darwin':  # prefer native notifications over the osascript approach
                 user_notification = AppKit.NSUserNotification.alloc().init()
                 user_notification.setTitle_(title)
                 user_notification.setInformativeText_(text)
@@ -1781,6 +1769,10 @@ class App:
                         text = text.replace(*replacement)
                         title = title.replace(*replacement)
                     os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+
+            elif self.icon.HAS_NOTIFICATION:
+                self.icon.remove_notification()
+                self.icon.notify('%s: %s' % (title, text))
 
             else:
                 Log.info(title, text)  # last resort

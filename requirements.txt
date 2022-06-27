@@ -2,7 +2,7 @@ configobj
 cryptography
 pillow
 pystray
-pywebview
+pywebview; sys_platform != 'win32'  # specify platform to avoid double requirement error with older pip versions
 timeago
 
 # used to improve menu bar interaction, provide native notifications, handle system events and output to unified logging
