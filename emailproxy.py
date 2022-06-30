@@ -812,8 +812,9 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
 
     class AUTH(enum.Enum):
         PENDING = 1
-        AWAITING_PASS = 2
-        AWAITING_AUTH = 3
+        PLAIN_AWAITING_CREDENTIALS = 2
+        AWAITING_PASS = 3
+        AWAITING_AUTH = 4
         CREDENTIALS_SENT = 5
 
     def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
@@ -825,7 +826,22 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
         str_data_lower = str_data.lower()
 
-        if self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('user'):
+        if self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('auth plain'):
+            if len(str_data) > 11:  # 11 = len('AUTH PLAIN ') - this method can have the login details either inline...
+                (self.server_connection.username, self.server_connection.password) = OAuth2Helper.decode_credentials(
+                    str_data[11:])
+                self.send_authentication_request()
+            else:  # ...or requested separately
+                self.authentication_state = self.AUTH.PLAIN_AWAITING_CREDENTIALS
+                self.censor_next_log = True
+                self.send(b'+OK\r\n')  # request details (note: space after response code is mandatory)
+
+        elif self.authentication_state is self.AUTH.PLAIN_AWAITING_CREDENTIALS:
+            (self.server_connection.username, self.server_connection.password) = OAuth2Helper.decode_credentials(
+                str_data)
+            self.send_authentication_request()
+
+        elif self.authentication_state is self.AUTH.PENDING and str_data_lower.startswith('user'):
             self.server_connection.username = str_data[5:]  # 5 = len('USER ')
             self.authentication_state = self.AUTH.AWAITING_PASS
             self.censor_next_log = True
@@ -833,12 +849,15 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
 
         elif self.authentication_state is self.AUTH.AWAITING_PASS and str_data_lower.startswith('pass'):
             self.server_connection.password = str_data[5:]  # 5 = len('PASS ')
-            self.authentication_state = self.AUTH.AWAITING_AUTH
-            super().process_data(b'AUTH XOAUTH2\r\n')
+            self.send_authentication_request()
 
         # some other command that we don't handle - pass directly to server
         else:
             super().process_data(byte_data)
+
+    def send_authentication_request(self):
+        self.authentication_state = self.AUTH.AWAITING_AUTH
+        super().process_data(b'AUTH XOAUTH2\r\n')
 
 
 class OAuth2ServerConnection(asyncore.dispatcher_with_send):
@@ -1086,6 +1105,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 class POPOAuth2ServerConnection(OAuth2ServerConnection):
     """The POP server side - submit credentials, then watch for +OK and ignore subsequent data"""
 
+    # POP3: https://tools.ietf.org/html/rfc1734
+    # POP3 SASL: https://tools.ietf.org/html/rfc5034
     def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
         super().__init__('POP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
         self.username = None
