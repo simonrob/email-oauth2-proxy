@@ -99,14 +99,20 @@ CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Pro
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
 
-EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-height:1.3;font-family:sans-serif;
-    font-size:16px;color:#444;padding:0 24px}</style>
+EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copyLink(targetLink){
+    var copySource=document.createElement('textarea');copySource.value=targetLink;copySource.style.position='absolute';
+    copySource.style.left='-9999px';document.body.appendChild(copySource);copySource.select();
+    document.execCommand('copy');document.body.removeChild(copySource);
+    document.getElementById('copy').innerText='✔'}</script><style type="text/css">body{margin:20px auto;line-height:1.3;
+    font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}</style></head><body>
     <h3 style="margin:0.3em 0;">Login authorisation request for %s</h3>
     <p style="margin-top:0">Click the following link to open your browser and approve the request:</p>
-    <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a></p>
+    <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a>
+    <a id="copy" onclick="copyLink('%s')" style="margin-left:0.5em;margin-top:0.1em;font-weight:bold;font-size:150%%;
+    text-decoration:none;cursor:pointer;float:right" title="Copy link">⧉</a></p>
     <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the 
-    resulting URL from the browser's address bar using the box below to allow the %s script to transparently 
-    handle login requests on your behalf in future.</p>
+    resulting URL from the browser's address bar using the box at the bottom of this page to allow the %s script to
+    transparently handle login requests on your behalf in future.</p>
     <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after 
     successfully logging in, but the final URL is the only important part, and as long as this begins with the  
     correct redirection URI and contains a valid authorisation code your email client's request will succeed.''' + (
@@ -117,7 +123,7 @@ EXTERNAL_AUTH_HTML = '''<html><style type="text/css">body{margin:20px auto;line-
     document.auth.submit.value='Submitting...'; document.auth.submit.disabled=true; return false">
     <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL: 
     </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit" 
-    id="submit" value="Submit"></div></form></html>'''
+    id="submit" value="Submit"></div></form></body></html>'''
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
 
@@ -1712,7 +1718,7 @@ class App:
         window_title = 'Authorise your account: %s' % request['username']
         if self.args.external_auth:
             auth_page = EXTERNAL_AUTH_HTML % (request['username'], request['permission_url'], request['permission_url'],
-                                              APP_NAME, request['redirect_uri'])
+                                              request['permission_url'], APP_NAME, request['redirect_uri'])
             authorisation_window = webview.create_window(window_title, html=auth_page, on_top=True, text_select=True)
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
