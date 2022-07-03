@@ -5,6 +5,9 @@ pystray
 pywebview; sys_platform != 'win32'  # specify platform to avoid double requirement error with older pip versions
 timeago
 
+# provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
+pyasyncore; python_version >= '3.12'
+
 # used to improve menu bar interaction, provide native notifications, handle system events and output to unified logging
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
 pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'

@@ -94,7 +94,7 @@ The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins
 
 
 ## Potential improvements (pull requests welcome)
-- Switch to asyncio (asyncore is currently deprecated, but [PEP 594](https://peps.python.org/pep-0594/) will remove it completely in Python 3.12)
+- Switch to asyncio? (asyncore is currently deprecated, but [PEP 594](https://peps.python.org/pep-0594/) will remove it completely in Python 3.12 – currently mitigated by the use of [pyasyncore](https://pypi.org/project/pyasyncore/))
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status)
 - Clickable account authorisation notifications
 - STARTTLS for IMAP?
