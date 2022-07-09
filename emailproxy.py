@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-06-13'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-07-09'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -304,8 +304,8 @@ class OAuth2Helper:
                 permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri, client_id,
                                                                               oauth2_scope, username)
                 # note: get_oauth2_authorisation_code is a blocking call
-                (success, authorisation_code) = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
-                                                                                           username, connection_info)
+                success, authorisation_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                         username, connection_info)
                 if not success:
                     Log.info('Authentication request failed or expired for account', username, '- aborting login')
                     return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
@@ -542,7 +542,7 @@ class OAuth2Helper:
         """Decode credentials passed as a base64-encoded string: [some data we don't need]\x00username\x00password"""
         try:
             # formal syntax: https://tools.ietf.org/html/rfc4616#section-2
-            (_, bytes_username, bytes_password) = base64.b64decode(str_data).split(b'\x00')
+            _, bytes_username, bytes_password = base64.b64decode(str_data).split(b'\x00')
             return bytes_username.decode('utf-8'), bytes_password.decode('utf-8')
         except (ValueError, binascii.Error):
             # ValueError is from incorrect number of arguments; binascii.Error from incorrect encoding
