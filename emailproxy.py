@@ -638,7 +638,12 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                 self.process_data(line)
 
     def process_data(self, byte_data, censor_server_log=False):
-        self.server_connection.send(byte_data, censor_log=censor_server_log)  # just send everything straight to server
+        try:
+            self.server_connection.send(byte_data, censor_log=censor_server_log)  # default = send everything to server
+        except AttributeError as e:
+            Log.info(self.info_string(), 'Caught client exception; server connection closed before data could be sent:',
+                     Log.error_string(e))
+            self.close()
 
     def send(self, byte_data):
         Log.debug(self.info_string(), '<--', byte_data)
@@ -987,7 +992,12 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
                 self.process_data(line)
 
     def process_data(self, byte_data):
-        self.client_connection.send(byte_data)  # by default we just send everything straight to the client
+        try:
+            self.client_connection.send(byte_data)  # by default we just send everything straight to the client
+        except AttributeError as e:
+            Log.info(self.info_string(), 'Caught server exception; client connection closed before data could be sent:',
+                     Log.error_string(e))
+            self.close()
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
@@ -1248,6 +1258,14 @@ class OAuth2Proxy(asyncore.dispatcher):
             self.proxy_type, self.local_address[0], self.local_address[1], 'TLS' if secure else 'unsecured',
             self.server_address[0], self.server_address[1],
             'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS')
+
+    def handle_accept(self):
+        Log.debug('New incoming connection to', self.info_string())
+        connected_address = self.accept()
+        if connected_address is not None:
+            self.handle_accepted(*connected_address)
+        else:
+            Log.debug('Ignoring incoming connection to', self.info_string(), '- no connection information')
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
