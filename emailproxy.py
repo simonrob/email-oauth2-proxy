@@ -1759,7 +1759,10 @@ class App:
                                               request['permission_url'], APP_NAME, request['redirect_uri'])
             authorisation_window = webview.create_window(window_title, html=auth_page, on_top=True, text_select=True)
         else:
-            authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
+            if sys.version_info >= (3, 0):
+                authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=False)
+            else:
+                authorisation_window = webview.create_window(window_title, request['permission_url'])
         setattr(authorisation_window, 'get_title', lambda window: window.title)  # add missing get_title method
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way

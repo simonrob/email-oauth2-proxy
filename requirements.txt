@@ -1,9 +1,17 @@
 configobj
 cryptography
 pillow
-pystray
-pywebview; sys_platform != 'win32'  # specify platform to avoid double requirement error with older pip versions
+pystray; python_version >= '3.0' # specify to avoid double requirement error with older pip versions (same below)
+pywebview; sys_platform != 'win32' and python_version >= '3.0'
 timeago
+
+# modules needed for Python 2 support
+aenum; python_version < '3.0'
+configparser2; python_version < '3.0'
+future; python_version < '3.0'
+pathlib2; python_version < '3.0'
+pystray==0.17.2; python_version < '3.0'
+pywebview==2.4; python_version < '3.0'
 
 # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
 pyasyncore; python_version >= '3.12'
@@ -11,7 +19,7 @@ pyasyncore; python_version >= '3.12'
 # used to improve menu bar interaction, provide native notifications, handle system events and output to unified logging
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
 pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'
-pyoslog>=0.3.0; sys_platform == 'darwin'
+pyoslog>=0.4.0; sys_platform == 'darwin'
 
 # force pywebview 3.5+ on Windows to fix authentication window crash bug (https://github.com/r0x0r/pywebview/issues/720)
-pywebview>=3.5; sys_platform == 'win32'
+pywebview>=3.5; sys_platform == 'win32' and python_version >= '3.0'
