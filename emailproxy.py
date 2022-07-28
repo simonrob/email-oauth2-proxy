@@ -277,7 +277,8 @@ class OAuth2Helper:
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
 
-        if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
+        # note that we don't require client_secret here because it can be optional for Office 365 configurations
+        if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
@@ -481,6 +482,8 @@ class OAuth2Helper:
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
                   'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
+        if not client_secret:
+            del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
         try:
             response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
             return json.loads(response)
@@ -494,6 +497,8 @@ class OAuth2Helper:
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
+        if not client_secret:
+            del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
         try:
             response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
             return json.loads(response)
