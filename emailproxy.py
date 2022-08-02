@@ -43,17 +43,13 @@ import pystray
 import timeago
 import webview
 
-
-# TODO: pyoslog does not support Python 2.7; this is a hacky workaround
-class pyoslog:
-    @staticmethod
-    def is_supported():
-        return False
-
-
-sys.modules['pyoslog'] = pyoslog
-
 # support Python 2 and Python 3; other modules are handled by `future`
+if sys.platform == 'win32' and sys.version_info < (3, 0):
+    # note: this change fixes one issue with pystray, but a manual code edit is also required:
+    # line 349 of pystray/_util/win32.py needs editing from `except KeyError:` to
+    # `except (KeyError, AttributeError):` (see: https://github.com/moses-palmer/pystray/pull/128)
+    # noinspection PyUnresolvedReferences
+    del pystray._util.win32.LoadImage.errcheck  # means we don't get an actual icon, but also no crash
 try:
     import configparser
 except ImportError:
@@ -413,7 +409,7 @@ class OAuth2Helper:
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
             def log_message(self, format_string, *args):
                 Log.debug('Local server auth mode (%s:%d): received authentication response' % (
-                    parsed_uri.hostname, parsed_uri.port), *args)
+                    parsed_uri.hostname, parsed_port), *args)
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):

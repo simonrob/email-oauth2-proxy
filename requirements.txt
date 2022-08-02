@@ -1,6 +1,6 @@
 configobj
-cryptography
-pillow
+cryptography; sys_platform != 'win32'
+pillow; python_version >= '3.0'
 pystray; python_version >= '3.0' # specify to avoid double requirement error with older pip versions (same below)
 pywebview; sys_platform != 'win32' and python_version >= '3.0'
 timeago
@@ -10,8 +10,11 @@ aenum; python_version < '3.0'
 configparser2; python_version < '3.0'
 future; python_version < '3.0'
 pathlib2; python_version < '3.0'
-pystray==0.17.2; python_version < '3.0'
+pillow==5.3.0; python_version < '3.0'
+pystray; sys_platform != 'darwin' and python_version < '3.0'  # specific version needed for macOS
+pystray==0.17.2; sys_platform == 'darwin' and python_version < '3.0'  # specific version needed for macOS
 pywebview==2.4; python_version < '3.0'
+cryptography==2.4.2; sys_platform == 'win32' and python_version < '3.0'  # specific version required for very old Windows versions
 
 # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
 pyasyncore; python_version >= '3.12'
