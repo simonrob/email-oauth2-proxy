@@ -387,7 +387,7 @@ class OAuth2Helper:
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
             def log_message(self, format_string, *args):
                 Log.debug('Local server auth mode (%s:%d): received authentication response' % (
-                    parsed_uri.hostname, parsed_uri.port), *args)
+                    parsed_uri.hostname, parsed_port), *args)
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
