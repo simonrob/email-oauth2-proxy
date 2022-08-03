@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-07-09'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-03'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -38,6 +38,8 @@ import wsgiref.util
 import pkg_resources
 import pystray
 import timeago
+
+# noinspection PyPackageRequirements
 import webview
 
 # for drawing the menu bar icon
@@ -1638,8 +1640,15 @@ class App:
     @staticmethod
     def get_icon_size(font_file, text, font_size):
         font = ImageFont.truetype(font_file, size=font_size)
-        font_width, font_height = font.getsize(text)
-        return font, font_width, font_height
+
+        # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
+        if pkg_resources.parse_version(
+                pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
+            font_width, font_height = font.getsize(text)
+            return font, font_width, font_height
+        else:
+            left, top, right, bottom = font.getbbox(text)
+            return font, right, bottom
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
@@ -1760,6 +1769,7 @@ class App:
 
         # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
         # pywebview window can get into a state in which http://localhost navigation, rather than failing, just hangs
+        # noinspection PyPackageRequirements
         import webview.platforms.cocoa
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didStartProvisionalNavigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didStartProvisionalNavigation_)
