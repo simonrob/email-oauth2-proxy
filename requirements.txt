@@ -1,7 +1,7 @@
 configobj
 cryptography
 pillow
-pystray
+pystray>=0.19.4  # force pystray version with dummy GUI fix (https://github.com/moses-palmer/pystray/issues/118)
 pywebview; sys_platform != 'win32'  # specify platform to avoid double requirement error with older pip versions
 timeago
 

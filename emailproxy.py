@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-07-09'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-03'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
@@ -41,6 +41,8 @@ import wsgiref.util
 import pkg_resources
 import pystray
 import timeago
+
+# noinspection PyPackageRequirements
 import webview
 
 # for drawing the menu bar icon
@@ -286,7 +288,8 @@ class OAuth2Helper:
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
 
-        if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id and client_secret):
+        # note that we don't require client_secret here because it can be optional for Office 365 configurations
+        if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
@@ -395,7 +398,7 @@ class OAuth2Helper:
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
             def log_message(self, format_string, *args):
                 Log.debug('Local server auth mode (%s:%d): received authentication response' % (
-                    parsed_uri.hostname, parsed_uri.port), *args)
+                    parsed_uri.hostname, parsed_port), *args)
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
@@ -490,6 +493,8 @@ class OAuth2Helper:
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
                   'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
+        if not client_secret:
+            del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
         try:
             response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
             return json.loads(response)
@@ -503,6 +508,8 @@ class OAuth2Helper:
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
+        if not client_secret:
+            del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
         try:
             response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
             return json.loads(response)
@@ -655,7 +662,12 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
                 self.process_data(line)
 
     def process_data(self, byte_data, censor_server_log=False):
-        self.server_connection.send(byte_data, censor_log=censor_server_log)  # just send everything straight to server
+        try:
+            self.server_connection.send(byte_data, censor_log=censor_server_log)  # default = send everything to server
+        except AttributeError as e:
+            Log.info(self.info_string(), 'Caught client exception; server connection closed before data could be sent:',
+                     Log.error_string(e))
+            self.close()
 
     def send(self, byte_data):
         Log.debug(self.info_string(), '<--', byte_data)
@@ -1013,7 +1025,12 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
                 self.process_data(line)
 
     def process_data(self, byte_data):
-        self.client_connection.send(byte_data)  # by default we just send everything straight to the client
+        try:
+            self.client_connection.send(byte_data)  # by default we just send everything straight to the client
+        except AttributeError as e:
+            Log.info(self.info_string(), 'Caught server exception; client connection closed before data could be sent:',
+                     Log.error_string(e))
+            self.close()
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated or self.has_plugins:  # after auth, only plugin edits require logs
@@ -1276,6 +1293,14 @@ class OAuth2Proxy(asyncore.dispatcher):
             'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS',
             (' with plugins: %s' % list(self.custom_configuration['plugin_configuration'].keys())) if
             self.custom_configuration['plugin_configuration'] else '')
+
+    def handle_accept(self):
+        Log.debug('New incoming connection to', self.info_string())
+        connected_address = self.accept()
+        if connected_address is not None:
+            self.handle_accepted(*connected_address)
+        else:
+            Log.debug('Ignoring incoming connection to', self.info_string(), '- no connection information')
 
     def handle_accepted(self, connection, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
@@ -1667,8 +1692,15 @@ class App:
     @staticmethod
     def get_icon_size(font_file, text, font_size):
         font = ImageFont.truetype(font_file, size=font_size)
-        font_width, font_height = font.getsize(text)
-        return font, font_width, font_height
+
+        # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
+        if pkg_resources.parse_version(
+                pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
+            font_width, font_height = font.getsize(text)
+            return font, font_width, font_height
+        else:
+            left, top, right, bottom = font.getbbox(text)
+            return font, right, bottom
 
     def create_config_menu(self):
         items = [pystray.MenuItem('Servers:', None, enabled=False)]
@@ -1793,6 +1825,7 @@ class App:
 
         # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
         # pywebview window can get into a state in which http://localhost navigation, rather than failing, just hangs
+        # noinspection PyPackageRequirements
         import webview.platforms.cocoa
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didStartProvisionalNavigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didStartProvisionalNavigation_)

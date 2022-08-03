@@ -101,7 +101,7 @@ The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins
 
 
 ## Related projects and alternatives
-Michael Stepner has created a [Terraform confguration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
+Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
 
 [DavMail](http://davmail.sourceforge.net/) is an alternative that takes the same approach of providing a local IMAP/POP/SMTP server (and more) for Exchange/Office 365, though it does this by translating these protocols into Exchange API calls rather than proxying the connection. That approach is very useful in situations where server-side IMAP/POP/SMTP is not supported or enabled, or the full Exchange capabilities are needed, but it has limitations in terms of speed and the number of email messages that can be retrieved. This proxy was developed to work around these limitations for providers that do support IMAP/POP/SMTP natively.
 
