@@ -1,20 +1,10 @@
+# newer pip versions handle choosing more specific requirements over broader ones; older versions don't – always specify
 configobj
-cryptography; sys_platform != 'win32'
-pillow; python_version >= '3.0'
-pystray; python_version >= '3.0' # specify to avoid double requirement error with older pip versions (same below)
+cryptography; sys_platform != 'win32' or python_version >= '3.0'
+pillow; sys_platform != 'win32' or python_version >= '3.0'
+pystray>=0.19.4; sys_platform != 'darwin' or python_version >= '3.0'  # force version with dummy GUI fix (pystray #118)
 pywebview; sys_platform != 'win32' and python_version >= '3.0'
 timeago
-
-# modules needed for Python 2 support
-aenum; python_version < '3.0'
-configparser2; python_version < '3.0'
-future; python_version < '3.0'
-pathlib2; python_version < '3.0'
-pillow==5.3.0; python_version < '3.0'
-pystray; sys_platform != 'darwin' and python_version < '3.0'  # specific version needed for macOS
-pystray==0.17.2; sys_platform == 'darwin' and python_version < '3.0'  # specific version needed for macOS
-pywebview==2.4; python_version < '3.0'
-cryptography==2.4.2; sys_platform == 'win32' and python_version < '3.0'  # specific version required for very old Windows versions
 
 # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
 pyasyncore; python_version >= '3.12'
@@ -26,3 +16,13 @@ pyoslog>=0.4.0; sys_platform == 'darwin'
 
 # force pywebview 3.5+ on Windows to fix authentication window crash bug (https://github.com/r0x0r/pywebview/issues/720)
 pywebview>=3.5; sys_platform == 'win32' and python_version >= '3.0'
+
+# modules needed for (partial) Python 2 support
+aenum; python_version < '3.0'
+configparser2; python_version < '3.0'
+cryptography==2.4.2; sys_platform == 'win32' and python_version < '3.0'  # support very old Windows versions
+future; python_version < '3.0'
+pathlib2; python_version < '3.0'
+pillow==5.3.0; sys_platform == 'win32' and python_version < '3.0'
+pystray==0.17.2; sys_platform == 'darwin' and python_version < '3.0'  # work around incompatible macOS Quartz dependency
+pywebview==2.4; python_version < '3.0'
