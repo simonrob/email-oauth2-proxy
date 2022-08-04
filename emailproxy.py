@@ -153,8 +153,11 @@ class Log:
                 handler = pyoslog.Handler()
                 handler.setSubsystem(APP_PACKAGE)
         else:
-            handler = logging.handlers.SysLogHandler(address='/dev/log')
-            handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
+            if os.path.exists('/dev/log'):
+                handler = logging.handlers.SysLogHandler(address='/dev/log')
+                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
+            else:
+                handler = logging.StreamHandler()
         Log._HANDLER = handler
         Log._LOGGER.addHandler(Log._HANDLER)
         Log.set_level(logging.INFO)
@@ -207,6 +210,7 @@ class AppConfig:
     _PARSER = None
     _LOADED = False
 
+    _GLOBALS = []
     _SERVERS = []
     _ACCOUNTS = []
 
@@ -217,6 +221,7 @@ class AppConfig:
         AppConfig._PARSER.read(CONFIG_FILE_PATH)
 
         config_sections = AppConfig._PARSER.sections()
+        AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME] if APP_SHORT_NAME in config_sections else []
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
@@ -239,6 +244,11 @@ class AppConfig:
     def reload():
         AppConfig.unload()
         return AppConfig.get()
+
+    @staticmethod
+    def globals():
+        AppConfig.get()  # make sure config is loaded
+        return AppConfig._GLOBALS
 
     @staticmethod
     def servers():
@@ -285,6 +295,18 @@ class OAuth2Helper:
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
                            'and client_secret)' % (APP_NAME, username))
+
+        # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
+        example_client_value = '*** your client'
+        example_client_status = [example_client_value in i for i in [client_id, client_secret]]
+        if any(example_client_status):
+            if all(example_client_status) or example_client_value in client_id:
+                Log.info('Warning: client configuration for account', username, 'seems to contain example values -',
+                         'if authentication fails, please double-check these values are correct')
+            elif example_client_value in client_secret:
+                Log.info('Warning: client secret for account', username, 'seems to contain the example value - if you',
+                         'are using an Office 365 setup that does not need a secret, please delete this line entirely;',
+                         'otherwise, if authentication fails, please double-check this value is correct')
 
         token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
@@ -2006,10 +2028,10 @@ class App:
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
-    def load_and_start_servers(self, icon=None):
+    def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        config = AppConfig.reload()
+        config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
         server_load_error = False
@@ -2080,7 +2102,7 @@ class App:
         if icon:
             icon.visible = True
 
-        if not self.load_and_start_servers(icon):
+        if not self.load_and_start_servers(icon, reload=False):
             return
 
         Log.info('Initialised', APP_NAME, '- listening for authentication requests')
