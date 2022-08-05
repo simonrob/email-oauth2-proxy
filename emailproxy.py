@@ -210,7 +210,7 @@ class AppConfig:
     _PARSER = None
     _LOADED = False
 
-    _GLOBALS = []
+    _GLOBALS = None
     _SERVERS = []
     _ACCOUNTS = []
 
@@ -221,7 +221,10 @@ class AppConfig:
         AppConfig._PARSER.read(CONFIG_FILE_PATH)
 
         config_sections = AppConfig._PARSER.sections()
-        AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME] if APP_SHORT_NAME in config_sections else []
+        if APP_SHORT_NAME in config_sections:
+            AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME]
+        else:
+            AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
@@ -237,6 +240,7 @@ class AppConfig:
         AppConfig._PARSER = None
         AppConfig._LOADED = False
 
+        AppConfig._GLOBALS = None
         AppConfig._SERVERS = []
         AppConfig._ACCOUNTS = []
 
@@ -365,23 +369,31 @@ class OAuth2Helper:
             return True, oauth2_string
 
         except InvalidToken as e:
-            # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
-            config.remove_option(username, 'token_salt')
-            config.remove_option(username, 'access_token')
-            config.remove_option(username, 'access_token_expiry')
-            config.remove_option(username, 'refresh_token')
-            AppConfig.save()
+            # if invalid details are the reason for failure we remove our cached version and re-authenticate - this can
+            # be disabled by a configuration setting, but note that we always remove credentials on 400 Bad Request
+            if e.args == (400, APP_PACKAGE) or AppConfig.globals().getboolean('delete_account_token_on_password_error',
+                                                                              fallback=True):
+                config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'access_token')
+                config.remove_option(username, 'access_token_expiry')
+                config.remove_option(username, 'refresh_token')
+                AppConfig.save()
+            else:
+                recurse_retries = False  # no need to recurse if we are just trying the same credentials again
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+            else:
+                Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+                return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are
             # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
             # network errors: URLError(OSError(50, 'Network is down'))) rather than e.g., bad requests
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
-            return False, '%s: Login failure - saved authentication data invalid for account %s' % (
+            return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
     @staticmethod
@@ -529,7 +541,7 @@ class OAuth2Helper:
         except urllib.error.HTTPError as e:
             Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken
+                raise InvalidToken(e.code, APP_PACKAGE)
             raise e
 
     @staticmethod
@@ -1705,10 +1717,10 @@ class App:
     @staticmethod
     def get_last_activity(account):
         config = AppConfig.get()
-        last_sync = config.get(account, 'last_activity', fallback=None)
+        last_sync = config.getint(account, 'last_activity', fallback=None)
         if last_sync is not None:
-            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(float(last_sync)),
-                                                 datetime.datetime.now(), 'en_short')
+            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(last_sync), datetime.datetime.now(),
+                                                 'en_short')
         else:
             formatted_sync_time = 'never'
         return '    %s (%s)' % (account, formatted_sync_time)
