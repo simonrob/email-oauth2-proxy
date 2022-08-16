@@ -7,6 +7,7 @@ timeago
 pystray>=0.19.4
 
 # force pywebview 3.5+ on Windows to fix authentication window crash bug (https://github.com/r0x0r/pywebview/issues/720)
+pythonnet>=3.0.0rc4; sys_platform == 'win32' and python_version >= '3.10'  # force compatible pythonnet (pywebview req.)
 pywebview; sys_platform != 'win32'  # (specify platform to avoid double requirement error with older pip versions)
 pywebview>=3.5; sys_platform == 'win32'
 
