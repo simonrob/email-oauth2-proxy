@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-08-03'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-17'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -1753,15 +1753,18 @@ class App:
                 if not self.web_view_started:
                     # pywebview on macOS needs start() to be called only once, so we use a dummy window to keep it open
                     # Windows is the opposite - the macOS technique freezes the tray icon; Linux is fine either way
+                    # (we also set pywebview debug mode to match our own mode because copy/paste via keyboard shortcuts
+                    # can be unreliable with 'mshtml'; and, python virtual environments sometimes break keyboard entry
+                    # entirely on macOS - debug mode works around this in both cases via the right-click context menu)
                     self.create_authorisation_window(request)
                     if sys.platform == 'darwin':
-                        webview.start(self.handle_authorisation_windows)
+                        webview.start(self.handle_authorisation_windows, debug=Log.get_level() == logging.DEBUG)
                         self.web_view_started = True  # note: not set for other platforms so we start() every time
                     else:
                         # on Windows, most pywebview engine options return None for get_current_url() on pages created
                         # using 'html=' even on redirection to an actual URL; 'mshtml', though archaic, does work
                         forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
-                        webview.start(gui=forced_gui)
+                        webview.start(gui=forced_gui, debug=Log.get_level() == logging.DEBUG)
                 else:
                     WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
                 return
@@ -1828,6 +1831,9 @@ class App:
                     RESPONSE_QUEUE.put({'connection': request['connection'], 'response_url': url})
                     self.authorisation_requests.remove(request)
                     completed_request = request
+                else:
+                    Log.debug('Waiting for URL matching `redirect_uri`; following browser redirection to',
+                              '%s/[...]' % urllib.parse.urlparse(url).hostname)
 
             if completed_request is None:
                 continue  # no requests processed for this window - nothing to do yet
