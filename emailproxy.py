@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-08-17'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-19'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -615,8 +615,8 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             byte_data = self.recv(RECEIVE_BUFFER_SIZE)
             return byte_data
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.info(self.info_string(), 'Warning: caught client-side SSL recv error',
-                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
+            Log.debug(self.info_string(), 'Caught client-side SSL recv error; returning',
+                      '(see https://github.com/simonrob/email-oauth2-proxy/issues/ #9 and #44):', Log.error_string(e))
             return None
 
     def handle_read(self):
@@ -679,14 +679,14 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             super().send(byte_data)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.info(self.info_string(), 'Warning: caught client-side SSL send error',
-                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
+            Log.debug(self.info_string(), 'Caught client-side SSL send error; retrying',
+                      '(see https://github.com/simonrob/email-oauth2-proxy/issues/ #9 and #44):', Log.error_string(e))
             while True:
                 try:
                     super().send(byte_data)
                     break
                 except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-                    time.sleep(1)
+                    time.sleep(0.01)
 
     def log_info(self, message, message_type='info'):
         # override to redirect error messages to our own log
