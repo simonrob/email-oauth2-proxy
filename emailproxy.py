@@ -615,9 +615,14 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             byte_data = self.recv(RECEIVE_BUFFER_SIZE)
             return byte_data
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.debug(self.info_string(), 'Caught client-side SSL recv error; returning',
+            Log.debug(self.info_string(), 'Caught client-side SSL recv error; retrying',
                       '(see https://github.com/simonrob/email-oauth2-proxy/issues/ #9 and #44):', Log.error_string(e))
-            return None
+            while True:
+                try:
+                    byte_data = self.recv(RECEIVE_BUFFER_SIZE)
+                    return byte_data
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                    time.sleep(0.01)
 
     def handle_read(self):
         byte_data = self.get_data()
