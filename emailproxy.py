@@ -597,6 +597,9 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
 
+        self.ssl_handshake_completed = not (
+                custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
+
     def info_string(self):
         if Log.get_level() == logging.DEBUG:
             return '%s (%s:%d; %s:%d->%s:%d%s)' % (
@@ -607,25 +610,28 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         else:
             return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
 
-    def handle_connect(self):
-        pass
-
-    def get_data(self):
+    def ssl__handshake(self):
         try:
-            byte_data = self.recv(RECEIVE_BUFFER_SIZE)
-            return byte_data
+            # noinspection PyUnresolvedReferences
+            self.socket.do_handshake()
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.debug(self.info_string(), 'Caught client-side SSL recv error; retrying',
-                      '(see https://github.com/simonrob/email-oauth2-proxy/issues/ #9 and #44):', Log.error_string(e))
-            while True:
-                try:
-                    byte_data = self.recv(RECEIVE_BUFFER_SIZE)
-                    return byte_data
-                except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-                    time.sleep(0.01)
+            Log.debug(self.info_string(), 'Caught client-side SSL recv error; retrying', Log.error_string(e))
+        else:
+            Log.debug(self.info_string(), '[ SSL/TLS handshake complete ]')
+            self.ssl_handshake_completed = True
+
+    def readable(self):
+        return super().readable() and self.ssl_handshake_completed
+
+    def writable(self):
+        return super().writable() and self.ssl_handshake_completed
 
     def handle_read(self):
-        byte_data = self.get_data()
+        if not self.ssl_handshake_completed:
+            self.ssl__handshake()
+            return
+
+        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
         if not byte_data:
             return
 
@@ -680,18 +686,11 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             self.close()
 
     def send(self, byte_data):
+        while not self.ssl_handshake_completed:
+            self.ssl__handshake()
+
         Log.debug(self.info_string(), '<--', byte_data)
-        try:
-            super().send(byte_data)
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.debug(self.info_string(), 'Caught client-side SSL send error; retrying',
-                      '(see https://github.com/simonrob/email-oauth2-proxy/issues/ #9 and #44):', Log.error_string(e))
-            while True:
-                try:
-                    super().send(byte_data)
-                    break
-                except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-                    time.sleep(0.01)
+        super().send(byte_data)
 
     def log_info(self, message, message_type='info'):
         # override to redirect error messages to our own log
@@ -1360,7 +1359,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
-        self.listen(1)
+        self.listen(5)
 
     def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
         if self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']:
@@ -1371,7 +1370,8 @@ class OAuth2Proxy(asyncore.dispatcher):
             ssl_context.load_cert_chain(
                 certfile=self.custom_configuration['local_certificate_path'],
                 keyfile=self.custom_configuration['local_key_path'])
-            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True))
+            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=False,
+                                                    do_handshake_on_connect=False))
         else:
             super().create_socket(socket_family, socket_type)
 
