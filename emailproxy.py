@@ -610,12 +610,12 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         else:
             return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
 
-    def ssl__handshake(self):
+    def ssl_handshake(self):
         try:
             # noinspection PyUnresolvedReferences
             self.socket.do_handshake()
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.debug(self.info_string(), 'Caught client-side SSL recv error; retrying', Log.error_string(e))
+            pass
         else:
             Log.debug(self.info_string(), '[ SSL/TLS handshake complete ]')
             self.ssl_handshake_completed = True
@@ -628,7 +628,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
     def handle_read(self):
         if not self.ssl_handshake_completed:
-            self.ssl__handshake()
+            self.ssl_handshake()
             return
 
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -687,7 +687,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
     def send(self, byte_data):
         while not self.ssl_handshake_completed:
-            self.ssl__handshake()
+            self.ssl_handshake()
 
         Log.debug(self.info_string(), '<--', byte_data)
         super().send(byte_data)
@@ -1370,8 +1370,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             ssl_context.load_cert_chain(
                 certfile=self.custom_configuration['local_certificate_path'],
                 keyfile=self.custom_configuration['local_key_path'])
-            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=False,
-                                                    do_handshake_on_connect=False))
+            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, do_handshake_on_connect=False))
         else:
             super().create_socket(socket_family, socket_type)
 
