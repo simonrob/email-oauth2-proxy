@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-08-19'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-22'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import asyncore
@@ -355,6 +355,9 @@ class OAuth2Helper:
                     access_token = response['access_token']
                     config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                     config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                    if 'refresh_token' in response:
+                        config.set(username, 'refresh_token',
+                                   OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
                     AppConfig.save()
                 else:
                     access_token = OAuth2Helper.decrypt(cryptographer, access_token)
