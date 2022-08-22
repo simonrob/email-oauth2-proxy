@@ -614,8 +614,8 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             # noinspection PyUnresolvedReferences
             self.socket.do_handshake()
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            pass
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):  # only relevant when using local certificates
+            return
         else:
             Log.debug(self.info_string(), '[ SSL/TLS handshake complete ]')
             self.ssl_handshake_completed = True
@@ -1370,7 +1370,9 @@ class OAuth2Proxy(asyncore.dispatcher):
             ssl_context.load_cert_chain(
                 certfile=self.custom_configuration['local_certificate_path'],
                 keyfile=self.custom_configuration['local_key_path'])
-            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, do_handshake_on_connect=False))
+            # suppress_ragged_eofs=True: see test_ssl.py documentation in https://github.com/python/cpython/pull/5266
+            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
+                                                    do_handshake_on_connect=False))
         else:
             super().create_socket(socket_family, socket_type)
 
