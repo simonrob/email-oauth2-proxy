@@ -298,7 +298,7 @@ class OAuth2Helper:
 
         # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
         example_client_value = '*** your client'
-        example_client_status = [example_client_value in i for i in [client_id, client_secret]]
+        example_client_status = [example_client_value in i for i in [client_id, client_secret] if i]
         if any(example_client_status):
             if all(example_client_status) or example_client_value in client_id:
                 Log.info('Warning: client configuration for account', username, 'seems to contain example values -',
