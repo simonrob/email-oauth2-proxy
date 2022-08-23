@@ -602,6 +602,8 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
         self.ssl_handshake_completed = not (
                 custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
+        if not self.ssl_handshake_completed:
+            self.ssl_handshake()
 
     def info_string(self):
         if Log.get_level() == logging.DEBUG:
@@ -632,7 +634,6 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def handle_read(self):
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
-            return
 
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
         if not byte_data:
@@ -689,7 +690,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             self.close()
 
     def send(self, byte_data):
-        while not self.ssl_handshake_completed:
+        if not self.ssl_handshake_completed:
             self.ssl_handshake()
 
         Log.debug(self.info_string(), '<--', byte_data)
