@@ -7,13 +7,13 @@ __license__ = 'Apache 2.0'
 __version__ = '2022-08-22'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
-import asyncore
 import base64
 import binascii
 import configparser
 import datetime
 import enum
 import errno
+import io
 import json
 import logging
 import logging.handlers
@@ -32,19 +32,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 import wsgiref.simple_server
 import wsgiref.util
+import zlib
 
-import pkg_resources
-import pystray
-import timeago
-
-# noinspection PyPackageRequirements
-import webview
-
-# for drawing the menu bar icon
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
+# asyncore is essential, but has been deprecated and will be removed in python 3.12 (see PEP 594)
+# pyasyncore is our workaround, so suppress this warning until the proxy is rewritten in, e.g., asyncio
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    import asyncore
 
 # for encrypting/decrypting the locally-stored credentials
 from cryptography.fernet import Fernet, InvalidToken
@@ -52,18 +49,54 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# for macOS-specific functionality
+# for macOS-specific unified logging
 if sys.platform == 'darwin':
+    # pyoslog *is* present; see youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
     # noinspection PyPackageRequirements
-    import pyoslog  # unified logging
+    import pyoslog
+
+# by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
+# where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
+if not os.environ.get('EMAIL_OAUTH2_PROXY_REQUIREMENTS_NO_GUI', None):
+    import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
+    import pystray  # the menu bar/taskbar GUI
+    import timeago  # the last authenticated activity hint
+    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+
     # noinspection PyPackageRequirements
-    import AppKit  # retina icon, menu update on click, native notifications and receiving system events
-    import PyObjCTools  # SIGTERM handling
-    import SystemConfiguration  # network availability monitoring
+    import webview  # the popup authentication window (in default and `--external-auth` modes only)
+
+    # for macOS-specific functionality
+    if sys.platform == 'darwin':
+        # noinspection PyPackageRequirements
+        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
+        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+        import SystemConfiguration  # network availability monitoring
+
+else:
+    # dummy implementations to allow use regardless of whether pystray or AppKit are available
+    # noinspection PyPep8Naming
+    class pystray:
+        class Icon:
+            pass
+
+
+    class AppKit:
+        class NSObject:
+            pass
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
+
+# noinspection SpellCheckingInspection
+APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQHOoeMlVeoiCHqQXrwX/gEK9efGgNy+C4MWbHjxER
+    DCJb3dTUdQH733zvW/ezHszQADAAy3gIFO+kdbW3lXWAUgRs2sV02igdoL8MfLctrHf6PeBAXBe5OL27r2acry6hPprdLleNbbiXfkUtRfoeh0T4gaju
+    O6gT9TN5gEWo5GHGNjuXsVAPET+yuKmcdAAETaRR5BfuGuYVRCs/fQjBqGxt98En80/WzpYvaN3tPsvN4eufAWPc/r707dvLPyg/PiCcMSAq1n9AgXHs
+    MbeedvZz+zMH0YGZ99x7v9LxwyzpuBBpA8oTg9tB8kn0IiIHQLPwT9tuba4BfNQhervPZzdMGBWp1a9hJHYyHBeS2Y2r+I/2LF/9Ku3Q7tXZ9ogJKEEN
+    +EWbODRqpoaFwRXUJbDvK4Xghlek+WQ5KfKDM3N0dlshiQEQVHzuYJeKMxRVMNhWRISClYmc6qaUPxUitNZTdfz2QyfcmXIOK8xoOZKt7ViUkRqYXekW
+    J6Sp0urC5fCken5STr0KDoUlyhjVd4nxSUvq3tCftEn8r2ro+mxUDIaCMQmQrGZGHmi53tAT3rPGH1e3qF0p9w7LtcohwuyvnRxWZ8sZUej6WvlhXSk1
+    7k+POJ1iR73N/+w2xN0f4+GJcHtfqoWzgfi6cuZscC54lSq3SbN1tmzC4MXtcwN/zOC78r9BIfNc3M='''  # TTF ('e') -> zlib -> base64
 
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
@@ -505,8 +538,8 @@ class OAuth2Helper:
                 return False, None
 
             elif data['connection'] == connection_info:  # found an authentication response meant for us
-                # to improve non-GUI mode we also support the use of a local server to receive the OAuth redirection
-                # (note: not enabled by default because GUI mode is typically unattended, but useful in some cases)
+                # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
+                # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
@@ -1520,7 +1553,7 @@ if sys.platform == 'darwin':
 
         def _assert_image(self):
             # pystray does some scaling which breaks macOS retina icons - we replace that with the actual menu bar size
-            bytes_image = BytesIO()
+            bytes_image = io.BytesIO()
             self.icon.save(bytes_image, 'png')
             data = AppKit.NSData(bytes_image.getvalue())
             self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
@@ -1584,7 +1617,7 @@ class App:
     # PyAttributeOutsideInit inspection suppressed because init_platforms() is itself called from __init__()
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and not self.args.no_gui:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -1619,14 +1652,11 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-        else:
-            pass  # currently no special initialisation/configuration required for other platforms
-
-        # try to exit gracefully when SIGTERM is received
-        if sys.platform == 'darwin' and not self.args.no_gui:
             # on macOS, catching SIGTERM while pystray's main loop is running needs a mach message handler
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
+
         else:
+            # for other platforms, or in no-GUI mode, just try to exit gracefully when SIGTERM is received
             signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
@@ -1658,7 +1688,6 @@ class App:
     @staticmethod
     def get_image():
         # we use an icon font for better multiplatform compatibility and icon size flexibility
-        icon_font_file = '%s/icon.ttf' % os.path.dirname(os.path.realpath(__file__))
         icon_colour = 'white'  # note: value is irrelevant on macOS - we set as a template to get the platform's colours
         icon_character = 'e'
         icon_background_width = 44
@@ -1668,10 +1697,10 @@ class App:
         # find the largest font size that will let us draw the icon within the available width
         minimum_font_size = 1
         maximum_font_size = 255
-        font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+        font, font_width, font_height = App.get_icon_size(icon_character, minimum_font_size)
         while maximum_font_size - minimum_font_size > 1:
             current_font_size = round((minimum_font_size + maximum_font_size) / 2)  # ImageFont only supports integers
-            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, current_font_size)
+            font, font_width, font_height = App.get_icon_size(icon_character, current_font_size)
             if font_width > icon_width:
                 maximum_font_size = current_font_size
             elif font_width < icon_width:
@@ -1679,7 +1708,7 @@ class App:
             else:
                 break
         if font_width > icon_width:  # because we have to round font sizes we need one final check for oversize width
-            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+            font, font_width, font_height = App.get_icon_size(icon_character, minimum_font_size)
 
         icon_image = Image.new('RGBA', (icon_background_width, icon_background_height))
         draw = ImageDraw.Draw(icon_image)
@@ -1690,8 +1719,8 @@ class App:
         return icon_image
 
     @staticmethod
-    def get_icon_size(font_file, text, font_size):
-        font = ImageFont.truetype(font_file, size=font_size)
+    def get_icon_size(text, font_size):
+        font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
         if pkg_resources.parse_version(
