@@ -210,7 +210,7 @@ class AppConfig:
     _PARSER = None
     _LOADED = False
 
-    _GLOBALS = []
+    _GLOBALS = None
     _SERVERS = []
     _ACCOUNTS = []
 
@@ -221,7 +221,10 @@ class AppConfig:
         AppConfig._PARSER.read(CONFIG_FILE_PATH)
 
         config_sections = AppConfig._PARSER.sections()
-        AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME] if APP_SHORT_NAME in config_sections else []
+        if APP_SHORT_NAME in config_sections:
+            AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME]
+        else:
+            AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
@@ -237,6 +240,7 @@ class AppConfig:
         AppConfig._PARSER = None
         AppConfig._LOADED = False
 
+        AppConfig._GLOBALS = None
         AppConfig._SERVERS = []
         AppConfig._ACCOUNTS = []
 
@@ -286,6 +290,7 @@ class OAuth2Helper:
         token_url = config.get(username, 'token_url', fallback=None)
         oauth2_scope = config.get(username, 'oauth2_scope', fallback=None)
         redirect_uri = config.get(username, 'redirect_uri', fallback=None)
+        redirect_listen_address = config.get(username, 'redirect_listen_address', fallback=None)
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
 
@@ -330,6 +335,7 @@ class OAuth2Helper:
                                                                               oauth2_scope, username)
                 # note: get_oauth2_authorisation_code is a blocking call
                 success, authorisation_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                         redirect_listen_address,
                                                                                          username, connection_info)
                 if not success:
                     Log.info('Authentication request failed or expired for account', username, '- aborting login')
@@ -368,23 +374,31 @@ class OAuth2Helper:
             return True, oauth2_string
 
         except InvalidToken as e:
-            # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
-            config.remove_option(username, 'token_salt')
-            config.remove_option(username, 'access_token')
-            config.remove_option(username, 'access_token_expiry')
-            config.remove_option(username, 'refresh_token')
-            AppConfig.save()
+            # if invalid details are the reason for failure we remove our cached version and re-authenticate - this can
+            # be disabled by a configuration setting, but note that we always remove credentials on 400 Bad Request
+            if e.args == (400, APP_PACKAGE) or AppConfig.globals().getboolean('delete_account_token_on_password_error',
+                                                                              fallback=True):
+                config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'access_token')
+                config.remove_option(username, 'access_token_expiry')
+                config.remove_option(username, 'refresh_token')
+                AppConfig.save()
+            else:
+                recurse_retries = False  # no need to recurse if we are just trying the same credentials again
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+            else:
+                Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+                return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are
             # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
             # network errors: URLError(OSError(50, 'Network is down'))) rather than e.g., bad requests
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
-            return False, '%s: Login failure - saved authentication data invalid for account %s' % (
+            return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
     @staticmethod
@@ -406,7 +420,9 @@ class OAuth2Helper:
     @staticmethod
     def start_redirection_receiver_server(token_request):
         """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
-        parsed_uri = urllib.parse.urlparse(token_request['redirect_uri'])
+        wsgi_address = token_request['redirect_listen_address'] if token_request['redirect_listen_address'] else \
+            token_request['redirect_uri']
+        parsed_uri = urllib.parse.urlparse(wsgi_address)
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
         Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
             parsed_uri.hostname, parsed_port))
@@ -418,10 +434,12 @@ class OAuth2Helper:
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
-                start_response('200 OK', [('Content-type', 'text/plain; charset=utf-8')])
+                start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
                 token_request['response_url'] = wsgiref.util.request_uri(environ)
-                return [('%s successfully authenticated account %s. You can now close this window.' % (
-                    APP_NAME, token_request['username'])).encode('utf-8')]
+                return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
+                         '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
+                         '</style></head><body><p>%s successfully authenticated account %s.</p><p>You can close this '
+                         'window.</p></body></html>' % ((APP_NAME, token_request['username']) * 2)).encode('utf-8')]
 
         try:
             wsgiref.simple_server.WSGIServer.allow_reuse_address = False
@@ -440,11 +458,13 @@ class OAuth2Helper:
             del token_request['local_server_auth_wsgi']
             RESPONSE_QUEUE.put(token_request)
 
-        except socket.error:
-            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the '
-                      'redirect_uri for account %s is unique across accounts, specifies a port number, and is not '
-                      'already in use. See the documentation in the proxy\'s configuration file for further detail' % (
-                          parsed_uri.hostname, parsed_port, token_request['username']))
+        except socket.error as e:
+            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the %s for '
+                      'account %s is unique across accounts, specifies a port number, and is not already in use. See '
+                      'the documentation in the proxy\'s sample configuration file for further detail' % (
+                          parsed_uri.hostname, parsed_port,
+                          'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri',
+                          token_request['username']), Log.error_string(e))
 
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username):
@@ -459,10 +479,11 @@ class OAuth2Helper:
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
-    def get_oauth2_authorisation_code(permission_url, redirect_uri, username, connection_info):
+    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username, connection_info):
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
         token_request = {'connection': connection_info, 'permission_url': permission_url,
-                         'redirect_uri': redirect_uri, 'username': username, 'expired': False}
+                         'redirect_uri': redirect_uri, 'redirect_listen_address': redirect_listen_address,
+                         'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
         wait_time = 0
         while True:
@@ -532,7 +553,7 @@ class OAuth2Helper:
         except urllib.error.HTTPError as e:
             Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken
+                raise InvalidToken(e.code, APP_PACKAGE)
             raise e
 
     @staticmethod
@@ -1714,10 +1735,10 @@ class App:
     @staticmethod
     def get_last_activity(account):
         config = AppConfig.get()
-        last_sync = config.get(account, 'last_activity', fallback=None)
+        last_sync = config.getint(account, 'last_activity', fallback=None)
         if last_sync is not None:
-            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(float(last_sync)),
-                                                 datetime.datetime.now(), 'en_short')
+            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(last_sync), datetime.datetime.now(),
+                                                 'en_short')
         else:
             formatted_sync_time = 'never'
         return '    %s (%s)' % (account, formatted_sync_time)
