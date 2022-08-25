@@ -72,8 +72,9 @@ CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
 
-# maximum number of bytes to read from the socket at a time (limit is per socket)
-RECEIVE_BUFFER_SIZE = 65536
+RECEIVE_BUFFER_SIZE = 65536  # number of bytes to try to read from the socket at a time (limit is per socket)
+
+MAX_SSL_HANDSHAKE_ATTEMPTS = 65536  # maximum number of attempts before aborting local SSL/TLS handshake; 0 = no limit
 
 # IMAP/POP/SMTP require \r\n as a line terminator (we use lines only pre-authentication; afterwards just pass through)
 LINE_TERMINATOR = b'\r\n'
@@ -601,6 +602,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.authenticated = False
 
         self.ssl_connection = custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']
+        self.ssl_handshake_attempts = 0
         self.ssl_handshake_completed = not self.ssl_connection
         if not self.ssl_handshake_completed:
             Log.debug(self.info_string(), '<-- [ Starting TLS handshake ]')
@@ -617,6 +619,10 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
 
     def ssl_handshake(self):
+        self.ssl_handshake_attempts += 1
+        if 0 < MAX_SSL_HANDSHAKE_ATTEMPTS < self.ssl_handshake_attempts:
+            raise ssl.SSLError(-1, APP_PACKAGE)
+
         # see: https://github.com/python/cpython/issues/54293
         try:
             # note that attempting to connect insecurely to a secure socket may loop indefinitely here - we attempt
@@ -630,6 +636,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             return
         else:
             Log.debug(self.info_string(), '--> [ TLS handshake complete ]')
+            self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
 
     def handle_read_event(self):
@@ -648,6 +655,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             return super().recv(buffer_size)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            self.ssl_handshake_completed = False
             return b''
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
@@ -713,6 +721,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         try:
             super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            self.ssl_handshake_completed = False
             return 0
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
@@ -723,7 +732,8 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if self.ssl_connection:
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
-            ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER']
+            ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
+                          APP_PACKAGE]  # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
             if error_type == OSError and value.errno == 0 or error_type == ssl.SSLError and any(
                     [i in value.args[1] for i in ssl_errors]):
                 Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
