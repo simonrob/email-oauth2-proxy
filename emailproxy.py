@@ -605,8 +605,8 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.ssl_handshake_attempts = 0
         self.ssl_handshake_completed = not self.ssl_connection
         if not self.ssl_handshake_completed:
+            # note: we don't start negotiation here because failing handshake in __init__ means remove_client also fails
             Log.debug(self.info_string(), '<-- [ Starting TLS handshake ]')
-            self.ssl_handshake()
 
     def info_string(self):
         if Log.get_level() == logging.DEBUG:
@@ -659,6 +659,9 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             return b''
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
+            return b''
+        except ssl.SSLError:
+            self.handle_error()
             return b''
 
     def handle_read(self):
@@ -719,12 +722,15 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
     def send(self, byte_data):
         Log.debug(self.info_string(), '<--', byte_data)
         try:
-            super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
+            return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
             self.ssl_handshake_completed = False
             return 0
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
+            return 0
+        except ssl.SSLError:
+            self.handle_error()
             return 0
 
     def handle_error(self):
@@ -732,10 +738,11 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if self.ssl_connection:
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
+            # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
-                          APP_PACKAGE]  # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
-            if error_type == OSError and value.errno == 0 or error_type == ssl.SSLError and any(
-                    [i in value.args[1] for i in ssl_errors]):
+                          'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
+            if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
+                    any([i in value.args[1] for i in ssl_errors]):
                 Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
                           'and `local_key_path`; is your client using a secure connection?', 'Error type', error_type,
                           'with message:', value)
@@ -1404,11 +1411,10 @@ class OAuth2Proxy(asyncore.dispatcher):
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.info(client.proxy_type, address, '[ Connection closed ]')
+                    Log.debug(client.proxy_type, address, '[ Connection closed ]')
                 else:
                     Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
                              Log.error_string(e))
-            client.close()
 
     def start(self):
         Log.info('Starting', self.info_string())
@@ -1441,7 +1447,8 @@ class OAuth2Proxy(asyncore.dispatcher):
     def remove_client(self, client):
         if client in self.client_connections:  # remove closed clients
             self.client_connections.remove(client)
-        del client
+        else:
+            Log.info('Warning:', self.info_string(), 'unable to remove orphan client connection', client)
 
     def bye_message(self, error_text=None):
         if self.proxy_type == 'IMAP':
@@ -1470,14 +1477,15 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if error_type == socket.gaierror and value.errno == 8 or \
+        if error_type == socket.gaierror and value.errno in [8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
                 error_type == ConnectionRefusedError and value.errno == errno.ECONNREFUSED or \
-                error_type == OSError and value.errno in [errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # gaierror 8 = 'nodename nor servname provided, or not known'; TimeoutError 60 = 'Operation timed out';
-            # ConnectionResetError 54 = 'Connection reset by peer'; ConnectionRefusedError 61 = 'Connection refused';
-            # OSError 22 = 'Invalid argument' (caused by getpeername() failing when there is no network connection);
+                error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
+            # gaierror 8 = 'nodename nor servname provided, or not known'; gaierror 11001 = 'getaddrinfo failed'
+            # (caused by getpeername() failing due to no network connection); TimeoutError 60 = 'Operation timed out';
+            # ConnectionResetError 54 = 'Connection reset by peer';  ConnectionRefusedError 61 = 'Connection refused';
+            # OSError 0 = 'Error' (local SSL failure); OSError 22 = 'Invalid argument' (same cause as gaierror 11001);
             # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
@@ -2091,8 +2099,11 @@ class App:
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
         for proxy in self.proxies:
-            proxy.stop()
-            proxy.close()
+            # noinspection PyBroadException
+            try:
+                proxy.stop()
+            except Exception:
+                pass
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
@@ -2236,8 +2247,11 @@ class App:
                 window.destroy()
 
         for proxy in self.proxies:  # no need to copy - proxies are never removed, we just restart them on error
-            proxy.stop()
-            proxy.close()
+            # noinspection PyBroadException
+            try:
+                proxy.stop()
+            except Exception:
+                pass
 
         if icon:
             icon.stop()
