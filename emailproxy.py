@@ -582,41 +582,30 @@ class OAuth2Helper:
             return '', ''  # no (or invalid) credentials provided
 
 
-class OAuth2ClientConnection(asyncore.dispatcher_with_send):
-    """The base client-side connection that is subclassed to handle IMAP/POP/SMTP client interaction (note that there
-    is some protocol-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
+class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
+    def __init__(self, connection=None, socket_map=None):
+        asyncore.dispatcher_with_send.__init__(self, sock=connection, map=socket_map)
+        self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self.reset()
 
-    def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
-                 custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self, connection, map=socket_map)
-        self.receive_buffer = b''
-        self.proxy_type = proxy_type
-        self.connection_info = connection_info
-        self.server_connection = server_connection
-        self.local_address = proxy_parent.local_address
-        self.server_address = server_connection.server_address
-        self.proxy_parent = proxy_parent
-        self.custom_configuration = custom_configuration
-
-        self.censor_next_log = False  # try to avoid logging credentials
-        self.authenticated = False
-
-        self.ssl_connection = custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']
+    def reset(self, is_ssl=False):
+        self.ssl_connection = is_ssl
         self.ssl_handshake_attempts = 0
-        self.ssl_handshake_completed = not self.ssl_connection
-        if not self.ssl_handshake_completed:
-            # note: we don't start negotiation here because failing handshake in __init__ means remove_client also fails
-            Log.debug(self.info_string(), '<-- [ Starting TLS handshake ]')
+        self.ssl_handshake_completed = not is_ssl
+        return self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed
 
     def info_string(self):
-        if Log.get_level() == logging.DEBUG:
-            return '%s (%s:%d; %s:%d->%s:%d%s)' % (
-                self.proxy_type, self.local_address[0], self.local_address[1], self.connection_info[0],
-                self.connection_info[1], self.server_address[0], self.server_address[1],
-                '; %s' % self.server_connection.authenticated_username if
-                self.server_connection and self.server_connection.authenticated_username else '')
-        else:
-            return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
+        return 'SSLDispatcher'  # override in subclasses to provide more detailed connection information
+
+    def set_ssl_connection(self, is_ssl=False):
+        # note that the actual SSLContext.wrap_socket (and associated unwrap()) are handled outside this class
+        if not self.ssl_connection and is_ssl:
+            self.reset(True)
+            if is_ssl:
+                # we don't start negotiation here because a failed handshake in __init__ means remove_client also fails
+                Log.debug(self.info_string(), '<-> [ Starting TLS handshake ]')
+
+        elif self.ssl_connection and not is_ssl:
+            self.reset()
 
     def ssl_handshake(self):
         self.ssl_handshake_attempts += 1
@@ -635,7 +624,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
             self.handle_close()
             return
         else:
-            Log.debug(self.info_string(), '--> [ TLS handshake complete ]')
+            Log.debug(self.info_string(), '<-> [ TLS handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
 
@@ -643,13 +632,23 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
         else:
-            super().handle_read_event()
+            # on the first connection event to a secure server we need to handle SSL handshake events (because we don't
+            # have a 'not_currently_ssl_but_will_be_once_connected'-type state) - a version of this class that didn't
+            # have to deal with both unsecured, wrapped *and* STARTTLS-type sockets would only need this in recv/send
+            try:
+                super().handle_read_event()
+            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                self.ssl_handshake_completed = False
 
     def handle_write_event(self):
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
         else:
-            super().handle_write_event()
+            # as in handle_read_event, we need to handle SSL handshake events
+            try:
+                super().handle_write_event()
+            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                self.ssl_handshake_completed = False
 
     def recv(self, buffer_size):
         try:
@@ -663,6 +662,71 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         except ssl.SSLError:
             self.handle_error()
             return b''
+
+    def send(self, byte_data):
+        try:
+            return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            self.ssl_handshake_completed = False
+            return 0
+        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+            self.handle_close()
+            return 0
+        except ssl.SSLError:
+            self.handle_error()
+            return 0
+
+    def handle_error(self):
+        error_type, value, _traceback = sys.exc_info()
+        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        if self.ssl_connection:
+            # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
+            # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
+            ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
+                          'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
+            if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
+                    any([i in value.args[1] for i in ssl_errors]):
+                Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
+                          'and `local_key_path`; is your client using a secure connection?', 'Error type', error_type,
+                          'with message:', value)
+                self.handle_close()
+            else:
+                super().handle_error()
+        else:
+            super().handle_error()
+
+
+class OAuth2ClientConnection(SSLAsyncoreDispatcher):
+    """The base client-side connection that is subclassed to handle IMAP/POP/SMTP client interaction (note that there
+    is some protocol-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
+
+    def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
+                 custom_configuration):
+        SSLAsyncoreDispatcher.__init__(self, connection, socket_map)
+        self.receive_buffer = b''
+        self.proxy_type = proxy_type
+        self.connection_info = connection_info
+        self.server_connection = server_connection
+        self.local_address = proxy_parent.local_address
+        self.server_address = server_connection.server_address
+        self.proxy_parent = proxy_parent
+        self.custom_configuration = custom_configuration
+
+        self.censor_next_log = False  # try to avoid logging credentials
+        self.authenticated = False
+
+        self.set_ssl_connection(
+            custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
+
+    def info_string(self):
+        if Log.get_level() == logging.DEBUG:
+            return '%s (%s:%d; %s:%d->%s:%d%s)' % (
+                self.proxy_type, self.local_address[0], self.local_address[1], self.connection_info[0],
+                self.connection_info[1], self.server_address[0], self.server_address[1],
+                '; %s' % self.server_connection.authenticated_username if
+                self.server_connection and self.server_connection.authenticated_username else '')
+        else:
+            return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -721,36 +785,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
     def send(self, byte_data):
         Log.debug(self.info_string(), '<--', byte_data)
-        try:
-            return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-            self.ssl_handshake_completed = False
-            return 0
-        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
-            self.handle_close()
-            return 0
-        except ssl.SSLError:
-            self.handle_error()
-            return 0
-
-    def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if self.ssl_connection:
-            # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
-            # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
-            ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
-                          'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
-            if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
-                    any([i in value.args[1] for i in ssl_errors]):
-                Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
-                          'and `local_key_path`; is your client using a secure connection?', 'Error type', error_type,
-                          'with message:', value)
-                self.handle_close()
-            else:
-                super().handle_error()
-        else:
-            super().handle_error()
+        return super().send(byte_data)
 
     def log_info(self, message, message_type='info'):
         # override to redirect error messages to our own log
@@ -1002,11 +1037,11 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         super().process_data(b'AUTH XOAUTH2\r\n')
 
 
-class OAuth2ServerConnection(asyncore.dispatcher_with_send):
+class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     """The base server-side connection that is subclassed to handle IMAP/POP/SMTP server interaction"""
 
     def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self, map=socket_map)  # note: establish connection later due to STARTTLS
+        SSLAsyncoreDispatcher.__init__(self, socket_map=socket_map)  # note: establish connection later due to STARTTLS
         self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
@@ -1034,16 +1069,12 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
 
-    def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
-        new_socket = socket.socket(socket_family, socket_type)
-        new_socket.setblocking(True)
-
         # connections can either be upgraded (wrapped) after setup via the STARTTLS command, or secure from the start
-        if self.custom_configuration['starttls']:
-            self.set_socket(new_socket)
-        else:
+        if not self.custom_configuration['starttls']:
             ssl_context = ssl.create_default_context()
-            self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
+            super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
+                                                       suppress_ragged_eofs=True, do_handshake_on_connect=False))
+            self.set_ssl_connection(True)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1290,7 +1321,10 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         elif self.starttls_state is self.STARTTLS.NEGOTIATING:
             if str_data.startswith('220'):
                 ssl_context = ssl.create_default_context()
-                super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0]))
+                super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
+                                                           suppress_ragged_eofs=True, do_handshake_on_connect=False))
+                self.set_ssl_connection(True)
+
                 self.starttls_state = self.STARTTLS.COMPLETE
                 Log.debug(self.info_string(), '[ Successfully negotiated SMTP STARTTLS connection -',
                           're-sending greeting ]')
