@@ -7,13 +7,13 @@ __license__ = 'Apache 2.0'
 __version__ = '2022-08-22'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
-import asyncore
 import base64
 import binascii
 import configparser
 import datetime
 import enum
 import errno
+import io
 import json
 import logging
 import logging.handlers
@@ -32,19 +32,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 import wsgiref.simple_server
 import wsgiref.util
+import zlib
 
-import pkg_resources
-import pystray
-import timeago
-
-# noinspection PyPackageRequirements
-import webview
-
-# for drawing the menu bar icon
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
+# asyncore is essential, but has been deprecated and will be removed in python 3.12 (see PEP 594)
+# pyasyncore is our workaround, so suppress this warning until the proxy is rewritten in, e.g., asyncio
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    import asyncore
 
 # for encrypting/decrypting the locally-stored credentials
 from cryptography.fernet import Fernet, InvalidToken
@@ -52,18 +49,54 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# for macOS-specific functionality
+# for macOS-specific unified logging
 if sys.platform == 'darwin':
+    # pyoslog *is* present; see youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
     # noinspection PyPackageRequirements
-    import pyoslog  # unified logging
+    import pyoslog
+
+# by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
+# where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
+if not os.environ.get('EMAIL_OAUTH2_PROXY_REQUIREMENTS_NO_GUI', None):
+    import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
+    import pystray  # the menu bar/taskbar GUI
+    import timeago  # the last authenticated activity hint
+    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+
     # noinspection PyPackageRequirements
-    import AppKit  # retina icon, menu update on click, native notifications and receiving system events
-    import PyObjCTools  # SIGTERM handling
-    import SystemConfiguration  # network availability monitoring
+    import webview  # the popup authentication window (in default and `--external-auth` modes only)
+
+    # for macOS-specific functionality
+    if sys.platform == 'darwin':
+        # noinspection PyPackageRequirements
+        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
+        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+        import SystemConfiguration  # network availability monitoring
+
+else:
+    # dummy implementations to allow use regardless of whether pystray or AppKit are available
+    # noinspection PyPep8Naming
+    class pystray:
+        class Icon:
+            pass
+
+
+    class AppKit:
+        class NSObject:
+            pass
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
+
+# noinspection SpellCheckingInspection
+APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQHOoeMlVeoiCHqQXrwX/gEK9efGgNy+C4MWbHjxER
+    DCJb3dTUdQH733zvW/ezHszQADAAy3gIFO+kdbW3lXWAUgRs2sV02igdoL8MfLctrHf6PeBAXBe5OL27r2acry6hPprdLleNbbiXfkUtRfoeh0T4gaju
+    O6gT9TN5gEWo5GHGNjuXsVAPET+yuKmcdAAETaRR5BfuGuYVRCs/fQjBqGxt98En80/WzpYvaN3tPsvN4eufAWPc/r707dvLPyg/PiCcMSAq1n9AgXHs
+    MbeedvZz+zMH0YGZ99x7v9LxwyzpuBBpA8oTg9tB8kn0IiIHQLPwT9tuba4BfNQhervPZzdMGBWp1a9hJHYyHBeS2Y2r+I/2LF/9Ku3Q7tXZ9ogJKEEN
+    +EWbODRqpoaFwRXUJbDvK4Xghlek+WQ5KfKDM3N0dlshiQEQVHzuYJeKMxRVMNhWRISClYmc6qaUPxUitNZTdfz2QyfcmXIOK8xoOZKt7ViUkRqYXekW
+    J6Sp0urC5fCken5STr0KDoUlyhjVd4nxSUvq3tCftEn8r2ro+mxUDIaCMQmQrGZGHmi53tAT3rPGH1e3qF0p9w7LtcohwuyvnRxWZ8sZUej6WvlhXSk1
+    7k+POJ1iR73N/+w2xN0f4+GJcHtfqoWzgfi6cuZscC54lSq3SbN1tmzC4MXtcwN/zOC78r9BIfNc3M='''  # TTF ('e') -> zlib -> base64
 
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
@@ -211,7 +244,7 @@ class AppConfig:
     _PARSER = None
     _LOADED = False
 
-    _GLOBALS = []
+    _GLOBALS = None
     _SERVERS = []
     _ACCOUNTS = []
 
@@ -222,7 +255,10 @@ class AppConfig:
         AppConfig._PARSER.read(CONFIG_FILE_PATH)
 
         config_sections = AppConfig._PARSER.sections()
-        AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME] if APP_SHORT_NAME in config_sections else []
+        if APP_SHORT_NAME in config_sections:
+            AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME]
+        else:
+            AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
@@ -238,6 +274,7 @@ class AppConfig:
         AppConfig._PARSER = None
         AppConfig._LOADED = False
 
+        AppConfig._GLOBALS = None
         AppConfig._SERVERS = []
         AppConfig._ACCOUNTS = []
 
@@ -287,6 +324,7 @@ class OAuth2Helper:
         token_url = config.get(username, 'token_url', fallback=None)
         oauth2_scope = config.get(username, 'oauth2_scope', fallback=None)
         redirect_uri = config.get(username, 'redirect_uri', fallback=None)
+        redirect_listen_address = config.get(username, 'redirect_listen_address', fallback=None)
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
 
@@ -331,6 +369,7 @@ class OAuth2Helper:
                                                                               oauth2_scope, username)
                 # note: get_oauth2_authorisation_code is a blocking call
                 success, authorisation_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                         redirect_listen_address,
                                                                                          username, connection_info)
                 if not success:
                     Log.info('Authentication request failed or expired for account', username, '- aborting login')
@@ -369,23 +408,31 @@ class OAuth2Helper:
             return True, oauth2_string
 
         except InvalidToken as e:
-            # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
-            config.remove_option(username, 'token_salt')
-            config.remove_option(username, 'access_token')
-            config.remove_option(username, 'access_token_expiry')
-            config.remove_option(username, 'refresh_token')
-            AppConfig.save()
+            # if invalid details are the reason for failure we remove our cached version and re-authenticate - this can
+            # be disabled by a configuration setting, but note that we always remove credentials on 400 Bad Request
+            if e.args == (400, APP_PACKAGE) or AppConfig.globals().getboolean('delete_account_token_on_password_error',
+                                                                              fallback=True):
+                config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'access_token')
+                config.remove_option(username, 'access_token_expiry')
+                config.remove_option(username, 'refresh_token')
+                AppConfig.save()
+            else:
+                recurse_retries = False  # no need to recurse if we are just trying the same credentials again
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+            else:
+                Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+                return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are
             # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
             # network errors: URLError(OSError(50, 'Network is down'))) rather than e.g., bad requests
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
-            return False, '%s: Login failure - saved authentication data invalid for account %s' % (
+            return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
     @staticmethod
@@ -407,7 +454,9 @@ class OAuth2Helper:
     @staticmethod
     def start_redirection_receiver_server(token_request):
         """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
-        parsed_uri = urllib.parse.urlparse(token_request['redirect_uri'])
+        wsgi_address = token_request['redirect_listen_address'] if token_request['redirect_listen_address'] else \
+            token_request['redirect_uri']
+        parsed_uri = urllib.parse.urlparse(wsgi_address)
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
         Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
             parsed_uri.hostname, parsed_port))
@@ -419,10 +468,12 @@ class OAuth2Helper:
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
-                start_response('200 OK', [('Content-type', 'text/plain; charset=utf-8')])
+                start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
                 token_request['response_url'] = wsgiref.util.request_uri(environ)
-                return [('%s successfully authenticated account %s. You can now close this window.' % (
-                    APP_NAME, token_request['username'])).encode('utf-8')]
+                return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
+                         '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
+                         '</style></head><body><p>%s successfully authenticated account %s.</p><p>You can close this '
+                         'window.</p></body></html>' % ((APP_NAME, token_request['username']) * 2)).encode('utf-8')]
 
         try:
             wsgiref.simple_server.WSGIServer.allow_reuse_address = False
@@ -441,11 +492,13 @@ class OAuth2Helper:
             del token_request['local_server_auth_wsgi']
             RESPONSE_QUEUE.put(token_request)
 
-        except socket.error:
-            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the '
-                      'redirect_uri for account %s is unique across accounts, specifies a port number, and is not '
-                      'already in use. See the documentation in the proxy\'s configuration file for further detail' % (
-                          parsed_uri.hostname, parsed_port, token_request['username']))
+        except socket.error as e:
+            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the %s for '
+                      'account %s is unique across accounts, specifies a port number, and is not already in use. See '
+                      'the documentation in the proxy\'s sample configuration file for further detail' % (
+                          parsed_uri.hostname, parsed_port,
+                          'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri',
+                          token_request['username']), Log.error_string(e))
 
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username):
@@ -460,10 +513,11 @@ class OAuth2Helper:
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
-    def get_oauth2_authorisation_code(permission_url, redirect_uri, username, connection_info):
+    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username, connection_info):
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
         token_request = {'connection': connection_info, 'permission_url': permission_url,
-                         'redirect_uri': redirect_uri, 'username': username, 'expired': False}
+                         'redirect_uri': redirect_uri, 'redirect_listen_address': redirect_listen_address,
+                         'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
         wait_time = 0
         while True:
@@ -485,8 +539,8 @@ class OAuth2Helper:
                 return False, None
 
             elif data['connection'] == connection_info:  # found an authentication response meant for us
-                # to improve non-GUI mode we also support the use of a local server to receive the OAuth redirection
-                # (note: not enabled by default because GUI mode is typically unattended, but useful in some cases)
+                # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
+                # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
@@ -533,7 +587,7 @@ class OAuth2Helper:
         except urllib.error.HTTPError as e:
             Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken
+                raise InvalidToken(e.code, APP_PACKAGE)
             raise e
 
     @staticmethod
@@ -1594,7 +1648,7 @@ if sys.platform == 'darwin':
 
         def _assert_image(self):
             # pystray does some scaling which breaks macOS retina icons - we replace that with the actual menu bar size
-            bytes_image = BytesIO()
+            bytes_image = io.BytesIO()
             self.icon.save(bytes_image, 'png')
             data = AppKit.NSData(bytes_image.getvalue())
             self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
@@ -1658,7 +1712,7 @@ class App:
     # PyAttributeOutsideInit inspection suppressed because init_platforms() is itself called from __init__()
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and not self.args.no_gui:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -1693,14 +1747,11 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-        else:
-            pass  # currently no special initialisation/configuration required for other platforms
-
-        # try to exit gracefully when SIGTERM is received
-        if sys.platform == 'darwin' and not self.args.no_gui:
             # on macOS, catching SIGTERM while pystray's main loop is running needs a mach message handler
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
+
         else:
+            # for other platforms, or in no-GUI mode, just try to exit gracefully when SIGTERM is received
             signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
@@ -1732,7 +1783,6 @@ class App:
     @staticmethod
     def get_image():
         # we use an icon font for better multiplatform compatibility and icon size flexibility
-        icon_font_file = '%s/icon.ttf' % os.path.dirname(os.path.realpath(__file__))
         icon_colour = 'white'  # note: value is irrelevant on macOS - we set as a template to get the platform's colours
         icon_character = 'e'
         icon_background_width = 44
@@ -1742,10 +1792,10 @@ class App:
         # find the largest font size that will let us draw the icon within the available width
         minimum_font_size = 1
         maximum_font_size = 255
-        font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+        font, font_width, font_height = App.get_icon_size(icon_character, minimum_font_size)
         while maximum_font_size - minimum_font_size > 1:
             current_font_size = round((minimum_font_size + maximum_font_size) / 2)  # ImageFont only supports integers
-            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, current_font_size)
+            font, font_width, font_height = App.get_icon_size(icon_character, current_font_size)
             if font_width > icon_width:
                 maximum_font_size = current_font_size
             elif font_width < icon_width:
@@ -1753,7 +1803,7 @@ class App:
             else:
                 break
         if font_width > icon_width:  # because we have to round font sizes we need one final check for oversize width
-            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+            font, font_width, font_height = App.get_icon_size(icon_character, minimum_font_size)
 
         icon_image = Image.new('RGBA', (icon_background_width, icon_background_height))
         draw = ImageDraw.Draw(icon_image)
@@ -1764,8 +1814,8 @@ class App:
         return icon_image
 
     @staticmethod
-    def get_icon_size(font_file, text, font_size):
-        font = ImageFont.truetype(font_file, size=font_size)
+    def get_icon_size(text, font_size):
+        font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
         if pkg_resources.parse_version(
@@ -1809,10 +1859,10 @@ class App:
     @staticmethod
     def get_last_activity(account):
         config = AppConfig.get()
-        last_sync = config.get(account, 'last_activity', fallback=None)
+        last_sync = config.getint(account, 'last_activity', fallback=None)
         if last_sync is not None:
-            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(float(last_sync)),
-                                                 datetime.datetime.now(), 'en_short')
+            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(last_sync), datetime.datetime.now(),
+                                                 'en_short')
         else:
             formatted_sync_time = 'never'
         return '    %s (%s)' % (account, formatted_sync_time)

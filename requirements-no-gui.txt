@@ -1,0 +1,10 @@
+# this file contains the proxy's core dependencies beyond inbuilt python packages
+# to use this file instead of the default requirements.txt you *must* specify the environment variable EMAIL_OAUTH2_PROXY_REQUIREMENTS_NO_GUI (with any non-empty value) in addition to the standard `--no-gui` option as documented in the proxy's readme
+configobj
+cryptography
+
+# provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
+pyasyncore; python_version >= '3.12'
+
+# macOS only: output to unified logging
+pyoslog>=0.3.0; sys_platform == 'darwin'

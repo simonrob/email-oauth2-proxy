@@ -1,5 +1,6 @@
-configobj
-cryptography
+# include core requirements (separated in order to support usage without GUI-only dependencies)
+-r requirements-no-gui.txt
+
 pillow
 setuptools
 timeago
@@ -12,10 +13,6 @@ pythonnet==3.0.0a2; sys_platform == 'win32' and python_version >= '3.10'  # forc
 pywebview; sys_platform != 'win32'  # (specify platform to avoid double requirement error with older pip versions)
 pywebview>=3.5; sys_platform == 'win32'
 
-# provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
-pyasyncore; python_version >= '3.12'
-
-# macOS: improve menu bar interaction, provide native notifications, handle system events and output to unified logging
+# macOS: improve menu bar interaction, provide native notifications and handle system events
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
 pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'
-pyoslog>=0.3.0; sys_platform == 'darwin'
