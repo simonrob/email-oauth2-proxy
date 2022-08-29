@@ -1125,7 +1125,8 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
         # connections can either be upgraded (wrapped) after setup via the STARTTLS command, or secure from the start
         if not self.custom_configuration['starttls']:
-            ssl_context = ssl.create_default_context()
+            # noinspection PyTypeChecker
+            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
             super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
                                                        suppress_ragged_eofs=True, do_handshake_on_connect=False))
             self.set_ssl_connection(True)
@@ -1374,7 +1375,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.starttls_state is self.STARTTLS.NEGOTIATING:
             if str_data.startswith('220'):
-                ssl_context = ssl.create_default_context()
+                # noinspection PyTypeChecker
+                ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
                 super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
                                                            suppress_ragged_eofs=True, do_handshake_on_connect=False))
                 self.set_ssl_connection(True)
@@ -1516,15 +1518,10 @@ class OAuth2Proxy(asyncore.dispatcher):
             new_socket = socket.socket(socket_family, socket_type)
             new_socket.setblocking(False)
 
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ssl_context.load_cert_chain(
-                certfile=self.custom_configuration['local_certificate_path'],
-                keyfile=self.custom_configuration['local_key_path'])
-            if self.custom_configuration['verify_local_certificate']:
-                ssl_context.verify_mode = ssl.CERT_REQUIRED
-                ssl_context.load_verify_locations(self.custom_configuration['local_certificate_path'])
-            else:
-                ssl_context.verify_mode = ssl.CERT_OPTIONAL
+            # noinspection PyTypeChecker
+            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
+                                        keyfile=self.custom_configuration['local_key_path'])
 
             # suppress_ragged_eofs=True: see test_ssl.py documentation in https://github.com/python/cpython/pull/5266
             self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
