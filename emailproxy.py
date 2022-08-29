@@ -57,7 +57,9 @@ if sys.platform == 'darwin':
 
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-if not os.environ.get('EMAIL_OAUTH2_PROXY_REQUIREMENTS_NO_GUI', None):
+no_gui_parser = argparse.ArgumentParser()
+no_gui_parser.add_argument('--no-gui', action='store_true')
+if not no_gui_parser.parse_known_args()[0].no_gui:
     import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
@@ -84,6 +86,7 @@ else:
     class AppKit:
         class NSObject:
             pass
+del no_gui_parser
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -1652,12 +1655,17 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-            # on macOS, catching SIGTERM while pystray's main loop is running needs a mach message handler
+            # on macOS, catching SIGINT/SIGTERM/SIGQUIT while in pystray's main loop needs a Mach signal handler
+            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda signum: self.exit(self.icon))
 
         else:
-            # for other platforms, or in no-GUI mode, just try to exit gracefully when SIGTERM is received
+            # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
+            signal.signal(signal.SIGINT, lambda signum, frame: self.exit(self.icon))
             signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGQUIT'):  # SIGQUIT does not exist on all platforms (e.g., Windows)
+                signal.signal(signal.SIGQUIT, lambda signum, frame: self.exit(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2216,7 +2224,7 @@ class App:
 
         AppConfig.save()
 
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and not self.args.no_gui:
             # noinspection PyUnresolvedReferences
             SystemConfiguration.SCNetworkReachabilityUnscheduleFromRunLoop(self.macos_reachability_target,
                                                                            SystemConfiguration.CFRunLoopGetCurrent(),
@@ -2246,7 +2254,7 @@ class App:
             restart_callback()
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
-        if sys.platform == 'darwin' and self.macos_unload_plist_on_exit:
+        if sys.platform == 'darwin' and not self.args.no_gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
 
 

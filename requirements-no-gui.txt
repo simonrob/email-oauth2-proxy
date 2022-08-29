@@ -1,5 +1,5 @@
 # this file contains the proxy's core dependencies beyond inbuilt python packages
-# to use this file instead of the default requirements.txt you *must* specify the environment variable EMAIL_OAUTH2_PROXY_REQUIREMENTS_NO_GUI (with any non-empty value) in addition to the standard `--no-gui` option as documented in the proxy's readme
+# to use this file instead of the default requirements.txt you *must* pass the `--no-gui` option when starting the proxy (see the script's readme for further details)
 configobj
 cryptography
 
