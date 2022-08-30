@@ -1,17 +1,18 @@
-configobj
-cryptography
+# include core requirements (separated in order to support usage without GUI-only dependencies)
+-r requirements-no-gui.txt
+
 pillow
-pystray>=0.19.4  # force pystray version with dummy GUI fix (https://github.com/moses-palmer/pystray/issues/118)
-pywebview; sys_platform != 'win32'  # specify platform to avoid double requirement error with older pip versions
+setuptools
 timeago
 
-# provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
-pyasyncore; python_version >= '3.12'
-
-# used to improve menu bar interaction, provide native notifications, handle system events and output to unified logging
-pyobjc-framework-Cocoa; sys_platform == 'darwin'
-pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'
-pyoslog>=0.3.0; sys_platform == 'darwin'
+# force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)
+pystray>=0.19.4
 
 # force pywebview 3.5+ on Windows to fix authentication window crash bug (https://github.com/r0x0r/pywebview/issues/720)
+pythonnet==3.0.0a2; sys_platform == 'win32' and python_version >= '3.10'  # force compatible pythonnet (pywebview req.)
+pywebview; sys_platform != 'win32'  # (specify platform to avoid double requirement error with older pip versions)
 pywebview>=3.5; sys_platform == 'win32'
+
+# macOS: improve menu bar interaction, provide native notifications and handle system events
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'

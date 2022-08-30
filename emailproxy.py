@@ -4,11 +4,10 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-08-03'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-30'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
-import asyncore
 import base64
 import binascii
 import collections
@@ -17,6 +16,7 @@ import datetime
 import enum
 import errno
 import importlib
+import io
 import json
 import logging
 import logging.handlers
@@ -35,19 +35,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 import wsgiref.simple_server
 import wsgiref.util
+import zlib
 
-import pkg_resources
-import pystray
-import timeago
-
-# noinspection PyPackageRequirements
-import webview
-
-# for drawing the menu bar icon
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont
+# asyncore is essential, but has been deprecated and will be removed in python 3.12 (see PEP 594)
+# pyasyncore is our workaround, so suppress this warning until the proxy is rewritten in, e.g., asyncio
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    import asyncore
 
 # for encrypting/decrypting the locally-stored credentials
 from cryptography.fernet import Fernet, InvalidToken
@@ -55,18 +52,57 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# for macOS-specific functionality
+# for macOS-specific unified logging
 if sys.platform == 'darwin':
+    # pyoslog *is* present; see youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
     # noinspection PyPackageRequirements
-    import pyoslog  # unified logging
+    import pyoslog
+
+# by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
+# where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
+no_gui_parser = argparse.ArgumentParser()
+no_gui_parser.add_argument('--no-gui', action='store_true')
+if not no_gui_parser.parse_known_args()[0].no_gui:
+    import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
+    import pystray  # the menu bar/taskbar GUI
+    import timeago  # the last authenticated activity hint
+    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+
     # noinspection PyPackageRequirements
-    import AppKit  # retina icon, menu update on click, native notifications and receiving system events
-    import PyObjCTools  # SIGTERM handling
-    import SystemConfiguration  # network availability monitoring
+    import webview  # the popup authentication window (in default and `--external-auth` modes only)
+
+    # for macOS-specific functionality
+    if sys.platform == 'darwin':
+        # noinspection PyPackageRequirements
+        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
+        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+        import SystemConfiguration  # network availability monitoring
+
+else:
+    # dummy implementations to allow use regardless of whether pystray or AppKit are available
+    # noinspection PyPep8Naming
+    class pystray:
+        class Icon:
+            pass
+
+
+    class AppKit:
+        class NSObject:
+            pass
+del no_gui_parser
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
+
+# noinspection SpellCheckingInspection
+APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQHOoeMlVeoiCHqQXrwX/gEK9efGgNy+C4MWbHjxER
+    DCJb3dTUdQH733zvW/ezHszQADAAy3gIFO+kdbW3lXWAUgRs2sV02igdoL8MfLctrHf6PeBAXBe5OL27r2acry6hPprdLleNbbiXfkUtRfoeh0T4gaju
+    O6gT9TN5gEWo5GHGNjuXsVAPET+yuKmcdAAETaRR5BfuGuYVRCs/fQjBqGxt98En80/WzpYvaN3tPsvN4eufAWPc/r707dvLPyg/PiCcMSAq1n9AgXHs
+    MbeedvZz+zMH0YGZ99x7v9LxwyzpuBBpA8oTg9tB8kn0IiIHQLPwT9tuba4BfNQhervPZzdMGBWp1a9hJHYyHBeS2Y2r+I/2LF/9Ku3Q7tXZ9ogJKEEN
+    +EWbODRqpoaFwRXUJbDvK4Xghlek+WQ5KfKDM3N0dlshiQEQVHzuYJeKMxRVMNhWRISClYmc6qaUPxUitNZTdfz2QyfcmXIOK8xoOZKt7ViUkRqYXekW
+    J6Sp0urC5fCken5STr0KDoUlyhjVd4nxSUvq3tCftEn8r2ro+mxUDIaCMQmQrGZGHmi53tAT3rPGH1e3qF0p9w7LtcohwuyvnRxWZ8sZUej6WvlhXSk1
+    7k+POJ1iR73N/+w2xN0f4+GJcHtfqoWzgfi6cuZscC54lSq3SbN1tmzC4MXtcwN/zOC78r9BIfNc3M='''  # TTF ('e') -> zlib -> base64
 
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
@@ -75,8 +111,9 @@ CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
 
-# maximum number of bytes to read from the socket at a time (limit is per socket)
-RECEIVE_BUFFER_SIZE = 65536
+RECEIVE_BUFFER_SIZE = 65536  # number of bytes to try to read from the socket at a time (limit is per socket)
+
+MAX_SSL_HANDSHAKE_ATTEMPTS = 65536  # maximum number of attempts before aborting local SSL/TLS handshake; 0 = no limit
 
 # IMAP/POP/SMTP require \r\n as a line terminator (we use lines only pre-authentication; afterwards just pass through)
 LINE_TERMINATOR = b'\r\n'
@@ -156,8 +193,11 @@ class Log:
                 handler = pyoslog.Handler()
                 handler.setSubsystem(APP_PACKAGE)
         else:
-            handler = logging.handlers.SysLogHandler(address='/dev/log')
-            handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
+            if os.path.exists('/dev/log'):
+                handler = logging.handlers.SysLogHandler(address='/dev/log')
+                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
+            else:
+                handler = logging.StreamHandler()
         Log._HANDLER = handler
         Log._LOGGER.addHandler(Log._HANDLER)
         Log.set_level(logging.INFO)
@@ -216,6 +256,7 @@ class AppConfig:
     _PARSER = None
     _LOADED = False
 
+    _GLOBALS = None
     _SERVERS = []
     _ACCOUNTS = []
 
@@ -226,6 +267,10 @@ class AppConfig:
         AppConfig._PARSER.read(CONFIG_FILE_PATH)
 
         config_sections = AppConfig._PARSER.sections()
+        if APP_SHORT_NAME in config_sections:
+            AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME]
+        else:
+            AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
         AppConfig._LOADED = True
@@ -241,6 +286,7 @@ class AppConfig:
         AppConfig._PARSER = None
         AppConfig._LOADED = False
 
+        AppConfig._GLOBALS = None
         AppConfig._SERVERS = []
         AppConfig._ACCOUNTS = []
 
@@ -248,6 +294,11 @@ class AppConfig:
     def reload():
         AppConfig.unload()
         return AppConfig.get()
+
+    @staticmethod
+    def globals():
+        AppConfig.get()  # make sure config is loaded
+        return AppConfig._GLOBALS
 
     @staticmethod
     def servers():
@@ -285,6 +336,7 @@ class OAuth2Helper:
         token_url = config.get(username, 'token_url', fallback=None)
         oauth2_scope = config.get(username, 'oauth2_scope', fallback=None)
         redirect_uri = config.get(username, 'redirect_uri', fallback=None)
+        redirect_listen_address = config.get(username, 'redirect_listen_address', fallback=None)
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
 
@@ -294,6 +346,18 @@ class OAuth2Helper:
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
                            'and client_secret)' % (APP_NAME, username))
+
+        # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
+        example_client_value = '*** your client'
+        example_client_status = [example_client_value in i for i in [client_id, client_secret] if i]
+        if any(example_client_status):
+            if all(example_client_status) or example_client_value in client_id:
+                Log.info('Warning: client configuration for account', username, 'seems to contain example values -',
+                         'if authentication fails, please double-check these values are correct')
+            elif example_client_value in client_secret:
+                Log.info('Warning: client secret for account', username, 'seems to contain the example value - if you',
+                         'are using an Office 365 setup that does not need a secret, please delete this line entirely;',
+                         'otherwise, if authentication fails, please double-check this value is correct')
 
         token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
@@ -317,6 +381,7 @@ class OAuth2Helper:
                                                                               oauth2_scope, username)
                 # note: get_oauth2_authorisation_code is a blocking call
                 success, authorisation_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                         redirect_listen_address,
                                                                                          username, connection_info)
                 if not success:
                     Log.info('Authentication request failed or expired for account', username, '- aborting login')
@@ -342,6 +407,9 @@ class OAuth2Helper:
                     access_token = response['access_token']
                     config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                     config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                    if 'refresh_token' in response:
+                        config.set(username, 'refresh_token',
+                                   OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
                     AppConfig.save()
                 else:
                     access_token = OAuth2Helper.decrypt(cryptographer, access_token)
@@ -352,23 +420,31 @@ class OAuth2Helper:
             return True, oauth2_string
 
         except InvalidToken as e:
-            # if invalid details are the reason for failure we need to remove our cached version and re-authenticate
-            config.remove_option(username, 'token_salt')
-            config.remove_option(username, 'access_token')
-            config.remove_option(username, 'access_token_expiry')
-            config.remove_option(username, 'refresh_token')
-            AppConfig.save()
+            # if invalid details are the reason for failure we remove our cached version and re-authenticate - this can
+            # be disabled by a configuration setting, but note that we always remove credentials on 400 Bad Request
+            if e.args == (400, APP_PACKAGE) or AppConfig.globals().getboolean('delete_account_token_on_password_error',
+                                                                              fallback=True):
+                config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'access_token')
+                config.remove_option(username, 'access_token_expiry')
+                config.remove_option(username, 'refresh_token')
+                AppConfig.save()
+            else:
+                recurse_retries = False  # no need to recurse if we are just trying the same credentials again
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+            else:
+                Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+                return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are
             # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
             # network errors: URLError(OSError(50, 'Network is down'))) rather than e.g., bad requests
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
-            return False, '%s: Login failure - saved authentication data invalid for account %s' % (
+            return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
     @staticmethod
@@ -390,7 +466,9 @@ class OAuth2Helper:
     @staticmethod
     def start_redirection_receiver_server(token_request):
         """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
-        parsed_uri = urllib.parse.urlparse(token_request['redirect_uri'])
+        wsgi_address = token_request['redirect_listen_address'] if token_request['redirect_listen_address'] else \
+            token_request['redirect_uri']
+        parsed_uri = urllib.parse.urlparse(wsgi_address)
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
         Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
             parsed_uri.hostname, parsed_port))
@@ -402,10 +480,12 @@ class OAuth2Helper:
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
-                start_response('200 OK', [('Content-type', 'text/plain; charset=utf-8')])
+                start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
                 token_request['response_url'] = wsgiref.util.request_uri(environ)
-                return [('%s successfully authenticated account %s. You can now close this window.' % (
-                    APP_NAME, token_request['username'])).encode('utf-8')]
+                return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
+                         '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
+                         '</style></head><body><p>%s successfully authenticated account %s.</p><p>You can close this '
+                         'window.</p></body></html>' % ((APP_NAME, token_request['username']) * 2)).encode('utf-8')]
 
         try:
             wsgiref.simple_server.WSGIServer.allow_reuse_address = False
@@ -424,11 +504,13 @@ class OAuth2Helper:
             del token_request['local_server_auth_wsgi']
             RESPONSE_QUEUE.put(token_request)
 
-        except socket.error:
-            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the '
-                      'redirect_uri for account %s is unique across accounts, specifies a port number, and is not '
-                      'already in use. See the documentation in the proxy\'s configuration file for further detail' % (
-                          parsed_uri.hostname, parsed_port, token_request['username']))
+        except socket.error as e:
+            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the %s for '
+                      'account %s is unique across accounts, specifies a port number, and is not already in use. See '
+                      'the documentation in the proxy\'s sample configuration file for further detail' % (
+                          parsed_uri.hostname, parsed_port,
+                          'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri',
+                          token_request['username']), Log.error_string(e))
 
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username):
@@ -443,10 +525,11 @@ class OAuth2Helper:
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
-    def get_oauth2_authorisation_code(permission_url, redirect_uri, username, connection_info):
+    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username, connection_info):
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
         token_request = {'connection': connection_info, 'permission_url': permission_url,
-                         'redirect_uri': redirect_uri, 'username': username, 'expired': False}
+                         'redirect_uri': redirect_uri, 'redirect_listen_address': redirect_listen_address,
+                         'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
         wait_time = 0
         while True:
@@ -468,8 +551,8 @@ class OAuth2Helper:
                 return False, None
 
             elif data['connection'] == connection_info:  # found an authentication response meant for us
-                # to improve non-GUI mode we also support the use of a local server to receive the OAuth redirection
-                # (note: not enabled by default because GUI mode is typically unattended, but useful in some cases)
+                # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
+                # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
@@ -516,7 +599,7 @@ class OAuth2Helper:
         except urllib.error.HTTPError as e:
             Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken
+                raise InvalidToken(e.code, APP_PACKAGE)
             raise e
 
     @staticmethod
@@ -565,13 +648,127 @@ class OAuth2Helper:
             return '', ''  # no (or invalid) credentials provided
 
 
-class OAuth2ClientConnection(asyncore.dispatcher_with_send):
+class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
+    def __init__(self, connection=None, socket_map=None):
+        asyncore.dispatcher_with_send.__init__(self, sock=connection, map=socket_map)
+        self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self.reset()
+
+    def reset(self, is_ssl=False):
+        self.ssl_connection = is_ssl
+        self.ssl_handshake_attempts = 0
+        self.ssl_handshake_completed = not is_ssl
+        return self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed
+
+    def info_string(self):
+        return 'SSLDispatcher'  # override in subclasses to provide more detailed connection information
+
+    def set_ssl_connection(self, is_ssl=False):
+        # note that the actual SSLContext.wrap_socket (and associated unwrap()) are handled outside this class
+        if not self.ssl_connection and is_ssl:
+            self.reset(True)
+            if is_ssl:
+                # we don't start negotiation here because a failed handshake in __init__ means remove_client also fails
+                Log.debug(self.info_string(), '<-> [ Starting TLS handshake ]')
+
+        elif self.ssl_connection and not is_ssl:
+            self.reset()
+
+    def ssl_handshake(self):
+        self.ssl_handshake_attempts += 1
+        if 0 < MAX_SSL_HANDSHAKE_ATTEMPTS < self.ssl_handshake_attempts:
+            raise ssl.SSLError(-1, APP_PACKAGE)
+
+        # see: https://github.com/python/cpython/issues/54293
+        try:
+            # note that attempting to connect insecurely to a secure socket may loop indefinitely here - we attempt
+            # to catch this in handle_error() when the client gives up, but there's not much else we can do
+            # noinspection PyUnresolvedReferences
+            self.socket.do_handshake()
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            return
+        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+            self.handle_close()
+            return
+        else:
+            Log.debug(self.info_string(), '<-> [ TLS handshake complete ]')
+            self.ssl_handshake_attempts = 0
+            self.ssl_handshake_completed = True
+
+    def handle_read_event(self):
+        if not self.ssl_handshake_completed:
+            self.ssl_handshake()
+        else:
+            # on the first connection event to a secure server we need to handle SSL handshake events (because we don't
+            # have a 'not_currently_ssl_but_will_be_once_connected'-type state) - a version of this class that didn't
+            # have to deal with both unsecured, wrapped *and* STARTTLS-type sockets would only need this in recv/send
+            try:
+                super().handle_read_event()
+            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                self.ssl_handshake_completed = False
+
+    def handle_write_event(self):
+        if not self.ssl_handshake_completed:
+            self.ssl_handshake()
+        else:
+            # as in handle_read_event, we need to handle SSL handshake events
+            try:
+                super().handle_write_event()
+            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+                self.ssl_handshake_completed = False
+
+    def recv(self, buffer_size):
+        try:
+            return super().recv(buffer_size)
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            self.ssl_handshake_completed = False
+            return b''
+        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+            self.handle_close()
+            return b''
+        except ssl.SSLError:
+            self.handle_error()
+            return b''
+
+    def send(self, byte_data):
+        try:
+            return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            self.ssl_handshake_completed = False
+            return 0
+        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+            self.handle_close()
+            return 0
+        except ssl.SSLError:
+            self.handle_error()
+            return 0
+
+    def handle_error(self):
+        error_type, value, _traceback = sys.exc_info()
+        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        if self.ssl_connection:
+            # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
+            # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
+            ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
+                          'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
+            if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
+                    any([i in value.args[1] for i in ssl_errors]):
+                Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
+                          'and `local_key_path`; is your client using a secure connection?', 'Error type', error_type,
+                          'with message:', value)
+                self.handle_close()
+            else:
+                super().handle_error()
+        else:
+            super().handle_error()
+
+
+class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     """The base client-side connection that is subclassed to handle IMAP/POP/SMTP client interaction (note that there
     is some protocol-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
 
     def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
                  custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self, connection, map=socket_map)
+        SSLAsyncoreDispatcher.__init__(self, connection, socket_map)
         self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
@@ -585,6 +782,9 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
 
+        self.set_ssl_connection(
+            custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
+
     def info_string(self):
         if Log.get_level() == logging.DEBUG:
             return '%s (%s:%d; %s:%d->%s:%d%s)' % (
@@ -595,20 +795,8 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
         else:
             return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
 
-    def handle_connect(self):
-        pass
-
-    def get_data(self):
-        try:
-            byte_data = self.recv(RECEIVE_BUFFER_SIZE)
-            return byte_data
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.info(self.info_string(), 'Warning: caught client-side SSL recv error',
-                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
-            return None
-
     def handle_read(self):
-        byte_data = self.get_data()
+        byte_data = self.recv(RECEIVE_BUFFER_SIZE)
         if not byte_data:
             return
 
@@ -671,17 +859,7 @@ class OAuth2ClientConnection(asyncore.dispatcher_with_send):
 
     def send(self, byte_data):
         Log.debug(self.info_string(), '<--', byte_data)
-        try:
-            super().send(byte_data)
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError) as e:  # only relevant when using local certificates
-            Log.info(self.info_string(), 'Warning: caught client-side SSL send error',
-                     '(see https://github.com/simonrob/email-oauth2-proxy/issues/9):', Log.error_string(e))
-            while True:
-                try:
-                    super().send(byte_data)
-                    break
-                except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-                    time.sleep(1)
+        return super().send(byte_data)
 
     def log_info(self, message, message_type='info'):
         # override to redirect error messages to our own log
@@ -933,11 +1111,11 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         super().process_data(b'AUTH XOAUTH2\r\n')
 
 
-class OAuth2ServerConnection(asyncore.dispatcher_with_send):
+class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     """The base server-side connection that is subclassed to handle IMAP/POP/SMTP server interaction"""
 
     def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        asyncore.dispatcher_with_send.__init__(self, map=socket_map)  # note: establish connection later due to STARTTLS
+        SSLAsyncoreDispatcher.__init__(self, socket_map=socket_map)  # note: establish connection later due to STARTTLS
         self.receive_buffer = b''
         self.proxy_type = proxy_type
         self.connection_info = connection_info
@@ -966,16 +1144,13 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
 
-    def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
-        new_socket = socket.socket(socket_family, socket_type)
-        new_socket.setblocking(True)
-
         # connections can either be upgraded (wrapped) after setup via the STARTTLS command, or secure from the start
-        if self.custom_configuration['starttls']:
-            self.set_socket(new_socket)
-        else:
-            ssl_context = ssl.create_default_context()
-            self.set_socket(ssl_context.wrap_socket(new_socket, server_hostname=self.server_address[0]))
+        if not self.custom_configuration['starttls']:
+            # noinspection PyTypeChecker
+            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+            super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
+                                                       suppress_ragged_eofs=True, do_handshake_on_connect=False))
+            self.set_ssl_connection(True)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1035,15 +1210,15 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated or self.has_plugins:  # after auth, only plugin edits require logs
             Log.debug(self.info_string(), '    -->', CENSOR_MESSAGE if censor_log else byte_data)
-        super().send(byte_data)
+        return super().send(byte_data)
 
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
-                error_type == OSError and value.errno == errno.ENETDOWN or \
-                error_type == OSError and value.errno == errno.EHOSTUNREACH:
-            # TimeoutError 60 = 'Operation timed out'; OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
+                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
+            # TimeoutError 60 = 'Operation timed out'; OSError 0 = 'Error' (typically network failure);
+            # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.handle_close()
@@ -1057,11 +1232,14 @@ class OAuth2ServerConnection(asyncore.dispatcher_with_send):
 
     def handle_close(self):
         Log.debug(self.info_string(), '<-- [ Server disconnected ]')
+        self.close()
+
+    def close(self):
         if self.client_connection:
             self.client_connection.server_connection = None
             self.client_connection.close()
             self.client_connection = None
-        self.close()
+        super().close()
 
 
 class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
@@ -1227,8 +1405,12 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.starttls_state is self.STARTTLS.NEGOTIATING:
             if str_data.startswith('220'):
-                ssl_context = ssl.create_default_context()
-                super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0]))
+                # noinspection PyTypeChecker
+                ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+                super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
+                                                           suppress_ragged_eofs=True, do_handshake_on_connect=False))
+                self.set_ssl_connection(True)
+
                 self.starttls_state = self.STARTTLS.COMPLETE
                 Log.debug(self.info_string(), '[ Successfully negotiated SMTP STARTTLS connection -',
                           're-sending greeting ]')
@@ -1283,12 +1465,13 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.local_address = local_address
         self.server_address = server_address
         self.custom_configuration = custom_configuration
+        self.ssl_connection = custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']
         self.client_connections = []
 
     def info_string(self):
-        secure = self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']
         return '%s server at %s:%d (%s) proxying %s:%d (%s)%s' % (
-            self.proxy_type, self.local_address[0], self.local_address[1], 'TLS' if secure else 'unsecured',
+            self.proxy_type, self.local_address[0], self.local_address[1],
+            'TLS' if self.ssl_connection else 'unsecured',
             self.server_address[0], self.server_address[1],
             'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS',
             (' with plugins: %s' % list(self.custom_configuration['plugin_configuration'].keys())) if
@@ -1374,36 +1557,39 @@ class OAuth2Proxy(asyncore.dispatcher):
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.info(client.proxy_type, address, '[ Connection closed ]')
+                    Log.debug(client.proxy_type, address, '[ Connection closed ]')
                 else:
                     Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
                              Log.error_string(e))
-            client.close()
 
     def start(self):
         Log.info('Starting', self.info_string())
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
-        self.listen(1)
+        self.listen(5)
 
     def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
-        if self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']:
+        if self.ssl_connection:
             new_socket = socket.socket(socket_family, socket_type)
             new_socket.setblocking(False)
 
-            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ssl_context.load_cert_chain(
-                certfile=self.custom_configuration['local_certificate_path'],
-                keyfile=self.custom_configuration['local_key_path'])
-            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True))
+            # noinspection PyTypeChecker
+            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
+                                        keyfile=self.custom_configuration['local_key_path'])
+
+            # suppress_ragged_eofs=True: see test_ssl.py documentation in https://github.com/python/cpython/pull/5266
+            self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
+                                                    do_handshake_on_connect=False))
         else:
             super().create_socket(socket_family, socket_type)
 
     def remove_client(self, client):
         if client in self.client_connections:  # remove closed clients
             self.client_connections.remove(client)
-        del client
+        else:
+            Log.info('Warning:', self.info_string(), 'unable to remove orphan client connection', client)
 
     def bye_message(self, error_text=None):
         if self.proxy_type == 'IMAP':
@@ -1432,23 +1618,18 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if error_type == socket.gaierror and value.errno == 8 or \
+        if error_type == socket.gaierror and value.errno in [8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
                 error_type == ConnectionRefusedError and value.errno == errno.ECONNREFUSED or \
                 error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # gaierror 8 = 'nodename nor servname provided, or not known'; TimeoutError 60 = 'Operation timed out';
-            # ConnectionResetError 54 = 'Connection reset by peer'; ConnectionRefusedError 61 = 'Connection refused';
-            # OSError 0 = 'Error' (if SSL handshake fails, often due to network); OSError 22 = 'Invalid argument'
-            # (caused by getpeername() failing when there is no network connection); OSError 50 = 'Network is down';
-            # OSError 65 = 'No route to host'
+            # gaierror 8 = 'nodename nor servname provided, or not known'; gaierror 11001 = 'getaddrinfo failed'
+            # (caused by getpeername() failing due to no network connection); TimeoutError 60 = 'Operation timed out';
+            # ConnectionResetError 54 = 'Connection reset by peer';  ConnectionRefusedError 61 = 'Connection refused';
+            # OSError 0 = 'Error' (local SSL failure); OSError 22 = 'Invalid argument' (same cause as gaierror 11001);
+            # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
-        elif error_type == ssl.SSLError and 'SSLV3_ALERT_BAD_CERTIFICATE' in value.args[1] and \
-                self.custom_configuration['local_certificate_path'] and self.custom_configuration['local_key_path']:
-            Log.error('Caught SSLV3_ALERT_BAD_CERTIFICATE error in', self.info_string(), '- when using a self-signed',
-                      'local certificate you may need to disable SSL verification (and/or add an exception) in your',
-                      'client for the local host and port')
         else:
             super().handle_error()
 
@@ -1520,7 +1701,7 @@ if sys.platform == 'darwin':
 
         def _assert_image(self):
             # pystray does some scaling which breaks macOS retina icons - we replace that with the actual menu bar size
-            bytes_image = BytesIO()
+            bytes_image = io.BytesIO()
             self.icon.save(bytes_image, 'png')
             data = AppKit.NSData(bytes_image.getvalue())
             self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
@@ -1584,7 +1765,7 @@ class App:
     # PyAttributeOutsideInit inspection suppressed because init_platforms() is itself called from __init__()
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and not self.args.no_gui:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -1619,15 +1800,17 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-        else:
-            pass  # currently no special initialisation/configuration required for other platforms
-
-        # try to exit gracefully when SIGTERM is received
-        if sys.platform == 'darwin' and not self.args.no_gui:
-            # on macOS, catching SIGTERM while pystray's main loop is running needs a mach message handler
+            # on macOS, catching SIGINT/SIGTERM/SIGQUIT while in pystray's main loop needs a Mach signal handler
+            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda signum: self.exit(self.icon))
+
         else:
+            # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
+            signal.signal(signal.SIGINT, lambda signum, frame: self.exit(self.icon))
             signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGQUIT'):  # SIGQUIT does not exist on all platforms (e.g., Windows)
+                signal.signal(signal.SIGQUIT, lambda signum, frame: self.exit(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -1658,7 +1841,6 @@ class App:
     @staticmethod
     def get_image():
         # we use an icon font for better multiplatform compatibility and icon size flexibility
-        icon_font_file = '%s/icon.ttf' % os.path.dirname(os.path.realpath(__file__))
         icon_colour = 'white'  # note: value is irrelevant on macOS - we set as a template to get the platform's colours
         icon_character = 'e'
         icon_background_width = 44
@@ -1668,10 +1850,10 @@ class App:
         # find the largest font size that will let us draw the icon within the available width
         minimum_font_size = 1
         maximum_font_size = 255
-        font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+        font, font_width, font_height = App.get_icon_size(icon_character, minimum_font_size)
         while maximum_font_size - minimum_font_size > 1:
             current_font_size = round((minimum_font_size + maximum_font_size) / 2)  # ImageFont only supports integers
-            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, current_font_size)
+            font, font_width, font_height = App.get_icon_size(icon_character, current_font_size)
             if font_width > icon_width:
                 maximum_font_size = current_font_size
             elif font_width < icon_width:
@@ -1679,7 +1861,7 @@ class App:
             else:
                 break
         if font_width > icon_width:  # because we have to round font sizes we need one final check for oversize width
-            font, font_width, font_height = App.get_icon_size(icon_font_file, icon_character, minimum_font_size)
+            font, font_width, font_height = App.get_icon_size(icon_character, minimum_font_size)
 
         icon_image = Image.new('RGBA', (icon_background_width, icon_background_height))
         draw = ImageDraw.Draw(icon_image)
@@ -1690,8 +1872,8 @@ class App:
         return icon_image
 
     @staticmethod
-    def get_icon_size(font_file, text, font_size):
-        font = ImageFont.truetype(font_file, size=font_size)
+    def get_icon_size(text, font_size):
+        font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
         if pkg_resources.parse_version(
@@ -1739,10 +1921,10 @@ class App:
     @staticmethod
     def get_last_activity(account):
         config = AppConfig.get()
-        last_sync = config.get(account, 'last_activity', fallback=None)
+        last_sync = config.getint(account, 'last_activity', fallback=None)
         if last_sync is not None:
-            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(float(last_sync)),
-                                                 datetime.datetime.now(), 'en_short')
+            formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(last_sync), datetime.datetime.now(),
+                                                 'en_short')
         else:
             formatted_sync_time = 'never'
         return '    %s (%s)' % (account, formatted_sync_time)
@@ -1787,15 +1969,18 @@ class App:
                 if not self.web_view_started:
                     # pywebview on macOS needs start() to be called only once, so we use a dummy window to keep it open
                     # Windows is the opposite - the macOS technique freezes the tray icon; Linux is fine either way
+                    # (we also set pywebview debug mode to match our own mode because copy/paste via keyboard shortcuts
+                    # can be unreliable with 'mshtml'; and, python virtual environments sometimes break keyboard entry
+                    # entirely on macOS - debug mode works around this in both cases via the right-click context menu)
                     self.create_authorisation_window(request)
                     if sys.platform == 'darwin':
-                        webview.start(self.handle_authorisation_windows)
+                        webview.start(self.handle_authorisation_windows, debug=Log.get_level() == logging.DEBUG)
                         self.web_view_started = True  # note: not set for other platforms so we start() every time
                     else:
                         # on Windows, most pywebview engine options return None for get_current_url() on pages created
                         # using 'html=' even on redirection to an actual URL; 'mshtml', though archaic, does work
                         forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
-                        webview.start(gui=forced_gui)
+                        webview.start(gui=forced_gui, debug=Log.get_level() == logging.DEBUG)
                 else:
                     WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
                 return
@@ -1862,6 +2047,9 @@ class App:
                     RESPONSE_QUEUE.put({'connection': request['connection'], 'response_url': url})
                     self.authorisation_requests.remove(request)
                     completed_request = request
+                else:
+                    Log.debug('Waiting for URL matching `redirect_uri`; following browser redirection to',
+                              '%s/[...]' % urllib.parse.urlparse(url).hostname)
 
             if completed_request is None:
                 continue  # no requests processed for this window - nothing to do yet
@@ -2057,15 +2245,18 @@ class App:
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
         for proxy in self.proxies:
-            proxy.stop()
-            proxy.close()
+            # noinspection PyBroadException
+            try:
+                proxy.stop()
+            except Exception:
+                pass
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
-    def load_and_start_servers(self, icon=None):
+    def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        config = AppConfig.reload()
+        config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
         server_load_error = False
@@ -2156,7 +2347,7 @@ class App:
         if icon:
             icon.visible = True
 
-        if not self.load_and_start_servers(icon):
+        if not self.load_and_start_servers(icon, reload=False):
             return
 
         Log.info('Initialised', APP_NAME, '- listening for authentication requests')
@@ -2205,7 +2396,7 @@ class App:
 
         AppConfig.save()
 
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and not self.args.no_gui:
             # noinspection PyUnresolvedReferences
             SystemConfiguration.SCNetworkReachabilityUnscheduleFromRunLoop(self.macos_reachability_target,
                                                                            SystemConfiguration.CFRunLoopGetCurrent(),
@@ -2221,8 +2412,11 @@ class App:
                 window.destroy()
 
         for proxy in self.proxies:  # no need to copy - proxies are never removed, we just restart them on error
-            proxy.stop()
-            proxy.close()
+            # noinspection PyBroadException
+            try:
+                proxy.stop()
+            except Exception:
+                pass
 
         if icon:
             icon.stop()
@@ -2235,7 +2429,7 @@ class App:
             restart_callback()
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
-        if sys.platform == 'darwin' and self.macos_unload_plist_on_exit:
+        if sys.platform == 'darwin' and not self.args.no_gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
 
 
