@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-08-22'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-08-30'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -1190,8 +1190,9 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
-                error_type == OSError and value.errno in [errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # TimeoutError 60 = 'Operation timed out'; OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
+                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
+            # TimeoutError 60 = 'Operation timed out'; OSError 0 = 'Error' (typically network failure);
+            # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.handle_close()
