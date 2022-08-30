@@ -2229,8 +2229,7 @@ class App:
             custom_configuration = {
                 'starttls': config.getboolean(section, 'starttls', fallback=False) if server_type == 'SMTP' else False,
                 'local_certificate_path': config.get(section, 'local_certificate_path', fallback=None),
-                'local_key_path': config.get(section, 'local_key_path', fallback=None),
-                'verify_local_certificate': config.getboolean(section, 'verify_local_certificate', fallback=True)
+                'local_key_path': config.get(section, 'local_key_path', fallback=None)
             }
 
             if not server_address:  # all other values are checked, regex matched or have a fallback above
