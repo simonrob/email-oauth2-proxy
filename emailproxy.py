@@ -856,10 +856,16 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     def close(self):
         if self.server_connection:
             self.server_connection.client_connection = None
-            self.server_connection.close()
+            try:
+                self.server_connection.close()
+            except AttributeError:
+                pass
             self.server_connection = None
         self.proxy_parent.remove_client(self)
-        super().close()
+        try:
+            super().close()
+        except OSError:
+            pass
 
 
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
@@ -1008,8 +1014,12 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
             super().process_data(byte_data)  # some other command that we don't handle - pass directly to server
 
     def send_authentication_request(self):
-        self.connection_state = self.STATE.XOAUTH2_AWAITING_CONFIRMATION
-        super().process_data(b'AUTH XOAUTH2\r\n')
+        if self.server_connection.username and self.server_connection.password:
+            self.connection_state = self.STATE.XOAUTH2_AWAITING_CONFIRMATION
+            super().process_data(b'AUTH XOAUTH2\r\n')
+        else:
+            self.send(b'-ERR Authentication failed.\r\n')
+            self.close()
 
 
 class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
@@ -1090,8 +1100,12 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         self.send(b'334 %s\r\n' % base64.b64encode(b'Password:'))
 
     def send_authentication_request(self):
-        self.connection_state = self.STATE.XOAUTH2_AWAITING_CONFIRMATION
-        super().process_data(b'AUTH XOAUTH2\r\n')
+        if self.server_connection.username and self.server_connection.password:
+            self.connection_state = self.STATE.XOAUTH2_AWAITING_CONFIRMATION
+            super().process_data(b'AUTH XOAUTH2\r\n')
+        else:
+            self.send(b'535 5.7.8  Authentication credentials invalid.\r\n')
+            self.close()
 
 
 class OAuth2ServerConnection(SSLAsyncoreDispatcher):
@@ -1211,9 +1225,15 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     def close(self):
         if self.client_connection:
             self.client_connection.server_connection = None
-            self.client_connection.close()
+            try:
+                self.client_connection.close()
+            except AttributeError:
+                pass
             self.client_connection = None
-        super().close()
+        try:
+            super().close()
+        except OSError:
+            pass
 
 
 class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
@@ -1314,11 +1334,11 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
                 if not success:
                     # a local authentication error occurred - send details to the client and exit
                     super().process_data(b'-ERR Authentication failed. %s\r\n' % result.encode('utf-8'))
-                    self.client_connection.close()
+                    self.close()
 
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.client_connection.close()
+                self.close()
 
         elif self.client_connection.connection_state is POPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT:
             if str_data.startswith('+OK'):
@@ -1327,7 +1347,7 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
                 super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.client_connection.close()
+                self.close()
 
         else:
             super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
@@ -1392,7 +1412,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 self.send(self.ehlo)  # re-send original EHLO/HELO to server (includes domain, so can't just be generic)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.client_connection.close()
+                self.close()
 
         # ...then, once we have the username and password we can respond to the '334 ' response with credentials
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_AWAITING_CONFIRMATION:
@@ -1411,11 +1431,11 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     # a local authentication error occurred - send details to the client and exit
                     super().process_data(
                         b'535 5.7.8  Authentication credentials invalid. %s\r\n' % result.encode('utf-8'))
-                    self.client_connection.close()
+                    self.close()
 
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.client_connection.close()
+                self.close()
 
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT:
             if str_data.startswith('235'):
@@ -1424,7 +1444,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.client_connection.close()
+                self.close()
 
         else:
             super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
@@ -1452,7 +1472,7 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_accept(self):
         Log.debug('New incoming connection to', self.info_string())
         connected_address = self.accept()
-        if connected_address is not None:
+        if connected_address:
             self.handle_accepted(*connected_address)
         else:
             Log.debug('Ignoring incoming connection to', self.info_string(), '- no connection information')
@@ -1866,7 +1886,7 @@ class App:
     def get_last_activity(account):
         config = AppConfig.get()
         last_sync = config.getint(account, 'last_activity', fallback=None)
-        if last_sync is not None:
+        if last_sync:
             formatted_sync_time = timeago.format(datetime.datetime.fromtimestamp(last_sync), datetime.datetime.now(),
                                                  'en_short')
         else:
