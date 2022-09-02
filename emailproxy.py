@@ -310,7 +310,7 @@ class AppConfig:
 
 class OAuth2Helper:
     @staticmethod
-    def get_oauth2_credentials(username, password, connection_info, recurse_retries=True):
+    def get_oauth2_credentials(username, password, recurse_retries=True):
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
@@ -367,13 +367,35 @@ class OAuth2Helper:
         cryptographer = Fernet(key)
 
         try:
-            if not refresh_token:
+            if access_token:
+                if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
+                    if refresh_token:
+                        # if expiring soon, refresh token (if possible)
+                        response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
+                                                                            OAuth2Helper.decrypt(cryptographer,
+                                                                                                 refresh_token))
+
+                        access_token = response['access_token']
+                        config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
+                        config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                        if 'refresh_token' in response:
+                            config.set(username, 'refresh_token',
+                                       OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
+                        AppConfig.save()
+
+                    elif access_token_expiry <= current_time:
+                        # cannot get another access token without a refresh token - must submit another manual request
+                        access_token = None
+                else:
+                    access_token = OAuth2Helper.decrypt(cryptographer, access_token)
+
+            if not access_token:
                 permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri, client_id,
                                                                               oauth2_scope, username)
                 # note: get_oauth2_authorisation_code is a blocking call
                 success, authorisation_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
                                                                                          redirect_listen_address,
-                                                                                         username, connection_info)
+                                                                                         username)
                 if not success:
                     Log.info('Authentication request failed or expired for account', username, '- aborting login')
                     return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
@@ -386,24 +408,13 @@ class OAuth2Helper:
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
-                config.set(username, 'refresh_token', OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
-                AppConfig.save()
-
-            else:
-                if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # if expiring soon, refresh token
-                    response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
-                                                                        OAuth2Helper.decrypt(cryptographer,
-                                                                                             refresh_token))
-
-                    access_token = response['access_token']
-                    config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
-                    config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
-                    if 'refresh_token' in response:
-                        config.set(username, 'refresh_token',
-                                   OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
-                    AppConfig.save()
+                if 'refresh_token' in response:
+                    config.set(username, 'refresh_token',
+                               OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
                 else:
-                    access_token = OAuth2Helper.decrypt(cryptographer, access_token)
+                    Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
+                             'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
+                AppConfig.save()
 
             # send authentication command to server (response checked in ServerConnection) - note: we only support
             # single-trip authentication (SASL) without actually checking the server's capabilities - improve?
@@ -425,15 +436,17 @@ class OAuth2Helper:
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
-                return OAuth2Helper.get_oauth2_credentials(username, password, connection_info, recurse_retries=False)
+                return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
             else:
                 Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
                 return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
-            # note that we don't currently remove cached credentials here, as failures on the initial request are
-            # before caching happens, and the assumption is that refresh token request exceptions are temporal (e.g.,
-            # network errors: URLError(OSError(50, 'Network is down'))) rather than e.g., bad requests
+            # note that we don't currently remove cached credentials here, as failures on the initial request are before
+            # caching happens, and the assumption is that refresh token request exceptions are temporal (e.g., network
+            # errors: URLError(OSError(50, 'Network is down'))) - access token 400 Bad Request HTTPErrors with messages
+            # such as 'authorisation code was already redeemed' are caused by our support for simultaneous requests,
+            # and will work from the next request; however, please report an issue if you encounter problems here
             Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
@@ -516,11 +529,10 @@ class OAuth2Helper:
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
-    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username, connection_info):
+    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username):
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
-        token_request = {'connection': connection_info, 'permission_url': permission_url,
-                         'redirect_uri': redirect_uri, 'redirect_listen_address': redirect_listen_address,
-                         'username': username, 'expired': False}
+        token_request = {'permission_url': permission_url, 'redirect_uri': redirect_uri,
+                         'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
         wait_time = 0
         while True:
@@ -541,7 +553,7 @@ class OAuth2Helper:
                 RESPONSE_QUEUE.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, None
 
-            elif data['connection'] == connection_info:  # found an authentication response meant for us
+            elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
                 # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'local_server_auth' in data:
@@ -835,9 +847,8 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     def process_data(self, byte_data, censor_server_log=False):
         try:
             self.server_connection.send(byte_data, censor_log=censor_server_log)  # default = send everything to server
-        except AttributeError as e:
-            Log.info(self.info_string(), 'Caught client exception; server connection closed before data could be sent:',
-                     Log.error_string(e))
+        except AttributeError:  # AttributeError("'NoneType' object has no attribute 'send'")
+            Log.info(self.info_string(), 'Caught client exception; server connection closed before data could be sent')
             self.close()
 
     def send(self, byte_data):
@@ -928,14 +939,17 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 super().process_data(byte_data)
 
     def authenticate_connection(self, username, password, command='login'):
-        success, result = OAuth2Helper.get_oauth2_credentials(username, password, self.connection_info)
+        success, result = OAuth2Helper.get_oauth2_credentials(username, password)
         if success:
             # send authentication command to server (response checked in ServerConnection)
             # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
             super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
             super().process_data(OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
             super().process_data(b'\r\n')
-            self.server_connection.authenticated_username = username
+
+            # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
+            if self.server_connection:
+                self.server_connection.authenticated_username = username
 
         else:
             error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
@@ -1190,9 +1204,8 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     def process_data(self, byte_data):
         try:
             self.client_connection.send(byte_data)  # by default we just send everything straight to the client
-        except AttributeError as e:
-            Log.info(self.info_string(), 'Caught server exception; client connection closed before data could be sent:',
-                     Log.error_string(e))
+        except AttributeError:  # AttributeError("'NoneType' object has no attribute 'send'")
+            Log.info(self.info_string(), 'Caught server exception; client connection closed before data could be sent')
             self.close()
 
     def send(self, byte_data, censor_log=False):
@@ -1322,8 +1335,7 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.client_connection.connection_state is POPOAuth2ClientConnection.STATE.XOAUTH2_AWAITING_CONFIRMATION:
             if str_data.startswith('+') and self.username and self.password:  # '+ ' = 'please send credentials'
-                success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
-                                                                      self.connection_info)
+                success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password)
                 if success:
                     self.client_connection.connection_state = POPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
                     self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
@@ -1417,8 +1429,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         # ...then, once we have the username and password we can respond to the '334 ' response with credentials
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_AWAITING_CONFIRMATION:
             if str_data.startswith('334') and self.username and self.password:  # '334 ' = 'please send credentials'
-                success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password,
-                                                                      self.connection_info)
+                success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password)
                 if success:
                     self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
                     self.authenticated_username = self.username
@@ -1999,16 +2010,17 @@ class App:
                 continue  # skip dummy window
 
             url = window.get_current_url()
-            account_name = window.get_title(window).split(' ')[-1]  # see note above: title *must* match this format
-            if not url or not account_name:
+            username = window.get_title(window).split(' ')[-1]  # see note above: title *must* match this format
+            if not url or not username:
                 continue  # skip any invalid windows
 
             # respond to both the original request and any duplicates in the list
             completed_request = None
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                if url.startswith(request['redirect_uri']) and account_name == request['username']:
+                if url.startswith(request['redirect_uri']) and username == request['username']:
                     Log.info('Successfully authorised request for', request['username'])
-                    RESPONSE_QUEUE.put({'connection': request['connection'], 'response_url': url})
+                    RESPONSE_QUEUE.put(
+                        {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
                     self.authorisation_requests.remove(request)
                     completed_request = request
                 else:
@@ -2314,7 +2326,7 @@ class App:
                         self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
                 else:
                     for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                        if request['connection'] == data['connection']:
+                        if request['permission_url'] == data['permission_url']:
                             self.authorisation_requests.remove(request)
                             break
 
@@ -2328,7 +2340,7 @@ class App:
                 # exit on server start failure), otherwise this will throw an error every time and loop indefinitely
                 asyncore.loop()
             except Exception as e:
-                if not EXITING:
+                if not EXITING and not (isinstance(e, OSError) and e.errno == errno.EBADF):
                     Log.info('Caught asyncore exception in main loop; attempting to continue:', Log.error_string(e))
                     error_count += 1
                     time.sleep(error_count)
