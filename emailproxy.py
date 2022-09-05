@@ -470,9 +470,8 @@ class OAuth2Helper:
     @staticmethod
     def start_redirection_receiver_server(token_request):
         """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
-        wsgi_address = token_request['redirect_listen_address'] if token_request['redirect_listen_address'] else \
-            token_request['redirect_uri']
-        parsed_uri = urllib.parse.urlparse(wsgi_address)
+        redirect_listen_type = 'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri'
+        parsed_uri = urllib.parse.urlparse(token_request[redirect_listen_type])
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
         Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
             parsed_uri.hostname, parsed_port))
@@ -512,17 +511,15 @@ class OAuth2Helper:
             else:
                 # failed, likely because of an incorrect address (e.g., https vs http), but can also be due to timeout
                 Log.info('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'request failed - if',
-                         'this occurs when redirecting, please check that %s account\'s' % token_request['username'],
-                         '`redirect_listen_address`' if token_request['redirect_listen_address'] else '`redirect_uri`',
+                         'this error reoccurs, please check `%s` for' % redirect_listen_type, token_request['username'],
                          'is not specified as `https` mistakenly. See the sample configuration file for documentation')
                 token_request['expired'] = True
 
         except socket.error as e:
             Log.error('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'unable to start local',
-                      'server. Please check that %s for account %s is unique across accounts, specifies a port number, '
-                      'and is not already in use. See the documentation in the proxy\'s sample configuration file.' % (
-                          '`redirect_listen_address`' if token_request['redirect_listen_address'] else '`redirect_uri`',
-                          token_request['username']), Log.error_string(e))
+                      'server. Please check that `%s` for %s is unique across accounts, specifies a port number, and '
+                      'is not already in use. See the documentation in the proxy\'s sample configuration file.' % (
+                          redirect_listen_type, token_request['username']), Log.error_string(e))
             token_request['expired'] = True
 
         del token_request['local_server_auth']
