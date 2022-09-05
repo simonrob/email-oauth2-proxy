@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-08-30'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-09-05'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -129,7 +129,7 @@ IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
 IMAP_CAPABILITY_MATCHER = re.compile(r'^(\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
-RESPONSE_QUEUE = queue.Queue()  # responses from client web view
+RESPONSE_QUEUE = queue.Queue()  # responses from user
 WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 
@@ -493,28 +493,40 @@ class OAuth2Helper:
 
         try:
             wsgiref.simple_server.WSGIServer.allow_reuse_address = False
+            wsgiref.simple_server.WSGIServer.timeout = AUTHENTICATION_TIMEOUT
             redirection_server = wsgiref.simple_server.make_server(str(parsed_uri.hostname), parsed_port,
                                                                    RedirectionReceiverWSGIApplication(),
                                                                    handler_class=LoggingWSGIRequestHandler)
-            token_request['local_server_auth_wsgi'] = redirection_server
+
             Log.info('Please visit the following URL to authenticate account %s: %s' %
                      (token_request['username'], token_request['permission_url']))
             redirection_server.handle_request()
-            redirection_server.server_close()
+            try:
+                redirection_server.server_close()
+            except socket.error:
+                pass
 
-            Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
-                parsed_uri.hostname, parsed_port), token_request['response_url'])
-            del token_request['local_server_auth']
-            del token_request['local_server_auth_wsgi']
-            RESPONSE_QUEUE.put(token_request)
+            if 'response_url' in token_request:
+                Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
+                    parsed_uri.hostname, parsed_port), token_request['response_url'])
+            else:
+                # failed, likely because of an incorrect address (e.g., https vs http), but can also be due to timeout
+                Log.info('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'request failed - if',
+                         'this occurs when redirecting, please check that %s account\'s' % token_request['username'],
+                         '`redirect_listen_address`' if token_request['redirect_listen_address'] else '`redirect_uri`',
+                         'is not specified as `https` mistakenly. See the sample configuration file for documentation')
+                token_request['expired'] = True
 
         except socket.error as e:
-            Log.error('Local server auth mode (%s:%d): unable to start local server. Please check that the %s for '
-                      'account %s is unique across accounts, specifies a port number, and is not already in use. See '
-                      'the documentation in the proxy\'s sample configuration file for further detail' % (
-                          parsed_uri.hostname, parsed_port,
-                          'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri',
+            Log.error('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'unable to start local',
+                      'server. Please check that %s for account %s is unique across accounts, specifies a port number, '
+                      'and is not already in use. See the documentation in the proxy\'s sample configuration file.' % (
+                          '`redirect_listen_address`' if token_request['redirect_listen_address'] else '`redirect_uri`',
                           token_request['username']), Log.error_string(e))
+            token_request['expired'] = True
+
+        del token_request['local_server_auth']
+        RESPONSE_QUEUE.put(token_request)
 
     @staticmethod
     def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username):
@@ -544,8 +556,6 @@ class OAuth2Helper:
                     continue
                 else:
                     token_request['expired'] = True
-                    if 'local_server_auth_wsgi' in token_request:
-                        token_request['local_server_auth_wsgi'].server_close()
                     REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
                     return False, None
 
@@ -556,12 +566,16 @@ class OAuth2Helper:
             elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
                 # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
-                if 'local_server_auth' in data:
+                if data['expired']:  # local server auth wsgi request error or failure - nothing we can do
+                    return False, None
+
+                elif 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
                 else:
-                    if 'response_url' in data and 'code=' in data['response_url']:
+                    if 'response_url' in data and 'code=' in data['response_url'] and data['response_url'].startswith(
+                            token_request['redirect_uri']):
                         authorisation_code = OAuth2Helper.oauth2_url_unescape(
                             data['response_url'].split('code=')[1].split('&')[0])
                         if authorisation_code:
@@ -2220,6 +2234,11 @@ class App:
         global RESPONSE_QUEUE
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
+        while True:
+            try:
+                REQUEST_QUEUE.get(block=False)  # remove any pending requests (unlikely any exist, but safest)
+            except queue.Empty:
+                break
         for proxy in self.proxies:
             # noinspection PyBroadException
             try:
@@ -2328,7 +2347,7 @@ class App:
                     for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
                         if request['permission_url'] == data['permission_url']:
                             self.authorisation_requests.remove(request)
-                            break
+                            break  # we could have multiple simultaneous requests, some not yet expired
 
     @staticmethod
     def run_proxy():
