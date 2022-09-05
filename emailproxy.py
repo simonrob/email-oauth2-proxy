@@ -566,7 +566,7 @@ class OAuth2Helper:
             elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
                 # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
-                if data['expired']:  # local server auth wsgi request error or failure - nothing we can do
+                if 'expired' in data and data['expired']:  # local server auth wsgi request error or failure
                     return False, None
 
                 elif 'local_server_auth' in data:
