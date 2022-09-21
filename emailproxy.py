@@ -177,10 +177,11 @@ class Log:
     _MACOS_USE_SYSLOG = not pyoslog.is_supported() if sys.platform == 'darwin' else False
 
     @staticmethod
-    def initialise():
+    def initialise(log_file=None):
         Log._LOGGER = logging.getLogger(APP_NAME)
-        if sys.platform == 'win32':
-            handler = logging.FileHandler('%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
+        if log_file or sys.platform == 'win32':
+            handler = logging.FileHandler(
+                log_file if log_file else '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
@@ -1487,8 +1488,7 @@ class OAuth2Proxy(asyncore.dispatcher):
     def info_string(self):
         return '%s server at %s:%d (%s) proxying %s:%d (%s)' % (
             self.proxy_type, self.local_address[0], self.local_address[1],
-            'TLS' if self.ssl_connection else 'unsecured',
-            self.server_address[0], self.server_address[1],
+            'TLS' if self.ssl_connection else 'unsecured', self.server_address[0], self.server_address[1],
             'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS')
 
     def handle_accept(self):
@@ -1706,8 +1706,6 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self):
-        Log.initialise()
-
         global CONFIG_FILE_PATH
         parser = argparse.ArgumentParser(description=APP_NAME)
         parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
@@ -1722,9 +1720,15 @@ class App:
         parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
                                                                 '(optional; default: `%s` in the same directory as the '
                                                                 'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
+        parser.add_argument('--log-file', default=None, help='the full path to a file where log output should be sent '
+                                                             '(optional; default behaviour varies by platform, but see '
+                                                             'Log.initialise() for details)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
+
         self.args = parser.parse_args()
+
+        Log.initialise(self.args.log_file)
         if self.args.debug:
             Log.set_level(logging.DEBUG)
 

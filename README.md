@@ -51,6 +51,8 @@ When starting the proxy there are several optional arguments that can be set to 
 
 `--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load. If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
 
+`--log-file` allows you to specify the location of a file to send log output to. This option overrides the proxy's default behaviour, which varies by platform (see [`Log.initialise()`](https://github.com/simonrob/email-oauth2-proxy/search?q=staticmethod+initialise)).
+
 `--debug` enables debug mode, printing more verbose output to the log as [discussed below](#troubleshooting). This argument is identical to enabling debug mode from the menu bar icon.
 
 ### Starting the proxy automatically
@@ -107,6 +109,8 @@ The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins
 
 ## Related projects and alternatives
 Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2). Philippe-Adrien Nousse has provided an [example Docker configuration](https://github.com/linka-cloud/email-oauth2-proxy/commit/67ca6b8fd0709d85480de2e3ea0af79439e6ba22) (though please note that the fork is otherwise outdated, and it is better to use this repository for the proxy script itself).
+
+If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.
 
 [DavMail](http://davmail.sourceforge.net/) is an alternative that takes the same approach of providing a local IMAP/POP/SMTP server (and more) for Exchange/Office 365, though it does this by translating these protocols into Exchange API calls rather than proxying the connection. That approach is very useful in situations where server-side IMAP/POP/SMTP is not supported or enabled, or the full Exchange capabilities are needed, but it has limitations in terms of speed and the number of email messages that can be retrieved. This proxy was developed to work around these limitations for providers that do support IMAP/POP/SMTP natively.
 
