@@ -364,7 +364,7 @@ class OAuth2Helper:
 
         # generate encrypter/decrypter based on password and random salt
         key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
-                                             salt=base64.b64decode(token_salt.encode('utf-8')), iterations=500000,
+                                             salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000,
                                              backend=default_backend())
         fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
 
