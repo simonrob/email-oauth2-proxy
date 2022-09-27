@@ -1,9 +1,9 @@
 # include core requirements (separated in order to support usage without GUI-only dependencies)
 -r requirements-no-gui.txt
 
-pillow
-setuptools
-timeago
+pillow  # to create the menu bar icon image from a TTF icon
+setuptools  # for pkg_resources (checking dependency versions)
+timeago  # for displaying the last authenticated activity hint
 
 # force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)
 pystray>=0.19.4
