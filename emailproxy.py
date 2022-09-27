@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-09-05'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-09-27'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -331,9 +331,11 @@ class OAuth2Helper:
         redirect_listen_address = config.get(username, 'redirect_listen_address', fallback=None)
         client_id = config.get(username, 'client_id', fallback=None)
         client_secret = config.get(username, 'client_secret', fallback=None)
+        client_secret_encrypted = config.get(username, 'client_secret_encrypted', fallback=None)
 
-        # note that we don't require client_secret here because it can be optional for Office 365 configurations
-        if not (permission_url and token_url and oauth2_scope and redirect_uri and client_id):
+        # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
+        # and likewise for client_secret here because it can be optional for Office 365 configurations
+        if not (token_url and oauth2_scope and redirect_uri and client_id):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
@@ -364,57 +366,65 @@ class OAuth2Helper:
         key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
                                              salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000,
                                              backend=default_backend())
-        key = base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8')))
-        cryptographer = Fernet(key)
+        fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
+
+        # if both secret values are present we use the unencrypted version (as it may have been user-edited)
+        if client_secret_encrypted and not client_secret:
+            client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
 
         try:
             if access_token:
-                if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
+                if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # refresh if expiring soon (if possible)
                     if refresh_token:
-                        # if expiring soon, refresh token (if possible)
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
-                                                                            OAuth2Helper.decrypt(cryptographer,
-                                                                                                 refresh_token))
+                                                                            OAuth2Helper.decrypt(fernet, refresh_token))
 
                         access_token = response['access_token']
-                        config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
+                        config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
                         config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
                         if 'refresh_token' in response:
                             config.set(username, 'refresh_token',
-                                       OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
+                                       OAuth2Helper.encrypt(fernet, response['refresh_token']))
                         AppConfig.save()
 
                     elif access_token_expiry <= current_time:
-                        # cannot get another access token without a refresh token - must submit another manual request
-                        access_token = None
+                        access_token = None  # avoid trying invalid tokens
                 else:
-                    access_token = OAuth2Helper.decrypt(cryptographer, access_token)
+                    access_token = OAuth2Helper.decrypt(fernet, access_token)
 
             if not access_token:
-                permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri, client_id,
-                                                                              oauth2_scope, username)
-                # note: get_oauth2_authorisation_code is a blocking call
-                success, authorisation_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
-                                                                                         redirect_listen_address,
-                                                                                         username)
-                if not success:
-                    Log.info('Authentication request failed or expired for account', username, '- aborting login')
-                    return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
-                                  'account %s' % (APP_NAME, username)
+                auth_code = None
+                if permission_url:  # O365 client credentials grant flow skips the authorisation step; no permission_url
+                    permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
+                                                                                  client_id, oauth2_scope, username)
+
+                    # note: get_oauth2_authorisation_code is a blocking call (waiting on user to provide code)
+                    success, auth_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                    redirect_listen_address, username)
+
+                    if not success:
+                        Log.info('Authentication request failed or expired for account', username, '- aborting login')
+                        return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
+                                      'account %s' % (APP_NAME, username)
 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, authorisation_code)
+                                                                        client_secret, auth_code, oauth2_scope)
 
                 access_token = response['access_token']
                 config.set(username, 'token_salt', token_salt)
-                config.set(username, 'access_token', OAuth2Helper.encrypt(cryptographer, access_token))
+                config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+
                 if 'refresh_token' in response:
-                    config.set(username, 'refresh_token',
-                               OAuth2Helper.encrypt(cryptographer, response['refresh_token']))
-                else:
+                    config.set(username, 'refresh_token', OAuth2Helper.encrypt(fernet, response['refresh_token']))
+                elif permission_url:  # ignore this situation with client credentials flow - it is expected
                     Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
                              'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
+
+                if AppConfig.globals().getboolean('encrypt_client_secret_on_first_use', fallback=False):
+                    config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
+                    config.remove_option(username, 'client_secret')
+
                 AppConfig.save()
 
             # send authentication command to server (response checked in ServerConnection) - note: we only support
@@ -585,7 +595,8 @@ class OAuth2Helper:
                 time.sleep(1)
 
     @staticmethod
-    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code):
+    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code,
+                                        oauth2_scope):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
@@ -593,6 +604,10 @@ class OAuth2Helper:
                   'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+        if not authorisation_code:
+            del params['code']  # AccessAsApp mode doesn't have a code, but we need the scope and appropriate grant type
+            params['scope'] = oauth2_scope
+            params['grant_type'] = 'client_credentials'
         try:
             response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
             return json.loads(response)

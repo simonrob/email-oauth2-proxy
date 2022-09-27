@@ -1,6 +1,6 @@
 # this file contains the proxy's core dependencies beyond inbuilt python packages
-# to use this file instead of the default requirements.txt you *must* pass the `--no-gui` option when starting the proxy (see the script's readme for further details)
-configobj
+# note that to use this file instead of the default requirements.txt you *must* pass the `--no-gui` option when starting
+# the proxy - see the script's readme for further details
 cryptography
 
 # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
