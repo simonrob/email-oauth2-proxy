@@ -446,7 +446,8 @@ class OAuth2Helper:
                 recurse_retries = False  # no need to recurse if we are just trying the same credentials again
 
             if recurse_retries:
-                Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
+                Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials for %s:' % username,
+                         Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
             else:
                 Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
@@ -458,7 +459,7 @@ class OAuth2Helper:
             # errors: URLError(OSError(50, 'Network is down'))) - access token 400 Bad Request HTTPErrors with messages
             # such as 'authorisation code was already redeemed' are caused by our support for simultaneous requests,
             # and will work from the next request; however, please report an issue if you encounter problems here
-            Log.info('Caught exception while requesting OAuth 2.0 credentials:', Log.error_string(e))
+            Log.info('Caught exception while requesting OAuth 2.0 credentials for %s:' % username, Log.error_string(e))
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
@@ -815,14 +816,11 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
 
     def info_string(self):
-        if Log.get_level() == logging.DEBUG:
-            return '%s (%s:%d; %s:%d->%s:%d%s)' % (
-                self.proxy_type, self.local_address[0], self.local_address[1], self.connection_info[0],
-                self.connection_info[1], self.server_address[0], self.server_address[1],
-                '; %s' % self.server_connection.authenticated_username if
-                self.server_connection and self.server_connection.authenticated_username else '')
-        else:
-            return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
+        debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
+                                           self.server_address[1]) if Log.get_level() == logging.DEBUG else ''
+        account = '; %s' % self.server_connection.authenticated_username if \
+            self.server_connection and self.server_connection.authenticated_username else ''
+        return '%s (%s:%d%s%s)' % (self.proxy_type, self.local_address[0], self.local_address[1], debug_string, account)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1170,13 +1168,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.connect(self.server_address)
 
     def info_string(self):
-        if Log.get_level() == logging.DEBUG:
-            return '%s (%s:%d; %s:%d->%s:%d%s)' % (
-                self.proxy_type, self.local_address[0], self.local_address[1], self.connection_info[0],
-                self.connection_info[1], self.server_address[0], self.server_address[1],
-                '; %s' % self.authenticated_username if self.authenticated_username else '')
-        else:
-            return '%s (%s:%d)' % (self.proxy_type, self.local_address[0], self.local_address[1])
+        debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
+                                           self.server_address[1]) if Log.get_level() == logging.DEBUG else ''
+        account = '; %s' % self.authenticated_username if self.authenticated_username else ''
+        return '%s (%s:%d%s%s)' % (self.proxy_type, self.local_address[0], self.local_address[1], debug_string, account)
 
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
