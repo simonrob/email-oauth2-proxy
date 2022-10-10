@@ -422,8 +422,9 @@ class OAuth2Helper:
                              'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
 
                 if AppConfig.globals().getboolean('encrypt_client_secret_on_first_use', fallback=False):
-                    config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
-                    config.remove_option(username, 'client_secret')
+                    if client_secret:
+                        config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
+                        config.remove_option(username, 'client_secret')
 
                 AppConfig.save()
 
