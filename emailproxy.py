@@ -4,12 +4,13 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-09-27'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-10-10'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
 import binascii
 import configparser
+import contextlib
 import datetime
 import enum
 import errno
@@ -181,7 +182,7 @@ class Log:
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.FileHandler(
-                log_file if log_file else '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
+                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
@@ -513,10 +514,8 @@ class OAuth2Helper:
             Log.info('Please visit the following URL to authenticate account %s: %s' %
                      (token_request['username'], token_request['permission_url']))
             redirection_server.handle_request()
-            try:
+            with contextlib.suppress(socket.error):
                 redirection_server.server_close()
-            except socket.error:
-                pass
 
             if 'response_url' in token_request:
                 Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
@@ -893,16 +892,12 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     def close(self):
         if self.server_connection:
             self.server_connection.client_connection = None
-            try:
+            with contextlib.suppress(AttributeError):
                 self.server_connection.close()
-            except AttributeError:
-                pass
             self.server_connection = None
         self.proxy_parent.remove_client(self)
-        try:
+        with contextlib.suppress(OSError):
             super().close()
-        except OSError:
-            pass
 
 
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
@@ -1261,15 +1256,11 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     def close(self):
         if self.client_connection:
             self.client_connection.server_connection = None
-            try:
+            with contextlib.suppress(AttributeError):
                 self.client_connection.close()
-            except AttributeError:
-                pass
             self.client_connection = None
-        try:
+        with contextlib.suppress(OSError):
             super().close()
-        except OSError:
-            pass
 
 
 class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
@@ -1525,7 +1516,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 new_server_connection.client_connection = new_client_connection
                 self.client_connections.append(new_client_connection)
 
-                threading.Thread(target=self.run_server, args=(new_client_connection, socket_map, address),
+                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map, address),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
 
             except ssl.SSLError:
@@ -1599,8 +1590,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             return '+OK Server signing off' if error_text is None else ('-ERR %s' % error_text)
         elif self.proxy_type == 'SMTP':
             return '221 %s' % ('2.0.0 Service closing transmission channel' if error_text is None else error_text)
-        else:
-            return ''
+        return ''
 
     def close_clients(self):
         for connection in self.client_connections[:]:  # iterate over a copy; remove (in close()) from original
@@ -1736,6 +1726,7 @@ class App:
                                                              'Log.initialise() for details)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
+        parser.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__))
 
         self.args = parser.parse_args()
 
@@ -2165,8 +2156,7 @@ class App:
         if self.args.local_server_auth:
             script_command.append('--local-server-auth')
         if self.args.config_file:
-            script_command.append('--config-file')
-            script_command.append(CONFIG_FILE_PATH)
+            script_command.extend(['--config-file', CONFIG_FILE_PATH])
 
         return script_command
 
@@ -2178,7 +2168,7 @@ class App:
                                                                  shell=True))
 
     @staticmethod
-    def macos_launchctl(command='list'):
+    def macos_launchctl(command):
         # this used to use the python launchctl package, but it has a bug (github.com/andrewp-as-is/values.py/pull/2)
         # in a sub-package, so we reproduce just the core features - supported commands are 'list', 'load' and 'unload'
         proxy_command = APP_PACKAGE if command == 'list' else PLIST_FILE_PATH
@@ -2252,11 +2242,8 @@ class App:
             except queue.Empty:
                 break
         for proxy in self.proxies:
-            # noinspection PyBroadException
-            try:
+            with contextlib.suppress(Exception):
                 proxy.stop()
-            except Exception:
-                pass
         self.proxies = []
         self.authorisation_requests = []  # these requests are no-longer valid
 
@@ -2324,7 +2311,7 @@ class App:
         if icon:
             icon.update_menu()  # force refresh the menu to show running proxy servers
 
-        threading.Thread(target=self.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
+        threading.Thread(target=App.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
         return True
 
     def post_create(self, icon):
@@ -2399,11 +2386,8 @@ class App:
                 window.destroy()
 
         for proxy in self.proxies:  # no need to copy - proxies are never removed, we just restart them on error
-            # noinspection PyBroadException
-            try:
+            with contextlib.suppress(Exception):
                 proxy.stop()
-            except Exception:
-                pass
 
         if icon:
             icon.stop()
