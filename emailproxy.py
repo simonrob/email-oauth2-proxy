@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-10-10'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-10-14'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -127,6 +127,7 @@ TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 
 IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
     r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
 IMAP_CAPABILITY_MATCHER = re.compile(r'^(\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
@@ -909,12 +910,38 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
         self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
+        self.login_literal_length_awaited = 0
+        self.login_literal_username = None
 
     def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
+        # LOGIN data can be sent as quoted text or string literals (https://tools.ietf.org/html/rfc9051#section-4.3)
+        if self.login_literal_length_awaited > 0:
+            if not self.login_literal_username:
+                split_string = str_data.split(' ')
+                literal_match = IMAP_LITERAL_MATCHER.match(split_string[-1])
+                if literal_match and len(byte_data) > self.login_literal_length_awaited + 2:
+                    # could be the username and another literal for password (+2: literal length doesn't include \r\n)
+                    # note: plaintext password could end with a string such as ` {1}` that is a valid literal length
+                    self.login_literal_username = ' '.join(split_string[:-1])  # handle username space errors elsewhere
+                    self.login_literal_length_awaited = int(literal_match.group('length'))
+                    self.censor_next_log = True
+                    if not literal_match.group('continuation'):
+                        self.send(b'+ \r\n')  # request data (RFC 7888's non-synchronising literals don't require this)
+                elif len(split_string) > 1:
+                    # credentials as a single literal doesn't seem to be valid (RFC 9051), but some clients do this
+                    self.authenticate_connection(split_string[0], ' '.join(split_string[1:]))
+                else:
+                    super().process_data(byte_data)  # probably an invalid command, but just let the server handle it
+
+            else:
+                # no need to check length - can only be password; no more literals possible (unless \r\n *in* password)
+                self.login_literal_length_awaited = 0
+                self.authenticate_connection(self.login_literal_username, str_data)
+
         # AUTHENTICATE PLAIN can be a two-stage request - handle credentials if they are separate from command
-        if self.awaiting_credentials:
+        elif self.awaiting_credentials:
             self.awaiting_credentials = False
             username, password = OAuth2Helper.decode_credentials(str_data)
             self.authenticate_connection(username, password, 'authenticate')
@@ -925,12 +952,29 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 super().process_data(byte_data)
                 return
 
-            # we replace the standard LOGIN/AUTHENTICATE commands with OAuth 2.0 authentication
             self.authentication_command = match.group('command').lower()
             client_flags = match.group('flags')
             if self.authentication_command == 'login':
+                # string literals are sent as a separate message from the client - note that while length is specified
+                # we don't actually check this, instead relying on \r\n as usual (technically, as per RFC 9051 (4.3) the
+                # string literal value can itself contain \r\n, but since the proxy only cares about usernames/passwords
+                # and it is highly unlikely these will contain \r\n, it is probably safe to avoid this extra complexity)
                 split_flags = client_flags.split(' ')
-                if len(split_flags) > 1:
+                literal_match = IMAP_LITERAL_MATCHER.match(split_flags[-1])
+                if literal_match:
+                    self.authentication_tag = match.group('tag')
+                    if len(split_flags) > 1:
+                        # email addresses will not contain spaces, but let error checking elsewhere handle that - the
+                        # important thing is any non-literal here *must* be the username (else no need for a literal)
+                        self.login_literal_username = ' '.join(split_flags[:-1])
+                    self.login_literal_length_awaited = int(literal_match.group('length'))
+                    self.censor_next_log = True
+                    if not literal_match.group('continuation'):
+                        self.send(b'+ \r\n')  # request data (RFC 7888's non-synchronising literals don't require this)
+
+                # technically only double-quoted strings are allowed here according to RFC 9051 (4.3), but some clients
+                # do not obey this - we mandate email addresses as usernames (i.e., no spaces), so can be more flexible
+                elif len(split_flags) > 1:
                     username = OAuth2Helper.strip_quotes(split_flags[0])
                     password = OAuth2Helper.strip_quotes(' '.join(split_flags[1:]))
                     self.authentication_tag = match.group('tag')
