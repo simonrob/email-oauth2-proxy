@@ -931,6 +931,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                         self.send(b'+ \r\n')  # request data (RFC 7888's non-synchronising literals don't require this)
                 elif len(split_string) > 1:
                     # credentials as a single literal doesn't seem to be valid (RFC 9051), but some clients do this
+                    self.login_literal_length_awaited = 0
                     self.authenticate_connection(split_string[0], ' '.join(split_string[1:]))
                 else:
                     super().process_data(byte_data)  # probably an invalid command, but just let the server handle it
@@ -1320,11 +1321,15 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
         # as with SMTP, but all well-known servers provide a non-STARTTLS variant, so left unimplemented for now
         str_response = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
-        # if authentication succeeds, remove our proxy from the client and ignore all further communication
+        # if authentication succeeds (or fails), remove our proxy from the client and ignore all further communication
         # don't use a regex here as the tag must match exactly; RFC 3501 specifies uppercase 'OK', so startswith is fine
         if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
             Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - removing proxy ]')
             self.client_connection.authenticated = True
+        elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
+            super().process_data(byte_data)  # an error occurred - just send to the client and exit
+            self.close()
+            return
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
