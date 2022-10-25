@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-10-16'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-10-24'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -305,6 +305,11 @@ class AppConfig:
         return AppConfig._ACCOUNTS
 
     @staticmethod
+    def add_account(username):
+        AppConfig._PARSER.add_section(username)
+        AppConfig._ACCOUNTS = [s for s in AppConfig._PARSER.sections() if '@' in s]
+
+    @staticmethod
     def save():
         if AppConfig._LOADED:
             with open(CONFIG_FILE_PATH, 'w') as config_output:
@@ -317,23 +322,35 @@ class OAuth2Helper:
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
-        if username not in AppConfig.accounts():
+
+        # we support broader catch-all account names (e.g., `@domain.com` / `@`) if enabled
+        valid_accounts = [username in AppConfig.accounts()]
+        if AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False):
+            user_domain = '@%s' % username.split('@')[-1]
+            valid_accounts.extend([account in AppConfig.accounts() for account in [user_domain, '@']])
+
+        if not any(valid_accounts):
             Log.error('Proxy config file entry missing for account', username, '- aborting login')
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
                            'for permission_url, token_url, oauth2_scope, redirect_uri, client_id and '
                            'client_secret' % (APP_NAME, username))
 
         config = AppConfig.get()
-        current_time = int(time.time())
 
-        permission_url = config.get(username, 'permission_url', fallback=None)
-        token_url = config.get(username, 'token_url', fallback=None)
-        oauth2_scope = config.get(username, 'oauth2_scope', fallback=None)
-        redirect_uri = config.get(username, 'redirect_uri', fallback=None)
-        redirect_listen_address = config.get(username, 'redirect_listen_address', fallback=None)
-        client_id = config.get(username, 'client_id', fallback=None)
-        client_secret = config.get(username, 'client_secret', fallback=None)
-        client_secret_encrypted = config.get(username, 'client_secret_encrypted', fallback=None)
+        def get_account_with_catch_all_fallback(option):
+            fallback = None
+            if AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False):
+                fallback = config.get(user_domain, option, fallback=config.get('@', option, fallback=None))
+            return config.get(username, option, fallback=fallback)
+
+        permission_url = get_account_with_catch_all_fallback('permission_url')
+        token_url = get_account_with_catch_all_fallback('token_url')
+        oauth2_scope = get_account_with_catch_all_fallback('oauth2_scope')
+        redirect_uri = get_account_with_catch_all_fallback('redirect_uri')
+        redirect_listen_address = get_account_with_catch_all_fallback('redirect_listen_address')
+        client_id = get_account_with_catch_all_fallback('client_id')
+        client_secret = get_account_with_catch_all_fallback('client_secret')
+        client_secret_encrypted = get_account_with_catch_all_fallback('client_secret_encrypted')
 
         # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
         # and likewise for client_secret here because it can be optional for Office 365 configurations
@@ -355,6 +372,7 @@ class OAuth2Helper:
                          'are using an Office 365 setup that does not need a secret, please delete this line entirely;',
                          'otherwise, if authentication fails, please double-check this value is correct')
 
+        current_time = int(time.time())
         token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
@@ -413,6 +431,8 @@ class OAuth2Helper:
                                                                         client_secret, auth_code, oauth2_scope)
 
                 access_token = response['access_token']
+                if not config.has_section(username):
+                    AppConfig.add_account(username)  # in wildcard mode the section may not yet exist
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
@@ -425,6 +445,8 @@ class OAuth2Helper:
 
                 if AppConfig.globals().getboolean('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
+                        # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when using
+                        # incompatible `encrypt_client_secret_on_first_use` and `allow_catch_all_accounts` options
                         config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
                         config.remove_option(username, 'client_secret')
 
@@ -1945,8 +1967,17 @@ class App:
         if len(config_accounts) <= 0:
             items.append(pystray.MenuItem('    No accounts configured', None, enabled=False))
         else:
+            catch_all_enabled = AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False)
+            catch_all_accounts = []
             for account in config_accounts:
-                items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
+                if account.startswith('@') and catch_all_enabled:
+                    catch_all_accounts.append(account)
+                else:
+                    items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
+            if len(catch_all_accounts) > 0:
+                items.append(pystray.MenuItem('Catch-all accounts:', None, enabled=False))
+                for account in catch_all_accounts:
+                    items.append(pystray.MenuItem('    %s' % account, None, enabled=False))
             if not sys.platform == 'darwin':
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
