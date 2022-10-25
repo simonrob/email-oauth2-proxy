@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-10-16'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-10-24'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -300,14 +300,14 @@ class AppConfig:
         return AppConfig._SERVERS
 
     @staticmethod
-    def add_account(username):
-        AppConfig._PARSER.add_section(username)
-        AppConfig._ACCOUNTS = [s for s in AppConfig._PARSER.sections() if '@' in s]
-
-    @staticmethod
     def accounts():
         AppConfig.get()  # make sure config is loaded
         return AppConfig._ACCOUNTS
+
+    @staticmethod
+    def add_account(username):
+        AppConfig._PARSER.add_section(username)
+        AppConfig._ACCOUNTS = [s for s in AppConfig._PARSER.sections() if '@' in s]
 
     @staticmethod
     def save():
