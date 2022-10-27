@@ -140,6 +140,9 @@ CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Pro
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
 
+LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
+LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
+
 EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copyLink(targetLink){
     var copySource=document.createElement('textarea');copySource.value=targetLink;copySource.style.position='absolute';
     copySource.style.left='-9999px';document.body.appendChild(copySource);copySource.select();
@@ -182,8 +185,9 @@ class Log:
     def initialise(log_file=None):
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
-            handler = logging.FileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
+            handler = logging.handlers.RotatingFileHandler(
+                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME),
+                maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
