@@ -411,8 +411,8 @@ class OAuth2Helper:
                                        OAuth2Helper.encrypt(fernet, response['refresh_token']))
                         AppConfig.save()
 
-                    elif access_token_expiry <= current_time:
-                        access_token = None  # avoid trying invalid tokens
+                    else:
+                        access_token = None  # avoid trying invalid (or soon to be) tokens
                 else:
                     access_token = OAuth2Helper.decrypt(fernet, access_token)
 
