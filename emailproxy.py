@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-10-26'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-01'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -140,6 +140,9 @@ CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Pro
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
 
+LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
+LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
+
 EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copyLink(targetLink){
     var copySource=document.createElement('textarea');copySource.value=targetLink;copySource.style.position='absolute';
     copySource.style.left='-9999px';document.body.appendChild(copySource);copySource.select();
@@ -182,8 +185,9 @@ class Log:
     def initialise(log_file=None):
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
-            handler = logging.FileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
+            handler = logging.handlers.RotatingFileHandler(
+                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME),
+                maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
@@ -408,8 +412,13 @@ class OAuth2Helper:
                                        OAuth2Helper.encrypt(fernet, response['refresh_token']))
                         AppConfig.save()
 
-                    elif access_token_expiry <= current_time:
-                        access_token = None  # avoid trying invalid tokens
+                    else:
+                        # we used to keep tokens until the last possible moment here, but it is simpler to just obtain a
+                        # new one within TOKEN_EXPIRY_MARGIN, particularly when in CCG or ROPCG flow modes where getting
+                        # a new token involves no user interaction (note that in interactive mode it would be better to
+                        # request a new token via the user before discarding the existing one, but since this happens
+                        # very infrequently, we don't add the extra complexity for just 10 extra minutes of token life)
+                        access_token = None  # avoid trying invalid (or soon to be) tokens
                 else:
                     access_token = OAuth2Helper.decrypt(fernet, access_token)
 
@@ -1360,7 +1369,7 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
         # if authentication succeeds (or fails), remove our proxy from the client and ignore all further communication
         # don't use a regex here as the tag must match exactly; RFC 3501 specifies uppercase 'OK', so startswith is fine
         if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
-            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - removing proxy ]')
+            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
             self.client_connection.authenticated = True
         elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
             super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -1453,7 +1462,7 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.client_connection.connection_state is POPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT:
             if str_data.startswith('+OK'):
-                Log.info(self.info_string(), '[ Successfully authenticated POP connection - removing proxy ]')
+                Log.info(self.info_string(), '[ Successfully authenticated POP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
             else:
@@ -1549,7 +1558,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT:
             if str_data.startswith('235'):
-                Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - removing proxy ]')
+                Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
             else:
@@ -2387,7 +2396,7 @@ class App:
                     new_proxy.start()
                     self.proxies.append(new_proxy)
                 except Exception as e:
-                    Log.error('Error: unable to start server:', Log.error_string(e))
+                    Log.error('Error: unable to start', match.string, 'server:', Log.error_string(e))
                     server_start_error = True
 
         if server_start_error or server_load_error or len(self.proxies) <= 0:
