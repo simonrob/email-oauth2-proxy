@@ -350,6 +350,7 @@ class OAuth2Helper:
         permission_url = get_account_with_catch_all_fallback('permission_url')
         token_url = get_account_with_catch_all_fallback('token_url')
         oauth2_scope = get_account_with_catch_all_fallback('oauth2_scope')
+        oauth2_flow = get_account_with_catch_all_fallback('oauth2_flow')
         redirect_uri = get_account_with_catch_all_fallback('redirect_uri')
         redirect_listen_address = get_account_with_catch_all_fallback('redirect_listen_address')
         client_id = get_account_with_catch_all_fallback('client_id')
@@ -423,7 +424,8 @@ class OAuth2Helper:
 
             if not access_token:
                 auth_code = None
-                if permission_url:  # O365 client credentials grant flow skips the authorisation step; no permission_url
+                if permission_url:  # O365 CCG and ROPCG flows skip the authorisation step; no permission_url
+                    oauth2_flow = 'authorization_code'
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
 
@@ -436,8 +438,11 @@ class OAuth2Helper:
                         return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
                                       'account %s' % (APP_NAME, username)
 
+                if not oauth2_flow:
+                    oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_code, oauth2_scope)
+                                                                        client_secret, auth_code, oauth2_scope,
+                                                                        oauth2_flow, username, password)
 
                 access_token = response['access_token']
                 if not config.has_section(username):
@@ -587,10 +592,11 @@ class OAuth2Helper:
         token_request = {'permission_url': permission_url, 'redirect_uri': redirect_uri,
                          'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
+        response_queue_reference = RESPONSE_QUEUE  # referenced locally to avoid inserting into the new queue on restart
         wait_time = 0
         while True:
             try:
-                data = RESPONSE_QUEUE.get(block=True, timeout=1)
+                data = response_queue_reference.get(block=True, timeout=1)
             except queue.Empty:
                 wait_time += 1
                 if wait_time < AUTHENTICATION_TIMEOUT:
@@ -601,7 +607,7 @@ class OAuth2Helper:
                     return False, None
 
             if data is QUEUE_SENTINEL:  # app is closing
-                RESPONSE_QUEUE.put(QUEUE_SENTINEL)  # make sure all watchers exit
+                response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, None
 
             elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
@@ -624,28 +630,33 @@ class OAuth2Helper:
                     return False, None
 
             else:  # not for this thread - put back into queue
-                RESPONSE_QUEUE.put(data)
+                response_queue_reference.put(data)
                 time.sleep(1)
 
     @staticmethod
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code,
-                                        oauth2_scope):
+                                        oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
-                  'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
+                  'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
-        if not authorisation_code:
-            del params['code']  # AccessAsApp mode doesn't have a code, but we need the scope and appropriate grant type
+        if oauth2_flow != 'authorization_code':
+            del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
-            params['grant_type'] = 'client_credentials'
+            if oauth2_flow == 'password':
+                params['username'] = username
+                params['password'] = password
         try:
-            response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
+            response = urllib.request.urlopen(
+                urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                       headers={'User-Agent': APP_NAME})).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
-            Log.debug('Error requesting access token - received invalid response:', json.loads(e.read()))
+            e.message = json.loads(e.read())
+            Log.debug('Error requesting access token - received invalid response:', e.message)
             raise e
 
     @staticmethod
@@ -657,10 +668,13 @@ class OAuth2Helper:
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
         try:
-            response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
+            response = urllib.request.urlopen(
+                urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                       headers={'User-Agent': APP_NAME})).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
-            Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
+            e.message = json.loads(e.read())
+            Log.debug('Error refreshing access token - received invalid response:', e.message)
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
                 raise InvalidToken(e.code, APP_PACKAGE)
             raise e
@@ -1765,7 +1779,7 @@ if sys.platform == 'darwin':
                 menu_items = sender._itemArray()
                 for item in menu_items:
                     for account in config_accounts:
-                        account_title = '    %s (' % account  # needed to avoid matching authentication menu
+                        account_title = '    %s (' % account  # needed to avoid matching other menu items
                         if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
@@ -2323,7 +2337,7 @@ class App:
 
     def stop_servers(self):
         global RESPONSE_QUEUE
-        RESPONSE_QUEUE.put(QUEUE_SENTINEL)
+        RESPONSE_QUEUE.put(QUEUE_SENTINEL)  # watchers use a local reference so won't re-insert into the new queue
         RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
         while True:
             try:
@@ -2413,7 +2427,7 @@ class App:
         if not self.load_and_start_servers(icon, reload=False):
             return
 
-        Log.info('Initialised', APP_NAME, '- listening for authentication requests')
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
