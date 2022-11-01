@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-10-10'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-01'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
@@ -130,6 +130,7 @@ TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 
 IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
     r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
 IMAP_CAPABILITY_MATCHER = re.compile(r'^(\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
@@ -141,6 +142,9 @@ PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
+
+LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
+LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
 
 EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copyLink(targetLink){
     var copySource=document.createElement('textarea');copySource.value=targetLink;copySource.style.position='absolute';
@@ -184,8 +188,9 @@ class Log:
     def initialise(log_file=None):
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
-            handler = logging.FileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME))
+            handler = logging.handlers.RotatingFileHandler(
+                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME),
+                maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
@@ -313,6 +318,11 @@ class AppConfig:
         return AppConfig._ACCOUNTS
 
     @staticmethod
+    def add_account(username):
+        AppConfig._PARSER.add_section(username)
+        AppConfig._ACCOUNTS = [s for s in AppConfig._PARSER.sections() if '@' in s]
+
+    @staticmethod
     def save():
         if AppConfig._LOADED:
             with open(CONFIG_FILE_PATH, 'w') as config_output:
@@ -325,23 +335,36 @@ class OAuth2Helper:
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
-        if username not in AppConfig.accounts():
+
+        # we support broader catch-all account names (e.g., `@domain.com` / `@`) if enabled
+        valid_accounts = [username in AppConfig.accounts()]
+        if AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False):
+            user_domain = '@%s' % username.split('@')[-1]
+            valid_accounts.extend([account in AppConfig.accounts() for account in [user_domain, '@']])
+
+        if not any(valid_accounts):
             Log.error('Proxy config file entry missing for account', username, '- aborting login')
             return (False, '%s: No config file entry found for account %s - please add a new section with values '
                            'for permission_url, token_url, oauth2_scope, redirect_uri, client_id and '
                            'client_secret' % (APP_NAME, username))
 
         config = AppConfig.get()
-        current_time = int(time.time())
 
-        permission_url = config.get(username, 'permission_url', fallback=None)
-        token_url = config.get(username, 'token_url', fallback=None)
-        oauth2_scope = config.get(username, 'oauth2_scope', fallback=None)
-        redirect_uri = config.get(username, 'redirect_uri', fallback=None)
-        redirect_listen_address = config.get(username, 'redirect_listen_address', fallback=None)
-        client_id = config.get(username, 'client_id', fallback=None)
-        client_secret = config.get(username, 'client_secret', fallback=None)
-        client_secret_encrypted = config.get(username, 'client_secret_encrypted', fallback=None)
+        def get_account_with_catch_all_fallback(option):
+            fallback = None
+            if AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False):
+                fallback = config.get(user_domain, option, fallback=config.get('@', option, fallback=None))
+            return config.get(username, option, fallback=fallback)
+
+        permission_url = get_account_with_catch_all_fallback('permission_url')
+        token_url = get_account_with_catch_all_fallback('token_url')
+        oauth2_scope = get_account_with_catch_all_fallback('oauth2_scope')
+        oauth2_flow = get_account_with_catch_all_fallback('oauth2_flow')
+        redirect_uri = get_account_with_catch_all_fallback('redirect_uri')
+        redirect_listen_address = get_account_with_catch_all_fallback('redirect_listen_address')
+        client_id = get_account_with_catch_all_fallback('client_id')
+        client_secret = get_account_with_catch_all_fallback('client_secret')
+        client_secret_encrypted = get_account_with_catch_all_fallback('client_secret_encrypted')
 
         # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
         # and likewise for client_secret here because it can be optional for Office 365 configurations
@@ -363,6 +386,7 @@ class OAuth2Helper:
                          'are using an Office 365 setup that does not need a secret, please delete this line entirely;',
                          'otherwise, if authentication fails, please double-check this value is correct')
 
+        current_time = int(time.time())
         token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
@@ -397,14 +421,20 @@ class OAuth2Helper:
                                        OAuth2Helper.encrypt(fernet, response['refresh_token']))
                         AppConfig.save()
 
-                    elif access_token_expiry <= current_time:
-                        access_token = None  # avoid trying invalid tokens
+                    else:
+                        # we used to keep tokens until the last possible moment here, but it is simpler to just obtain a
+                        # new one within TOKEN_EXPIRY_MARGIN, particularly when in CCG or ROPCG flow modes where getting
+                        # a new token involves no user interaction (note that in interactive mode it would be better to
+                        # request a new token via the user before discarding the existing one, but since this happens
+                        # very infrequently, we don't add the extra complexity for just 10 extra minutes of token life)
+                        access_token = None  # avoid trying invalid (or soon to be) tokens
                 else:
                     access_token = OAuth2Helper.decrypt(fernet, access_token)
 
             if not access_token:
                 auth_code = None
-                if permission_url:  # O365 client credentials grant flow skips the authorisation step; no permission_url
+                if permission_url:  # O365 CCG and ROPCG flows skip the authorisation step; no permission_url
+                    oauth2_flow = 'authorization_code'
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
 
@@ -417,10 +447,15 @@ class OAuth2Helper:
                         return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
                                       'account %s' % (APP_NAME, username)
 
+                if not oauth2_flow:
+                    oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_code, oauth2_scope)
+                                                                        client_secret, auth_code, oauth2_scope,
+                                                                        oauth2_flow, username, password)
 
                 access_token = response['access_token']
+                if not config.has_section(username):
+                    AppConfig.add_account(username)  # in wildcard mode the section may not yet exist
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
@@ -433,6 +468,8 @@ class OAuth2Helper:
 
                 if AppConfig.globals().getboolean('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
+                        # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when using
+                        # incompatible `encrypt_client_secret_on_first_use` and `allow_catch_all_accounts` options
                         config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
                         config.remove_option(username, 'client_secret')
 
@@ -564,10 +601,11 @@ class OAuth2Helper:
         token_request = {'permission_url': permission_url, 'redirect_uri': redirect_uri,
                          'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
+        response_queue_reference = RESPONSE_QUEUE  # referenced locally to avoid inserting into the new queue on restart
         wait_time = 0
         while True:
             try:
-                data = RESPONSE_QUEUE.get(block=True, timeout=1)
+                data = response_queue_reference.get(block=True, timeout=1)
             except queue.Empty:
                 wait_time += 1
                 if wait_time < AUTHENTICATION_TIMEOUT:
@@ -578,7 +616,7 @@ class OAuth2Helper:
                     return False, None
 
             if data is QUEUE_SENTINEL:  # app is closing
-                RESPONSE_QUEUE.put(QUEUE_SENTINEL)  # make sure all watchers exit
+                response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, None
 
             elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
@@ -601,28 +639,33 @@ class OAuth2Helper:
                     return False, None
 
             else:  # not for this thread - put back into queue
-                RESPONSE_QUEUE.put(data)
+                response_queue_reference.put(data)
                 time.sleep(1)
 
     @staticmethod
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code,
-                                        oauth2_scope):
+                                        oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
-                  'redirect_uri': redirect_uri, 'grant_type': 'authorization_code'}
+                  'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
-        if not authorisation_code:
-            del params['code']  # AccessAsApp mode doesn't have a code, but we need the scope and appropriate grant type
+        if oauth2_flow != 'authorization_code':
+            del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
-            params['grant_type'] = 'client_credentials'
+            if oauth2_flow == 'password':
+                params['username'] = username
+                params['password'] = password
         try:
-            response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
+            response = urllib.request.urlopen(
+                urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                       headers={'User-Agent': APP_NAME})).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
-            Log.debug('Error requesting access token - received invalid response:', json.loads(e.read()))
+            e.message = json.loads(e.read())
+            Log.debug('Error requesting access token - received invalid response:', e.message)
             raise e
 
     @staticmethod
@@ -634,10 +677,13 @@ class OAuth2Helper:
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
         try:
-            response = urllib.request.urlopen(token_url, urllib.parse.urlencode(params).encode('utf-8')).read()
+            response = urllib.request.urlopen(
+                urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                       headers={'User-Agent': APP_NAME})).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
-            Log.debug('Error refreshing access token - received invalid response:', json.loads(e.read()))
+            e.message = json.loads(e.read())
+            Log.debug('Error refreshing access token - received invalid response:', e.message)
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
                 raise InvalidToken(e.code, APP_PACKAGE)
             raise e
@@ -926,12 +972,39 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
         self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
+        self.login_literal_length_awaited = 0
+        self.login_literal_username = None
 
     def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
+        # LOGIN data can be sent as quoted text or string literals (https://tools.ietf.org/html/rfc9051#section-4.3)
+        if self.login_literal_length_awaited > 0:
+            if not self.login_literal_username:
+                split_string = str_data.split(' ')
+                literal_match = IMAP_LITERAL_MATCHER.match(split_string[-1])
+                if literal_match and len(byte_data) > self.login_literal_length_awaited + 2:
+                    # could be the username and another literal for password (+2: literal length doesn't include \r\n)
+                    # note: plaintext password could end with a string such as ` {1}` that is a valid literal length
+                    self.login_literal_username = ' '.join(split_string[:-1])  # handle username space errors elsewhere
+                    self.login_literal_length_awaited = int(literal_match.group('length'))
+                    self.censor_next_log = True
+                    if not literal_match.group('continuation'):
+                        self.send(b'+ \r\n')  # request data (RFC 7888's non-synchronising literals don't require this)
+                elif len(split_string) > 1:
+                    # credentials as a single literal doesn't seem to be valid (RFC 9051), but some clients do this
+                    self.login_literal_length_awaited = 0
+                    self.authenticate_connection(split_string[0], ' '.join(split_string[1:]))
+                else:
+                    super().process_data(byte_data)  # probably an invalid command, but just let the server handle it
+
+            else:
+                # no need to check length - can only be password; no more literals possible (unless \r\n *in* password)
+                self.login_literal_length_awaited = 0
+                self.authenticate_connection(self.login_literal_username, str_data)
+
         # AUTHENTICATE PLAIN can be a two-stage request - handle credentials if they are separate from command
-        if self.awaiting_credentials:
+        elif self.awaiting_credentials:
             self.awaiting_credentials = False
             username, password = OAuth2Helper.decode_credentials(str_data)
             self.authenticate_connection(username, password, 'authenticate')
@@ -942,12 +1015,29 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 super().process_data(byte_data)
                 return
 
-            # we replace the standard LOGIN/AUTHENTICATE commands with OAuth 2.0 authentication
             self.authentication_command = match.group('command').lower()
             client_flags = match.group('flags')
             if self.authentication_command == 'login':
+                # string literals are sent as a separate message from the client - note that while length is specified
+                # we don't actually check this, instead relying on \r\n as usual (technically, as per RFC 9051 (4.3) the
+                # string literal value can itself contain \r\n, but since the proxy only cares about usernames/passwords
+                # and it is highly unlikely these will contain \r\n, it is probably safe to avoid this extra complexity)
                 split_flags = client_flags.split(' ')
-                if len(split_flags) > 1:
+                literal_match = IMAP_LITERAL_MATCHER.match(split_flags[-1])
+                if literal_match:
+                    self.authentication_tag = match.group('tag')
+                    if len(split_flags) > 1:
+                        # email addresses will not contain spaces, but let error checking elsewhere handle that - the
+                        # important thing is any non-literal here *must* be the username (else no need for a literal)
+                        self.login_literal_username = ' '.join(split_flags[:-1])
+                    self.login_literal_length_awaited = int(literal_match.group('length'))
+                    self.censor_next_log = True
+                    if not literal_match.group('continuation'):
+                        self.send(b'+ \r\n')  # request data (RFC 7888's non-synchronising literals don't require this)
+
+                # technically only double-quoted strings are allowed here according to RFC 9051 (4.3), but some clients
+                # do not obey this - we mandate email addresses as usernames (i.e., no spaces), so can be more flexible
+                elif len(split_flags) > 1:
                     username = OAuth2Helper.strip_quotes(split_flags[0])
                     password = OAuth2Helper.strip_quotes(' '.join(split_flags[1:]))
                     self.authentication_tag = match.group('tag')
@@ -1302,11 +1392,15 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
         # as with SMTP, but all well-known servers provide a non-STARTTLS variant, so left unimplemented for now
         str_response = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
 
-        # if authentication succeeds, remove our proxy from the client and ignore all further communication
+        # if authentication succeeds (or fails), remove our proxy from the client and ignore all further communication
         # don't use a regex here as the tag must match exactly; RFC 3501 specifies uppercase 'OK', so startswith is fine
         if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
-            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - removing proxy ]')
+            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
             self.client_connection.authenticated = True
+        elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
+            super().process_data(byte_data)  # an error occurred - just send to the client and exit
+            self.close()
+            return
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
@@ -1394,7 +1488,7 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.client_connection.connection_state is POPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT:
             if str_data.startswith('+OK'):
-                Log.info(self.info_string(), '[ Successfully authenticated POP connection - removing proxy ]')
+                Log.info(self.info_string(), '[ Successfully authenticated POP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
             else:
@@ -1490,7 +1584,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT:
             if str_data.startswith('235'):
-                Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - removing proxy ]')
+                Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
             else:
@@ -1735,7 +1829,7 @@ if sys.platform == 'darwin':
                 menu_items = sender._itemArray()
                 for item in menu_items:
                     for account in config_accounts:
-                        account_title = '    %s (' % account  # needed to avoid matching authentication menu
+                        account_title = '    %s (' % account  # needed to avoid matching other menu items
                         if account_title in item.title():
                             item.setTitle_(App.get_last_activity(account))
                             break
@@ -1950,8 +2044,17 @@ class App:
         if len(config_accounts) <= 0:
             items.append(pystray.MenuItem('    No accounts configured', None, enabled=False))
         else:
+            catch_all_enabled = AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False)
+            catch_all_accounts = []
             for account in config_accounts:
-                items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
+                if account.startswith('@') and catch_all_enabled:
+                    catch_all_accounts.append(account)
+                else:
+                    items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
+            if len(catch_all_accounts) > 0:
+                items.append(pystray.MenuItem('Catch-all accounts:', None, enabled=False))
+                for account in catch_all_accounts:
+                    items.append(pystray.MenuItem('    %s' % account, None, enabled=False))
             if not sys.platform == 'darwin':
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
@@ -2288,7 +2391,7 @@ class App:
 
     def stop_servers(self):
         global RESPONSE_QUEUE
-        RESPONSE_QUEUE.put(QUEUE_SENTINEL)
+        RESPONSE_QUEUE.put(QUEUE_SENTINEL)  # watchers use a local reference so won't re-insert into the new queue
         RESPONSE_QUEUE = queue.Queue()  # recreate so existing queue closes watchers but we don't have to wait here
         while True:
             try:
@@ -2367,7 +2470,7 @@ class App:
                     new_proxy.start()
                     self.proxies.append(new_proxy)
                 except Exception as e:
-                    Log.error('Error: unable to start server:', Log.error_string(e))
+                    Log.error('Error: unable to start', match.string, 'server:', Log.error_string(e))
                     server_start_error = True
 
         if server_start_error or server_load_error or len(self.proxies) <= 0:
@@ -2398,7 +2501,7 @@ class App:
         if not self.load_and_start_servers(icon, reload=False):
             return
 
-        Log.info('Initialised', APP_NAME, '- listening for authentication requests')
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
