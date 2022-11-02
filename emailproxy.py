@@ -624,7 +624,7 @@ class OAuth2Helper:
                     if 'response_url' in data and 'code=' in data['response_url'] and data['response_url'].startswith(
                             token_request['redirect_uri']):
                         authorisation_code = OAuth2Helper.oauth2_url_unescape(
-                            data['response_url'].split('code=')[1].split('&')[0])
+                            data['response_url'].split('code=')[-1].split('&')[0])
                         if authorisation_code:
                             return True, authorisation_code
                     return False, None
@@ -1759,6 +1759,12 @@ if sys.platform == 'darwin':
             # the notification centre often decides that notifications shouldn't be presented; we want to override that
             return AppKit.YES
 
+        # noinspection PyPep8Naming,PyUnusedLocal
+        def userNotificationCenter_didActivateNotification_(self, notification_centre, notification):
+            notification_text = notification.informativeText()
+            if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
+                self._click(notification_text.split('account ')[-1].split(' ')[0])
+
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences,PyProtectedMember
     class RetinaIcon(pystray.Icon):
@@ -1870,6 +1876,7 @@ class App:
 
             # need to delegate and override to show both "authenticate now" and "authentication success" notifications
             self.macos_user_notification_centre_delegate = UserNotificationCentreDelegate.alloc().init()
+            setattr(self.macos_user_notification_centre_delegate, '_click', lambda m: self.authorise_account(None, m))
 
             # any launchctl plist changes need reloading, but this must be scheduled on exit (see discussion below)
             self.macos_unload_plist_on_exit = False
@@ -2169,12 +2176,10 @@ class App:
             # token request then we still send an 'authentication completed' notification here, but in the background
             # we close the connection with a failure message and re-request authorisation next time the client
             # interacts, which may potentially lead to repeated and conflicting (and confusing) notifications - improve?
+            self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
             if len(self.authorisation_requests) > 0:
-                self.notify(APP_NAME,
-                            'Authentication completed for %s. Please authorise an additional account %s from the '
-                            'menu' % (completed_request['username'], self.authorisation_requests[0]['username']))
-            else:
-                self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
+                self.notify(APP_NAME, 'Please authorise your account %s from the menu' % self.authorisation_requests[0][
+                    'username'])
 
     def toggle_start_at_login(self, icon, force_rewrite=False):
         # we reuse this function to force-overwrite the startup file when changing the external auth option, but pystray
@@ -2327,10 +2332,10 @@ class App:
                 user_notification.setTitle_(title)
                 user_notification.setInformativeText_(text)
                 notification_centre = AppKit.NSUserNotificationCenter.defaultUserNotificationCenter()
-                notification_centre.setDelegate_(self.macos_user_notification_centre_delegate)
 
                 # noinspection PyBroadException
                 try:
+                    notification_centre.setDelegate_(self.macos_user_notification_centre_delegate)
                     notification_centre.deliverNotification_(user_notification)
                 except Exception:
                     for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
