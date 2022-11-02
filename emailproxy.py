@@ -1752,6 +1752,14 @@ if sys.platform == 'darwin':
                 browser_view_instance.loaded.set()
 
 if sys.platform == 'darwin':
+    # noinspection PyUnresolvedReferences
+    class UserNotificationCentreDelegate(AppKit.NSObject):
+        # noinspection PyPep8Naming,PyUnusedLocal,PyMethodMayBeStatic
+        def userNotificationCenter_shouldPresentNotification_(self, notification_centre, notification):
+            # the notification centre often decides that notifications shouldn't be presented; we want to override that
+            return AppKit.YES
+
+if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences,PyProtectedMember
     class RetinaIcon(pystray.Icon):
         """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
@@ -1859,6 +1867,9 @@ class App:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
+
+            # need to delegate and override to show both "authenticate now" and "authentication success" notifications
+            self.macos_user_notification_centre_delegate = UserNotificationCentreDelegate.alloc().init()
 
             # any launchctl plist changes need reloading, but this must be scheduled on exit (see discussion below)
             self.macos_unload_plist_on_exit = False
@@ -2316,6 +2327,7 @@ class App:
                 user_notification.setTitle_(title)
                 user_notification.setInformativeText_(text)
                 notification_centre = AppKit.NSUserNotificationCenter.defaultUserNotificationCenter()
+                notification_centre.setDelegate_(self.macos_user_notification_centre_delegate)
 
                 # noinspection PyBroadException
                 try:
