@@ -22,7 +22,7 @@ Next, from a terminal, install the script's requirements: `python -m pip install
 
 Finally, open your email client and configure its server details to match the ones you set in the proxy's configuration file. The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, `localhost` on port `1995` for POP and `localhost` on port `1587` for SMTP. The proxy supports multiple accounts simultaneously, and all accounts associated with the same provider can share the same proxy server. The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is always secure (implicit SSL/TLS for IMAP and POP; implicit or explicit (STARTTLS) SSL/TLS for SMTP). You can view or update the current configuration from the proxy's icon (via the `Servers and accounts` option).
 
-The first time your email client makes a request you should see a notification from the proxy about authorising your account. (Note that the notification is not itself clickable, but pull requests to improve this are very welcome). Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup browser window that appears. The window will close itself once the process is complete.
+The first time your email client makes a request you should see a notification from the proxy about authorising your account. Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup browser window that appears. The window will close itself once the process is complete.
 
 After successful authentication and authorisation you should have IMAP/POP/SMTP access to your account as normal. Make sure you keep the proxy running at all times to allow it to authorise your email client's background activity – enable `Start at login` from the proxy's menu, or see the [instructions below](#starting-the-proxy-automatically) about how to configure this in various different setups.
 
@@ -102,10 +102,9 @@ The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins
 
 ## Potential improvements (pull requests welcome)
 - Switch to asyncio? (asyncore is currently deprecated, but [PEP 594](https://peps.python.org/pep-0594/) will remove it completely in Python 3.12 – currently mitigated by the use of [pyasyncore](https://pypi.org/project/pyasyncore/))
-- Full feature parity on different platforms (e.g., live menu updating; monitoring network status)
-- Clickable account authorisation notifications
+- Full feature parity on different platforms (e.g., live menu updating; monitoring network status; clickable notifications)
 - STARTTLS for IMAP/POP?
-- Python 2 support?
+- Python 2 support? (see [discussion](https://github.com/simonrob/email-oauth2-proxy/issues/38))
 - Package as .app/.exe etc?
 
 

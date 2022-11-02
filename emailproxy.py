@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-01'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-02'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
@@ -127,6 +127,9 @@ AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
 
+LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
+LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
+
 IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
     r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
@@ -143,8 +146,10 @@ CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Pro
                              APP_PACKAGE).expanduser()  # Windows startup .cmd file location
 AUTOSTART_FILE_PATH = pathlib.Path('~/.config/autostart/%s.desktop' % APP_PACKAGE).expanduser()  # XDG Autostart file
 
-LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
-LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
+# noinspection SpellCheckingInspection
+SECURE_SERVER_ICON = '''iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAApElEQVR4Ae3VsQ2DMBBA0ZQs4NIreA03GSbyAl6DAbyN+xvh
+    Ovp0yY9EkQZ8XELHSa+x0S9OAm75cT+F+UFm+vhbmClQLCtF+SnMNAji11lcz5orzCQopo21KJIn3FB37iuaJ9yRd+4zuicsSINViSesyEgbMtQcZgIE
+    TyNBsIQrXgdVS3h2hGdf+Apf4eIIF+ub16FYBhQd4ci3IiAOBP8/z+kNGUS6hBN6UlIAAAAASUVORK5CYII='''  # 22px SF Symbols lock.fill
 
 EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copyLink(targetLink){
     var copySource=document.createElement('textarea');copySource.value=targetLink;copySource.style.position='absolute';
@@ -633,7 +638,7 @@ class OAuth2Helper:
                     if 'response_url' in data and 'code=' in data['response_url'] and data['response_url'].startswith(
                             token_request['redirect_uri']):
                         authorisation_code = OAuth2Helper.oauth2_url_unescape(
-                            data['response_url'].split('code=')[1].split('&')[0])
+                            data['response_url'].split('code=')[-1].split('&')[0])
                         if authorisation_code:
                             return True, authorisation_code
                     return False, None
@@ -1802,6 +1807,20 @@ if sys.platform == 'darwin':
                 browser_view_instance.loaded.set()
 
 if sys.platform == 'darwin':
+    # noinspection PyUnresolvedReferences
+    class UserNotificationCentreDelegate(AppKit.NSObject):
+        # noinspection PyPep8Naming,PyUnusedLocal,PyMethodMayBeStatic
+        def userNotificationCenter_shouldPresentNotification_(self, notification_centre, notification):
+            # the notification centre often decides that notifications shouldn't be presented; we want to override that
+            return AppKit.YES
+
+        # noinspection PyPep8Naming,PyUnusedLocal
+        def userNotificationCenter_didActivateNotification_(self, notification_centre, notification):
+            notification_text = notification.informativeText()
+            if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
+                self._click(notification_text.split('account ')[-1].split(' ')[0])
+
+if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences,PyProtectedMember
     class RetinaIcon(pystray.Icon):
         """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
@@ -1817,20 +1836,47 @@ if sys.platform == 'darwin':
             # in order to create the delegate *after* the NSApplication has been initialised, but only once, we override
             # _mark_ready() to do so before the super() call that itself calls _create_menu()
             self._refresh_delegate = self.MenuDelegate.alloc().init()
+
+            # we add a small icon to show whether the local connection uses SSL; non-secured servers have a blank space
+            half_thickness = int(self._status_bar.thickness()) / 2  # half of menu bar size (see _assert_image() below)
+            locked_image_data = AppKit.NSData(base64.b64decode(SECURE_SERVER_ICON))
+            self._refresh_delegate._locked_image = AppKit.NSImage.alloc().initWithData_(locked_image_data)
+            self._refresh_delegate._locked_image.setSize_((half_thickness, half_thickness))
+            self._refresh_delegate._locked_image.setTemplate_(AppKit.YES)
+            self._refresh_delegate._unlocked_image = AppKit.NSImage.alloc().init()
+            self._refresh_delegate._unlocked_image.setSize_((half_thickness, half_thickness))
+
             super()._mark_ready()
 
         # noinspection PyUnresolvedReferences
         class MenuDelegate(AppKit.NSObject):
             # noinspection PyMethodMayBeStatic,PyProtectedMember,PyPep8Naming
             def menuNeedsUpdate_(self, sender):
+                # add an icon to highlight which local connections are secured (only if at least one is present), and
                 # update account menu items' last activity times from config cache - it would be better to delegate this
                 # entirely to App.create_config_menu() via update_menu(), but can't replace the menu while creating it
                 config_accounts = AppConfig.accounts()
                 menu_items = sender._itemArray()
+
+                has_local_ssl = False  # only add hints if at least one local server uses a secure connection
+                ssl_string = '    '
                 for item in menu_items:
+                    if 'Y_SSL    ' in item.title():
+                        has_local_ssl = True
+                        ssl_string = ''
+                        break
+
+                for item in menu_items:
+                    item_title = item.title()
+                    if '_SSL    ' in item_title:  # need to use a placeholder because we only have the title to match
+                        if has_local_ssl:
+                            item.setImage_(self._locked_image if 'Y_SSL    ' in item_title else self._unlocked_image)
+                        item.setTitle_(item_title.replace('N_SSL    ', ssl_string).replace('Y_SSL    ', ssl_string))
+                        continue
+
                     for account in config_accounts:
                         account_title = '    %s (' % account  # needed to avoid matching other menu items
-                        if account_title in item.title():
+                        if account_title in item_title:
                             item.setTitle_(App.get_last_activity(account))
                             break
 
@@ -1841,8 +1887,8 @@ if sys.platform == 'darwin':
             data = AppKit.NSData(bytes_image.getvalue())
             self._icon_image = AppKit.NSImage.alloc().initWithData_(data)
 
-            thickness = self._status_bar.thickness()  # macOS menu bar size: default = 22px, but can be scaled
-            self._icon_image.setSize_((int(thickness), int(thickness)))
+            thickness = int(self._status_bar.thickness())  # macOS menu bar size: default = 22px, but can be scaled
+            self._icon_image.setSize_((thickness, thickness))
             self._icon_image.setTemplate_(AppKit.YES)  # so macOS applies default shading + inverse on click
             self._status_item.button().setImage_(self._icon_image)
 
@@ -1909,6 +1955,10 @@ class App:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
+
+            # need to delegate and override to show both "authenticate now" and "authentication success" notifications
+            self.macos_user_notification_centre_delegate = UserNotificationCentreDelegate.alloc().init()
+            setattr(self.macos_user_notification_centre_delegate, '_click', lambda m: self.authorise_account(None, m))
 
             # any launchctl plist changes need reloading, but this must be scheduled on exit (see discussion below)
             self.macos_unload_plist_on_exit = False
@@ -2030,8 +2080,9 @@ class App:
             items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
         else:
             for proxy in self.proxies:
-                items.append(pystray.MenuItem('    %s:%d ➝ %s:%d' % (proxy.local_address[0], proxy.local_address[1],
-                                                                     proxy.server_address[0], proxy.server_address[1]),
+                items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
+                    ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
+                    proxy.local_address[0], proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]),
                                               None, enabled=False))
                 last_plugin = len(proxy.custom_configuration['plugin_configuration']) - 1
                 for i, plugin in enumerate(proxy.custom_configuration['plugin_configuration']):
@@ -2212,12 +2263,10 @@ class App:
             # token request then we still send an 'authentication completed' notification here, but in the background
             # we close the connection with a failure message and re-request authorisation next time the client
             # interacts, which may potentially lead to repeated and conflicting (and confusing) notifications - improve?
+            self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
             if len(self.authorisation_requests) > 0:
-                self.notify(APP_NAME,
-                            'Authentication completed for %s. Please authorise an additional account %s from the '
-                            'menu' % (completed_request['username'], self.authorisation_requests[0]['username']))
-            else:
-                self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
+                self.notify(APP_NAME, 'Please authorise your account %s from the menu' % self.authorisation_requests[0][
+                    'username'])
 
     def toggle_start_at_login(self, icon, force_rewrite=False):
         # we reuse this function to force-overwrite the startup file when changing the external auth option, but pystray
@@ -2373,6 +2422,7 @@ class App:
 
                 # noinspection PyBroadException
                 try:
+                    notification_centre.setDelegate_(self.macos_user_notification_centre_delegate)
                     notification_centre.deliverNotification_(user_notification)
                 except Exception:
                     for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
