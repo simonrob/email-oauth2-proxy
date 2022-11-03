@@ -831,7 +831,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
-                          'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
+                          'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_UNKNOWN_CA', APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any([i in value.args[1] for i in ssl_errors]):
                 local_ssl_warning_string = ''
@@ -844,9 +844,9 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                                                     '`local_key_path`: is your client using a secure connection?'
                 Log.error('Caught connection error in', self.info_string(), '-%s' % local_ssl_warning_string,
                           'Error type', error_type, 'with message:', value)
-                if sys.platform in ['darwin', 'win32']:
-                    Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
-                              'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
+                Log.error('If you encounter this error repeatedly, please check that you have correctly configured',
+                          'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14.',
+                          'mkcert is highly recommended for local certificates: https://github.com/FiloSottile/mkcert')
                 self.handle_close()
             else:
                 super().handle_error()
