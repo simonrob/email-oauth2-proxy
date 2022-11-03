@@ -835,14 +835,18 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any([i in value.args[1] for i in ssl_errors]):
                 local_ssl_warning_string = ''
-                if hasattr(self, 'custom_configuration') and self.custom_configuration['local_certificate_path'] and \
-                        self.custom_configuration['local_key_path']:
-                    local_ssl_warning_string = ' you have set `local_certificate_path` and `local_key_path`; ' \
-                                               'is your client using a secure connection? Otherwise,'
+                if hasattr(self, 'custom_configuration'):
+                    local_ssl_warning_string = ' is the server\'s `starttls` setting correct? Current ' \
+                                               'value: %s.' % self.custom_configuration['starttls']
+                    if self.custom_configuration['local_certificate_path'] and \
+                            self.custom_configuration['local_key_path']:
+                        local_ssl_warning_string += ' In addition, you have set `local_certificate_path` and ' \
+                                                    '`local_key_path`: is your client using a secure connection?'
                 Log.error('Caught connection error in', self.info_string(), '-%s' % local_ssl_warning_string,
-                          'please check that you have correctly configured python root certificates; see:',
-                          'https://github.com/simonrob/email-oauth2-proxy/issues/14.', 'Error type', error_type,
-                          'with message:', value)
+                          'Error type', error_type, 'with message:', value)
+                if sys.platform in ['darwin', 'win32']:
+                    Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
+                              'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 self.handle_close()
             else:
                 super().handle_error()
@@ -1623,16 +1627,6 @@ class OAuth2Proxy(asyncore.dispatcher):
 
                 threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map, address),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
-
-            except ssl.SSLError:
-                error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
-                             'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
-                Log.error(error_text)
-                if sys.platform in ['darwin', 'win32']:
-                    Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
-                              'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
-                connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
-                connection.close()
 
             except Exception:
                 connection.close()
