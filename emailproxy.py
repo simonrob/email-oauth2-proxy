@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-02'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-03'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -834,8 +834,14 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                           'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any([i in value.args[1] for i in ssl_errors]):
-                Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
-                          'and `local_key_path`; is your client using a secure connection?', 'Error type', error_type,
+                local_ssl_warning_string = ''
+                if hasattr(self, 'custom_configuration') and self.custom_configuration['local_certificate_path'] and \
+                        self.custom_configuration['local_key_path']:
+                    local_ssl_warning_string = ' you have set `local_certificate_path` and `local_key_path`; ' \
+                                               'is your client using a secure connection? Otherwise,'
+                Log.error('Caught connection error in', self.info_string(), '-%s' % local_ssl_warning_string,
+                          'please check that you have correctly configured python root certificates; see:',
+                          'https://github.com/simonrob/email-oauth2-proxy/issues/14.', 'Error type', error_type,
                           'with message:', value)
                 self.handle_close()
             else:
