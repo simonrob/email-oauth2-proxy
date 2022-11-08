@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-03'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-08'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -428,25 +428,24 @@ class OAuth2Helper:
                     access_token = OAuth2Helper.decrypt(fernet, access_token)
 
             if not access_token:
-                auth_code = None
+                auth_result = None
                 if permission_url:  # O365 CCG and ROPCG flows skip the authorisation step; no permission_url
                     oauth2_flow = 'authorization_code'
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
 
                     # note: get_oauth2_authorisation_code is a blocking call (waiting on user to provide code)
-                    success, auth_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
-                                                                                    redirect_listen_address, username)
+                    success, auth_result = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                      redirect_listen_address, username)
 
                     if not success:
-                        Log.info('Authentication request failed or expired for account', username, '- aborting login')
-                        return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
-                                      'account %s' % (APP_NAME, username)
+                        Log.info('Authorisation result error for', username, '- aborting login.', auth_result)
+                        return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
                     oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_code, oauth2_scope,
+                                                                        client_secret, auth_result, oauth2_scope,
                                                                         oauth2_flow, username, password)
 
                 access_token = response['access_token']
@@ -609,30 +608,38 @@ class OAuth2Helper:
                 else:
                     token_request['expired'] = True
                     REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
-                    return False, None
+                    return False, 'Authorisation request timed out'
 
             if data is QUEUE_SENTINEL:  # app is closing
                 response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
-                return False, None
+                return False, '%s is shutting down' % APP_NAME
 
             elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
                 # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'expired' in data and data['expired']:  # local server auth wsgi request error or failure
-                    return False, None
+                    return False, 'Local server auth request failed'
 
                 elif 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
                 else:
-                    if 'response_url' in data and 'code=' in data['response_url'] and data['response_url'].startswith(
-                            token_request['redirect_uri']):
-                        authorisation_code = OAuth2Helper.oauth2_url_unescape(
-                            data['response_url'].split('code=')[-1].split('&')[0])
-                        if authorisation_code:
-                            return True, authorisation_code
-                    return False, None
+                    if 'response_url' in data and data['response_url'].startswith(token_request['redirect_uri']):
+                        # parse_qsl not parse_qs because we only ever care about non-array values; extra dict formatting
+                        # as IntelliJ has a bug incorrectly detecting parse_qs/l as returning a dict with byte-type keys
+                        response = {str(key): value for key, value in
+                                    urllib.parse.parse_qsl(urllib.parse.urlparse(data['response_url']).query)}
+                        if 'code' in response and response['code']:
+                            authorisation_code = OAuth2Helper.oauth2_url_unescape(response['code'])
+                            if authorisation_code:
+                                return True, authorisation_code
+                            return False, 'No OAuth 2.0 authorisation code returned'
+                        elif 'error' in response:
+                            message = 'OAuth 2.0 authorisation error: %s' % response['error']
+                            message += '; %s' % response['error_description'] if 'error_description' in response else ''
+                            return False, message
+                    return False, 'OAuth 2.0 authorisation response is missing or does not match `redirect_uri`'
 
             else:  # not for this thread - put back into queue
                 response_queue_reference.put(data)
@@ -834,19 +841,18 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_UNKNOWN_CA', APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any([i in value.args[1] for i in ssl_errors]):
-                local_ssl_warning_string = ''
-                if hasattr(self, 'custom_configuration'):
-                    local_ssl_warning_string = ' is the server\'s `starttls` setting correct? Current ' \
-                                               'value: %s.' % self.custom_configuration['starttls']
+                Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
+                if hasattr(self, 'custom_configuration') and hasattr(self, 'proxy_type'):
+                    if self.proxy_type == 'SMTP':
+                        Log.error('Is the server\'s `starttls` setting correct? Current value: %s' %
+                                  self.custom_configuration['starttls'])
                     if self.custom_configuration['local_certificate_path'] and \
                             self.custom_configuration['local_key_path']:
-                        local_ssl_warning_string += ' In addition, you have set `local_certificate_path` and ' \
-                                                    '`local_key_path`: is your client using a secure connection?'
-                Log.error('Caught connection error in', self.info_string(), '-%s' % local_ssl_warning_string,
-                          'Error type', error_type, 'with message:', value)
+                        Log.error('You have set `local_certificate_path` and `local_key_path`: is your client using a',
+                                  'secure connection? github.com/FiloSottile/mkcert is highly recommended for local',
+                                  'self-signed certificates, but these may still need an exception in your client')
                 Log.error('If you encounter this error repeatedly, please check that you have correctly configured',
-                          'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14.',
-                          'mkcert is highly recommended for local certificates: https://github.com/FiloSottile/mkcert')
+                          'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 self.handle_close()
             else:
                 super().handle_error()
@@ -2189,7 +2195,7 @@ class App:
             completed_request = None
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
                 if url.startswith(request['redirect_uri']) and username == request['username']:
-                    Log.info('Successfully authorised request for', request['username'])
+                    Log.info('Returning authorisation request result for', request['username'])
                     RESPONSE_QUEUE.put(
                         {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
                     self.authorisation_requests.remove(request)
