@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-08'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-09'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -639,6 +639,7 @@ class OAuth2Helper:
                             message = 'OAuth 2.0 authorisation error: %s' % response['error']
                             message += '; %s' % response['error_description'] if 'error_description' in response else ''
                             return False, message
+                        return False, 'OAuth 2.0 authorisation response has no code or error message'
                     return False, 'OAuth 2.0 authorisation response is missing or does not match `redirect_uri`'
 
             else:  # not for this thread - put back into queue
@@ -2031,16 +2032,15 @@ class App:
             return font, right, bottom
 
     def create_config_menu(self):
-        items = [pystray.MenuItem('Servers:', None, enabled=False)]
+        items = []
         if len(self.proxies) <= 0:
+            # note that we don't actually allow no servers when loading config, but just in case that behaviour changes
+            items.append(pystray.MenuItem('Servers:', None, enabled=False))
             items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
+            items.append(pystray.Menu.SEPARATOR)
         else:
-            for proxy in self.proxies:
-                items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
-                    ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
-                    proxy.local_address[0], proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]),
-                                              None, enabled=False))
-        items.append(pystray.Menu.SEPARATOR)
+            for server_type in ['IMAP', 'POP', 'SMTP']:
+                items.extend(App.get_config_menu_servers(self.proxies, server_type))
 
         config_accounts = AppConfig.accounts()
         items.append(pystray.MenuItem('Accounts (+ last authenticated activity):', None, enabled=False))
@@ -2055,6 +2055,7 @@ class App:
                 else:
                     items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
             if len(catch_all_accounts) > 0:
+                items.append(pystray.Menu.SEPARATOR)
                 items.append(pystray.MenuItem('Catch-all accounts:', None, enabled=False))
                 for account in catch_all_accounts:
                     items.append(pystray.MenuItem('    %s' % account, None, enabled=False))
@@ -2068,6 +2069,22 @@ class App:
         # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
         items.append(pystray.MenuItem('Reload configuration file', self.linux_restart if sys.platform.startswith(
             'linux') else self.load_and_start_servers))
+        return items
+
+    @staticmethod
+    def get_config_menu_servers(proxies, server_type):
+        items = []
+        heading_appended = False
+        for proxy in filter(lambda p: p.proxy_type == server_type, proxies):
+            if not heading_appended:
+                items.append(pystray.MenuItem('%s servers:' % server_type, None, enabled=False))
+                heading_appended = True
+            items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
+                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
+                proxy.local_address[0], proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]),
+                                          None, enabled=False))
+        if heading_appended:
+            items.append(pystray.Menu.SEPARATOR)
         return items
 
     @staticmethod
