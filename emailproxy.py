@@ -795,6 +795,10 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 super().handle_read_event()
             except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
                 self.ssl_handshake_completed = False
+            except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+                self.handle_close()
+            except ssl.SSLError:
+                self.handle_error()
 
     def handle_write_event(self):
         if not self.ssl_handshake_completed:
@@ -805,6 +809,10 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 super().handle_write_event()
             except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
                 self.ssl_handshake_completed = False
+            except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+                self.handle_close()
+            except ssl.SSLError:
+                self.handle_error()
 
     def recv(self, buffer_size):
         try:
