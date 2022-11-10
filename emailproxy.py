@@ -4,7 +4,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-09'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-11-10'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -523,8 +523,16 @@ class OAuth2Helper:
         return urllib.parse.unquote(text)
 
     @staticmethod
+    def match_redirect_uri(config, received):
+        parsed_config = urllib.parse.urlparse(config)
+        parsed_received = urllib.parse.urlparse(received)
+        # match host:port and path (except trailing slashes), but allow mismatch of the scheme (i.e., http/https) (#96)
+        return parsed_config.netloc == parsed_received.netloc and parsed_config.path.rstrip(
+            '/') == parsed_received.path.rstrip('/')
+
+    @staticmethod
     def start_redirection_receiver_server(token_request):
-        """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
+        """Starts a local WSGI web server to receive OAuth responses"""
         redirect_listen_type = 'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri'
         parsed_uri = urllib.parse.urlparse(token_request[redirect_listen_type])
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
@@ -625,7 +633,8 @@ class OAuth2Helper:
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
                 else:
-                    if 'response_url' in data and data['response_url'].startswith(token_request['redirect_uri']):
+                    if 'response_url' in data and OAuth2Helper.match_redirect_uri(token_request['redirect_uri'],
+                                                                                  data['response_url']):
                         # parse_qsl not parse_qs because we only ever care about non-array values; extra dict formatting
                         # as IntelliJ has a bug incorrectly detecting parse_qs/l as returning a dict with byte-type keys
                         response = {str(key): value for key, value in
@@ -2219,7 +2228,7 @@ class App:
             # respond to both the original request and any duplicates in the list
             completed_request = None
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                if url.startswith(request['redirect_uri']) and username == request['username']:
+                if OAuth2Helper.match_redirect_uri(request['redirect_uri'], url) and request['username'] == username:
                     Log.info('Returning authorisation request result for', request['username'])
                     RESPONSE_QUEUE.put(
                         {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
