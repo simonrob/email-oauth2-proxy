@@ -85,6 +85,8 @@ A similar issue may occur on Windows with the [pythonnet](https://github.com/pyt
 
 If you are using the proxy in a non-GUI environment it is also possible to skip installation of dependencies that apply only to the interactive version. To do this, install the script's requirements via `python -m pip install -r requirements-no-gui.txt`, and pass the [`--no-gui`](#optional-arguments-and-configuration) argument when starting the proxy. Please note that the proxy was designed as a GUI-based tool from the outset due to the inherently interactive nature of OAuth 2.0 authorisation, and there are limitations to its ability to support fully no-GUI operation. See the [optional arguments and configuration](#optional-arguments-and-configuration) section of this file for further details.
 
+The proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`. If using the GUI version, you may need to add `--hidden-import timeago.locales.en` until [this timeago issue](https://github.com/hustcc/timeago/issues/40) is resolved.
+
 Python 3.6 or later is required to run the proxy. The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with Python 2.7, but with a limited feature set, and only very occasional maintenance. See [issue 38](https://github.com/simonrob/email-oauth2-proxy/issues/38) for further discussion.
 
 ### Known issues

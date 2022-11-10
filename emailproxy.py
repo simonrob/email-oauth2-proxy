@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """A simple IMAP/POP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
@@ -104,7 +106,8 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
 
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
-CONFIG_FILE_PATH = '%s/%s.config' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME)
+script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
+CONFIG_FILE_PATH = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
