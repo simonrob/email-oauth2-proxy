@@ -66,6 +66,19 @@ On Windows the auto-start functionality is achieved via a shortcut in your user 
 
 On Linux this feature assumes that your system supports XDG Autostart. A Desktop Entry file `ac.robinson.email-oauth2-proxy.desktop` will be created in `~/.config/autostart/`. Use the proxy's menu option (or manually remove this file) to prevent it starting when you log in. It is also possible to run the proxy as a service (e.g., via `systemctl`) – see the `--no-gui` mode option above for more details.
 
+### Docker
+
+Assuming you already have a valid `emailproxy.config` file and now wish to run on a server by using Docker:
+
+1. Add `local_address = 0.0.0.0` to each listener section of the config file. Otherwise, emailproxy will listen to the Docker container's internal network interface and port publishing will not work.
+
+2. Place the config file somewhere on the host where Docker runs
+
+3. Run `docker build -t emailproxy:latest .` to build the image
+
+4. (Optionally) Push the image to a container registry, e.g. AWS ECR, by changing the tag used above and running `docker push myregistry.io/myuser/emailproxy:latest`
+
+5. Run `docker run --name emailproxy -d -p 1993:1993 -v /path/to/emailproxy-config:/etc/emailproxy.config emailproxy` to start the container (in this case, with only an IMAP listener at port 1993). Add further `-p` blocks as needed.
 
 ## Troubleshooting
 If you encounter problems using the proxy, enabling `Debug mode` from the menu or passing `--debug` as a script argument will print all client–proxy–server communication to your system log to help identify the issue. This will include all commands to and responses from the server (and also as a result the content of your email messages).
