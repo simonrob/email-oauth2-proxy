@@ -955,7 +955,13 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                                       b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
 
                 Log.debug(self.info_string(), '-->', log_data)
-                self.process_data(line)
+                try:
+                    self.process_data(line)
+                except AttributeError:  # AttributeError("'NoneType' object has no attribute 'username'"), etc
+                    Log.info(self.info_string(),
+                             'Caught client exception in subclass; server connection closed before data could be sent')
+                    self.close()
+                    break
 
     def process_data(self, byte_data, censor_server_log=False):
         try:
@@ -1349,7 +1355,13 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
             for line in complete_lines:
                 Log.debug(self.info_string(), '    <--', line)  # (log before edits)
-                self.process_data(line)
+                try:
+                    self.process_data(line)
+                except AttributeError:  # AttributeError("'NoneType' object has no attribute 'connection_state'"), etc
+                    Log.info(self.info_string(),
+                             'Caught server exception in subclass; client connection closed before data could be sent')
+                    self.close()
+                    break
 
     def process_data(self, byte_data):
         try:
@@ -1367,9 +1379,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
+                error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
                 error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # TimeoutError 60 = 'Operation timed out'; OSError 0 = 'Error' (typically network failure);
-            # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
+            # TimeoutError 60 = 'Operation timed out'; # ConnectionResetError 54 = 'Connection reset by peer'; OSError
+            # 0 = 'Error' (typically network failure); OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.handle_close()
