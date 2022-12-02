@@ -787,16 +787,16 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # noinspection PyUnresolvedReferences
             self.socket.do_handshake()
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-            return
+            pass
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
-            return
         else:
             Log.debug(self.info_string(), '<-> [ TLS handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
 
     def handle_read_event(self):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
         else:
@@ -809,10 +809,9 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 self.ssl_handshake_completed = False
             except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
                 self.handle_close()
-            except ssl.SSLError:
-                self.handle_error()
 
     def handle_write_event(self):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
         else:
@@ -823,34 +822,26 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 self.ssl_handshake_completed = False
             except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
                 self.handle_close()
-            except ssl.SSLError:
-                self.handle_error()
 
     def recv(self, buffer_size):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().recv(buffer_size)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
             self.ssl_handshake_completed = False
-            return b''
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
-            return b''
-        except ssl.SSLError:
-            self.handle_error()
-            return b''
+        return b''
 
     def send(self, byte_data):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
             self.ssl_handshake_completed = False
-            return 0
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
-            return 0
-        except ssl.SSLError:
-            self.handle_error()
-            return 0
+        return 0
 
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
@@ -859,7 +850,8 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
-                          'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_UNKNOWN_CA', APP_PACKAGE]
+                          'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
+                          APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any([i in value.args[1] for i in ssl_errors]):
                 Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
