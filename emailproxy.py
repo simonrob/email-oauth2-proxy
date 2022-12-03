@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-10'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-03'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -60,7 +60,7 @@ if sys.platform == 'darwin':
 
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-no_gui_parser = argparse.ArgumentParser()
+no_gui_parser = argparse.ArgumentParser(add_help=False)
 no_gui_parser.add_argument('--no-gui', action='store_true')
 if not no_gui_parser.parse_known_args()[0].no_gui:
     import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
@@ -1881,12 +1881,16 @@ class App:
     def __init__(self):
         global CONFIG_FILE_PATH
         parser = argparse.ArgumentParser(description=APP_NAME)
-        parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
-                                                                         'rather than this script\'s own popup window')
         parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
                                                                   'account authorisation requests will fail unless a '
                                                                   'pre-authorised configuration file is used, or you '
-                                                                  'enable `--local-server-auth` and monitor output)')
+                                                                  'enable `--external-auth` or `--local-server-auth` '
+                                                                  'and monitor log output)')
+        parser.add_argument('--external-auth', action='store_true', help='handle authorisation externally: rather than '
+                                                                         'intercepting `redirect_uri`, the proxy will '
+                                                                         'wait for you to paste the result into either '
+                                                                         'its popup window (GUI-mode) or the terminal '
+                                                                         '(no-GUI mode; requires `prompt_toolkit`)')
         parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
                                                                              'URLs to the log and starting a local web '
                                                                              'server on demand to receive responses')
@@ -2088,7 +2092,7 @@ class App:
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
-        items.append(pystray.MenuItem('Edit configuration file...', self.edit_config))
+        items.append(pystray.MenuItem('Edit configuration file...', lambda: self.system_open(CONFIG_FILE_PATH)))
 
         # asyncore sockets on Linux have a shutdown delay (the time.sleep() call in asyncore.poll), which means we can't
         # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
@@ -2124,16 +2128,16 @@ class App:
         return '    %s (%s)' % (account, formatted_sync_time)
 
     @staticmethod
-    def edit_config():
+    def system_open(path):
         AppConfig.save()  # so we are always editing the most recent version of the file
         if sys.platform == 'darwin':
-            result = os.system('open %s' % CONFIG_FILE_PATH)
+            result = os.system('open "%s"' % path)
             if result != 0:  # no default editor found for this file type; open as a text file
-                os.system('open -t %s' % CONFIG_FILE_PATH)
+                os.system('open -t "%s"' % path)
         elif sys.platform == 'win32':
-            os.startfile(CONFIG_FILE_PATH)
+            os.startfile(path)
         elif sys.platform.startswith('linux'):
-            os.system('xdg-open %s' % CONFIG_FILE_PATH)
+            os.system('xdg-open "%s"' % path)
         else:
             pass  # nothing we can do
 
@@ -2236,7 +2240,7 @@ class App:
             # respond to both the original request and any duplicates in the list
             completed_request = None
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                if OAuth2Helper.match_redirect_uri(request['redirect_uri'], url) and request['username'] == username:
+                if request['username'] == username and OAuth2Helper.match_redirect_uri(request['redirect_uri'], url):
                     Log.info('Returning authorisation request result for', request['username'])
                     RESPONSE_QUEUE.put(
                         {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
@@ -2515,6 +2519,67 @@ class App:
         threading.Thread(target=App.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
         return True
 
+    @staticmethod
+    def terminal_external_auth_input(prompt_session, prompt_stop_event, data):
+        with contextlib.suppress(Exception):  # cancel any other prompts; thrown if there are none to cancel
+            prompt_toolkit.application.current.get_app().exit(exception=EOFError)
+            time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
+
+        with prompt_toolkit.patch_stdout.patch_stdout():
+            open_time = 0
+            response_url = None
+            Log.info('Please visit the following URL to authenticate account %s: %s' % (
+                data['username'], data['permission_url']))
+            prompt_text = 'Press enter or copy+paste to visit the following URL and authenticate account %s: %s. ' \
+                          'Next, paste here the full post-authentication URL from the browser\'s address bar - it ' \
+                          'should start with %s: ' % (data['username'], data['permission_url'], data['redirect_uri'])
+            while True:
+                try:
+                    response_url = prompt_session.prompt('\n%s' % prompt_text)
+                except (KeyboardInterrupt, EOFError):
+                    break
+                if not response_url:
+                    if time.time() - open_time > 1:  # don't open many windows on key repeats
+                        App.system_open(data['permission_url'])
+                        open_time = time.time()
+                else:
+                    break
+
+            prompt_stop_event.set()  # cancel the timeout thread
+
+            result = {'permission_url': data['permission_url'], 'username': data['username']}
+            if response_url:
+                Log.debug('Terminal auth mode: returning response', response_url)
+                result['response_url'] = response_url
+            else:
+                Log.debug('Terminal auth mode: no response provided; cancelling authorisation request')
+                result['expired'] = True
+            RESPONSE_QUEUE.put(result)
+
+    @staticmethod
+    def terminal_external_auth_timeout(prompt_session, prompt_stop_event):
+        prompt_time = 0
+        while prompt_time < AUTHENTICATION_TIMEOUT and not prompt_stop_event.is_set():
+            time.sleep(1)
+            prompt_time += 1
+
+        if not prompt_stop_event.is_set():
+            with contextlib.suppress(Exception):  # thrown if the prompt session has already exited
+                prompt_session.app.exit(exception=EOFError)
+                time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
+
+    def terminal_external_auth_prompt(self, data):
+        # prompt_toolkit is a recent addition that is not essential - importing here so that it is not a core dependency
+        # noinspection PyGlobalUndefined
+        global prompt_toolkit
+        import prompt_toolkit
+        prompt_session = prompt_toolkit.PromptSession()
+        prompt_stop_event = threading.Event()
+        threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
+                         daemon=True).start()
+        threading.Thread(target=self.terminal_external_auth_timeout, args=(prompt_session, prompt_stop_event),
+                         daemon=True).start()
+
     def post_create(self, icon):
         if EXITING:
             return  # to handle launch in pystray 'dummy' mode without --no-gui option (partial initialisation failure)
@@ -2533,12 +2598,20 @@ class App:
             else:
                 if not data['expired']:
                     Log.info('Authorisation request received for', data['username'],
-                             '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
+                             '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
+                             self.args.external_auth else '(interactive mode)')
                     if self.args.local_server_auth:
-                        data['local_server_auth'] = True
-                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
                         self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
                                     data['username'])
+                        data['local_server_auth'] = True
+                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                    elif self.args.external_auth and self.args.no_gui:
+                        if sys.stdin.isatty():
+                            self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
+                                                  '%s' % data['username'])
+                            self.terminal_external_auth_prompt(data)
+                        else:
+                            Log.error('Not running interactively; unable to handle no-GUI external auth request')
                     elif icon:
                         self.authorisation_requests.append(data)
                         icon.update_menu()  # force refresh the menu
