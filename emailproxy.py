@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-10'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-05'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -172,19 +172,19 @@ EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copy
     <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a>
     <a id="copy" onclick="copyLink('%s')" style="margin-left:0.5em;margin-top:0.1em;font-weight:bold;font-size:150%%;
     text-decoration:none;cursor:pointer;float:right" title="Copy link">⧉</a></p>
-    <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the 
+    <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the
     resulting URL from the browser's address bar using the box at the bottom of this page to allow the %s script to
     transparently handle login requests on your behalf in future.</p>
-    <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after 
-    successfully logging in, but the final URL is the only important part, and as long as this begins with the  
+    <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after
+    successfully logging in, but the final URL is the only important part, and as long as this begins with the
     correct redirection URI and contains a valid authorisation code your email client's request will succeed.''' + (
-    ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p> 
+    ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p>
     <p style="margin-top:2em">According to your proxy configuration file, the expected URL will be of the form:</p>
     <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
-    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); 
+    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value);
     document.auth.submit.value='Submitting...'; document.auth.submit.disabled=true; return false">
-    <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL: 
-    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit" 
+    <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL:
+    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit"
     id="submit" value="Submit"></div></form></body></html>'''
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
@@ -403,7 +403,7 @@ class AppConfig:
                     return AppConfig._PARSER
 
             config_to_write = store_and_clear_aws_secrets()
-            with open(CONFIG_FILE_PATH, 'w') as config_output:
+            with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
                 config_to_write.write(config_output)
 
 
@@ -574,9 +574,9 @@ class OAuth2Helper:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials for %s:' % username,
                          Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
-            else:
-                Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
-                return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
+
+            Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+            return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are before
@@ -622,7 +622,7 @@ class OAuth2Helper:
             parsed_uri.hostname, parsed_port))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
-            def log_message(self, format_string, *args):
+            def log_message(self, _format_string, *args):
                 Log.debug('Local server auth mode (%s:%d): received authentication response' % (
                     parsed_uri.hostname, parsed_port), *args)
 
@@ -675,9 +675,7 @@ class OAuth2Helper:
         'Sign in with another account' option)"""
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
                   'access_type': 'offline', 'login_hint': username}
-        param_pairs = []
-        for param in params:
-            param_pairs.append('%s=%s' % (param, OAuth2Helper.oauth2_url_escape(params[param])))
+        param_pairs = ['%s=%s' % (param, OAuth2Helper.oauth2_url_escape(value)) for param, value in params.items()]
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
@@ -695,22 +693,22 @@ class OAuth2Helper:
                 wait_time += 1
                 if wait_time < AUTHENTICATION_TIMEOUT:
                     continue
-                else:
-                    token_request['expired'] = True
-                    REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
-                    return False, 'Authorisation request timed out'
+
+                token_request['expired'] = True
+                REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
+                return False, 'Authorisation request timed out'
 
             if data is QUEUE_SENTINEL:  # app is closing
                 response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, '%s is shutting down' % APP_NAME
 
-            elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
+            if data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
                 # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'expired' in data and data['expired']:  # local server auth wsgi request error or failure
                     return False, 'Local server auth request failed'
 
-                elif 'local_server_auth' in data:
+                if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
@@ -726,7 +724,7 @@ class OAuth2Helper:
                             if authorisation_code:
                                 return True, authorisation_code
                             return False, 'No OAuth 2.0 authorisation code returned'
-                        elif 'error' in response:
+                        if 'error' in response:
                             message = 'OAuth 2.0 authorisation error: %s' % response['error']
                             message += '; %s' % response['error_description'] if 'error_description' in response else ''
                             return False, message
@@ -780,7 +778,7 @@ class OAuth2Helper:
             e.message = json.loads(e.read())
             Log.debug('Error refreshing access token - received invalid response:', e.message)
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken(e.code, APP_PACKAGE)
+                raise InvalidToken(e.code, APP_PACKAGE) from e
             raise e
 
     @staticmethod
@@ -932,7 +930,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
                           APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
-                    any([i in value.args[1] for i in ssl_errors]):
+                    any(i in value.args[1] for i in ssl_errors):
                 Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
                 if hasattr(self, 'custom_configuration') and hasattr(self, 'proxy_type'):
                     if self.proxy_type == 'SMTP':
@@ -1796,9 +1794,9 @@ class OAuth2Proxy(asyncore.dispatcher):
     def bye_message(self, error_text=None):
         if self.proxy_type == 'IMAP':
             return '* BYE %s' % ('Server shutting down' if error_text is None else error_text)
-        elif self.proxy_type == 'POP':
+        if self.proxy_type == 'POP':
             return '+OK Server signing off' if error_text is None else ('-ERR %s' % error_text)
-        elif self.proxy_type == 'SMTP':
+        if self.proxy_type == 'SMTP':
             return '221 %s' % ('2.0.0 Service closing transmission channel' if error_text is None else error_text)
         return ''
 
@@ -1849,34 +1847,42 @@ class OAuth2Proxy(asyncore.dispatcher):
 
 
 if sys.platform == 'darwin':
-    # noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming,PyUnusedLocal
+    # noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming
     class ProvisionalNavigationBrowserDelegate:
         """Used to give pywebview the ability to navigate to unresolved local URLs (only required for macOS)"""
 
         # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
         # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
-        def webView_didStartProvisionalNavigation_(self, web_view, nav):
+        def webView_didStartProvisionalNavigation_(self, web_view, _nav):
             # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
             browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
-        def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, nav):
+        def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, _nav):
             # called when the server initiates a local redirect
             browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
+        def performKeyEquivalent_(self, event):
+            # modify the popup's default cmd+q behaviour to close the window rather than inadvertently exiting the proxy
+            if event.type() == AppKit.NSKeyDown and event.modifierFlags() & AppKit.NSCommandKeyMask and \
+                    event.keyCode() == 12 and self.window().firstResponder():
+                self.window().performClose_(event)
+                return True
+            return webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalentBase_(self, event)
+
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences
     class UserNotificationCentreDelegate(AppKit.NSObject):
-        # noinspection PyPep8Naming,PyUnusedLocal,PyMethodMayBeStatic
-        def userNotificationCenter_shouldPresentNotification_(self, notification_centre, notification):
+        # noinspection PyPep8Naming,PyMethodMayBeStatic
+        def userNotificationCenter_shouldPresentNotification_(self, _notification_centre, _notification):
             # the notification centre often decides that notifications shouldn't be presented; we want to override that
             return AppKit.YES
 
-        # noinspection PyPep8Naming,PyUnusedLocal
-        def userNotificationCenter_didActivateNotification_(self, notification_centre, notification):
+        # noinspection PyPep8Naming
+        def userNotificationCenter_didActivateNotification_(self, _notification_centre, notification):
             notification_text = notification.informativeText()
             if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
                 self._click(notification_text.split('account ')[-1].split(' ')[0])
@@ -2133,9 +2139,9 @@ class App:
                 pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
             font_width, font_height = font.getsize(text)
             return font, font_width, font_height
-        else:
-            left, top, right, bottom = font.getbbox(text)
-            return font, right, bottom
+
+        _left, _top, right, bottom = font.getbbox(text)
+        return font, right, bottom
 
     def create_config_menu(self):
         items = []
@@ -2165,7 +2171,7 @@ class App:
                 items.append(pystray.MenuItem('Catch-all accounts:', None, enabled=False))
                 for account in catch_all_accounts:
                     items.append(pystray.MenuItem('    %s' % account, None, enabled=False))
-            if not sys.platform == 'darwin':
+            if sys.platform != 'darwin':
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
@@ -2280,7 +2286,7 @@ class App:
             authorisation_window.events.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
-        if not sys.platform == 'darwin':
+        if sys.platform != 'darwin':
             return
 
         # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
@@ -2292,6 +2298,10 @@ class App:
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
                                                                      'Navigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
+                webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
+                ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
@@ -2301,8 +2311,7 @@ class App:
             data = WEBVIEW_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
-            else:
-                self.create_authorisation_window(data)
+            self.create_authorisation_window(data)
 
     def authorisation_window_loaded(self):
         for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
@@ -2359,7 +2368,7 @@ class App:
                 }
             else:
                 # just toggle the disabled value rather than loading/unloading, so we don't need to restart the proxy
-                with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                with open(PLIST_FILE_PATH, mode='rb', encoding='utf-8') as plist_file:
                     plist = plistlib.load(plist_file)
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
@@ -2367,7 +2376,7 @@ class App:
             plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
-            with open(PLIST_FILE_PATH, 'wb') as plist_file:
+            with open(PLIST_FILE_PATH, mode='wb', encoding='utf-8') as plist_file:
                 plistlib.dump(plist, plist_file)
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
@@ -2388,7 +2397,7 @@ class App:
                 windows_start_command = 'start %s' % ' '.join(start_command)
 
                 os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
-                with open(CMD_FILE_PATH, 'w') as cmd_file:
+                with open(CMD_FILE_PATH, mode='w', encoding='utf-8') as cmd_file:
                     cmd_file.write(windows_start_command)
 
                 # on Windows we don't have a service to run, but it is still useful to exit the terminal instance
@@ -2408,7 +2417,7 @@ class App:
                 }
 
                 os.makedirs(AUTOSTART_FILE_PATH.parent, exist_ok=True)
-                with open(AUTOSTART_FILE_PATH, 'w') as desktop_file:
+                with open(AUTOSTART_FILE_PATH, mode='w', encoding='utf-8') as desktop_file:
                     desktop_file.write('[Desktop Entry]\n')
                     for key, value in xdg_autostart.items():
                         desktop_file.write('%s=%s\n' % (key, value))
@@ -2470,7 +2479,7 @@ class App:
         if sys.platform == 'darwin':
             if PLIST_FILE_PATH.exists():
                 if App.macos_launchctl('list'):
-                    with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                    with open(PLIST_FILE_PATH, mode='rb', encoding='utf-8') as plist_file:
                         plist = plistlib.load(plist_file)
                     if 'Disabled' in plist:
                         return not plist['Disabled']
@@ -2613,24 +2622,23 @@ class App:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
+            if not data['expired']:
+                Log.info('Authorisation request received for', data['username'],
+                         '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
+                if self.args.local_server_auth:
+                    data['local_server_auth'] = True
+                    RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                    self.notify(APP_NAME,
+                                'Local server auth mode: please authorise a request for account %s' % data['username'])
+                elif icon:
+                    self.authorisation_requests.append(data)
+                    icon.update_menu()  # force refresh the menu
+                    self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
             else:
-                if not data['expired']:
-                    Log.info('Authorisation request received for', data['username'],
-                             '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
-                    if self.args.local_server_auth:
-                        data['local_server_auth'] = True
-                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
-                        self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
-                                    data['username'])
-                    elif icon:
-                        self.authorisation_requests.append(data)
-                        icon.update_menu()  # force refresh the menu
-                        self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
-                else:
-                    for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                        if request['permission_url'] == data['permission_url']:
-                            self.authorisation_requests.remove(request)
-                            break  # we could have multiple simultaneous requests, some not yet expired
+                for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
+                    if request['permission_url'] == data['permission_url']:
+                        self.authorisation_requests.remove(request)
+                        break  # we could have multiple simultaneous requests, some not yet expired
 
     @staticmethod
     def run_proxy():
