@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-10'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-05'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -1786,6 +1786,14 @@ if sys.platform == 'darwin':
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
+        def performKeyEquivalent_(self, event):
+            # modify the popup's default cmd+q behaviour to close the window rather than inadvertently exiting the proxy
+            if event.type() == AppKit.NSKeyDown and event.modifierFlags() & AppKit.NSCommandKeyMask and \
+                    event.keyCode() == 12 and self.window().firstResponder():
+                self.window().performClose_(event)
+                return True
+            return webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalentBase_(self, event)
+
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences
     class UserNotificationCentreDelegate(AppKit.NSObject):
@@ -2209,6 +2217,10 @@ class App:
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
                                                                      'Navigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
+                webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
+                ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
