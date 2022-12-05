@@ -317,7 +317,7 @@ class AppConfig:
                     # Update local config
                     for account in accounts_using_aws_secret:
                         for key in ['token_salt','access_token','access_token_expiry','refresh_token']:
-                            AppConfig._PARSER[account][key] = aws_secrets[AppConfig._PARSER[account]['aws_secret']][account][key]
+                            AppConfig._PARSER.set(account, key, aws_secrets[AppConfig._PARSER[account]['aws_secret']][account][key])
 
         fetch_aws_secrets()
         AppConfig._LOADED = True
@@ -371,12 +371,18 @@ class AppConfig:
                 if accounts_using_aws_secret and 'boto3' in sys.modules:
                     TOKEN_KEYS = ['token_salt','access_token','access_token_expiry','refresh_token']
 
+                    # Create deep copy of config (to write tokens to AWS Secrets Manager, not to local config file)
+                    appconfig_to_save = configparser.ConfigParser()
+                    appconfig_to_save.read_dict(AppConfig._PARSER)
+
                     # Create dict of AWS Secret IDs across all accounts
-                    aws_secrets = dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in accounts_using_aws_secret], {})
+                    aws_secrets = dict.fromkeys([appconfig_to_save[account]['aws_secret'] for account in accounts_using_aws_secret], {})
 
                     # Populate dict with OAuth tokens from each account
                     for account in accounts_using_aws_secret:
-                        aws_secrets[AppConfig._PARSER[account]['aws_secret']][account] = { key : AppConfig._PARSER[account][key] for key in TOKEN_KEYS }
+                        aws_secrets[appconfig_to_save[account]['aws_secret']][account] = { key : appconfig_to_save[account][key] for key in TOKEN_KEYS }
+                        for key in TOKEN_KEYS:
+                            appconfig_to_save.remove_option(account, key)
 
                     # Update AWS Secrets
                     aws_client = boto3.client('secretsmanager')
@@ -391,12 +397,8 @@ class AppConfig:
                             # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
                             raise e
 
-                    # Create a copy of config, removing OAuth tokens stored remotely
-                    appconfig_without_aws_secrets = AppConfig._PARSER
-                    for account in accounts_using_aws_secret:
-                        for key in TOKEN_KEYS:
-                            appconfig_without_aws_secrets.remove_option(account, key)
-                    return appconfig_without_aws_secrets
+                    # Return copy of config without OAuth tokens to write to disk
+                    return appconfig_to_save
                 else:
                     return AppConfig._PARSER
 
