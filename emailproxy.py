@@ -91,6 +91,16 @@ else:
             pass
 del no_gui_parser
 
+# by default the proxy stores the OAuth 2.0 tokens in a local config file, but it can optionally store them
+# remotely in AWS Secrets Manager. import the dependency only if this option is specified.
+aws_secrets_parser = argparse.ArgumentParser()
+aws_secrets_parser.add_argument('--aws-secrets', action='store_true')
+
+if aws_secrets_parser.parse_known_args()[0].aws_secrets:
+    import boto3
+    from botocore.exceptions import ClientError
+del aws_secrets_parser
+
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
 APP_PACKAGE = 'ac.robinson.email-oauth2-proxy'
@@ -279,6 +289,37 @@ class AppConfig:
             AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
+
+        def fetch_aws_secrets():
+            # TODO: handle scenario where aws secret has not yet been created
+            accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
+            if accounts_using_aws_secret:
+                if 'boto3' not in sys.modules:
+                    Log.info('Warning: client configuration for some accounts includes an aws_secret'
+                             ' parameter, but the app has been loaded without the --aws-secrets option.'
+                             ' Therefore tokens will be saved to the local configuration file rather than the'
+                             ' remote AWS Secrets Manager.')
+                else:
+                    # Create dict of AWS Secret IDs across all accounts
+                    aws_secrets = dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in accounts_using_aws_secret], {})
+        
+                    # Download AWS Secrets
+                    aws_client = boto3.client('secretsmanager')
+                    for secret_id in aws_secrets:
+                        try:
+                            get_secret_value_response = aws_client.get_secret_value(SecretId=secret_id)
+                        except ClientError as e:
+                            # For a list of exceptions thrown, see
+                            # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+                            raise e
+                        aws_secrets[secret_id] = json.loads(get_secret_value_response['SecretString'])
+
+                    # Update local config
+                    for account in accounts_using_aws_secret:
+                        for key in ['token_salt','access_token','access_token_expiry','refresh_token']:
+                            AppConfig._PARSER[account][key] = aws_secrets[AppConfig._PARSER[account]['aws_secret']][account][key]
+
+        fetch_aws_secrets()
         AppConfig._LOADED = True
 
     @staticmethod
@@ -324,8 +365,44 @@ class AppConfig:
     @staticmethod
     def save():
         if AppConfig._LOADED:
+            def store_and_clear_aws_secrets():
+                # TODO: handle scenario where aws secret has not yet been created
+                accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
+                if accounts_using_aws_secret and 'boto3' in sys.modules:
+                    TOKEN_KEYS = ['token_salt','access_token','access_token_expiry','refresh_token']
+
+                    # Create dict of AWS Secret IDs across all accounts
+                    aws_secrets = dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in accounts_using_aws_secret], {})
+
+                    # Populate dict with OAuth tokens from each account
+                    for account in accounts_using_aws_secret:
+                        aws_secrets[AppConfig._PARSER[account]['aws_secret']][account] = { key : AppConfig._PARSER[account][key] for key in TOKEN_KEYS }
+
+                    # Update AWS Secrets
+                    aws_client = boto3.client('secretsmanager')
+                    for secret_id in aws_secrets:
+                        try:
+                            response = aws_client.put_secret_value(
+                                SecretId=secret_id,
+                                SecretString=json.dumps(aws_secrets[secret_id]),
+                            )
+                        except ClientError as e:
+                            # For a list of exceptions thrown, see
+                            # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+                            raise e
+
+                    # Create a copy of config, removing OAuth tokens stored remotely
+                    appconfig_without_aws_secrets = AppConfig._PARSER
+                    for account in accounts_using_aws_secret:
+                        for key in TOKEN_KEYS:
+                            appconfig_without_aws_secrets.remove_option(account, key)
+                    return appconfig_without_aws_secrets
+                else:
+                    return AppConfig._PARSER
+
+            config_to_write = store_and_clear_aws_secrets()
             with open(CONFIG_FILE_PATH, 'w') as config_output:
-                AppConfig._PARSER.write(config_output)
+                config_to_write.write(config_output)
 
 
 class OAuth2Helper:
@@ -1893,6 +1970,8 @@ class App:
         parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
                                                                 '(optional; default: `%s` in the same directory as the '
                                                                 'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
+        parser.add_argument('--aws-secrets', action='store_true', help='store OAuth 2.0 tokens remotely in AWS Secrets Manager'
+                                                                       'rather than in local configuration file')
         parser.add_argument('--log-file', default=None, help='the full path to a file where log output should be sent '
                                                              '(optional; default behaviour varies by platform, but see '
                                                              'Log.initialise() for details)')
@@ -2357,6 +2436,8 @@ class App:
             script_command.append('--local-server-auth')
         if self.args.config_file:
             script_command.extend(['--config-file', CONFIG_FILE_PATH])
+        if self.args.aws_secrets:
+            script_command.extend(['--aws-secrets', CONFIG_FILE_PATH])
 
         return script_command
 
