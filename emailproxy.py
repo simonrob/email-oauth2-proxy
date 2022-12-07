@@ -1914,7 +1914,6 @@ class App:
 
         if self.args.config_file:
             CONFIG_FILE_PATH = self.args.config_file
-        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
 
         self.proxies = []
         self.authorisation_requests = []
@@ -1978,17 +1977,22 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-            # on macOS, catching SIGINT/SIGTERM/SIGQUIT while in pystray's main loop needs a Mach signal handler
-            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda signum: self.exit(self.icon))
-            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
-            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda signum: self.exit(self.icon))
+            # on macOS, catching SIGINT/SIGTERM/SIGQUIT/SIGHUP while in pystray's main loop needs a Mach signal handler
+            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGHUP, lambda _signum: self.load_and_start_servers(self.icon))
 
         else:
             # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
-            signal.signal(signal.SIGINT, lambda signum, frame: self.exit(self.icon))
-            signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
-            if hasattr(signal, 'SIGQUIT'):  # SIGQUIT does not exist on all platforms (e.g., Windows)
-                signal.signal(signal.SIGQUIT, lambda signum, frame: self.exit(self.icon))
+            signal.signal(signal.SIGINT, lambda _signum, _frame: self.exit(self.icon))
+            signal.signal(signal.SIGTERM, lambda _signum, _frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGQUIT'):  # not all signals exist on all platforms (e.g., Windows)
+                signal.signal(signal.SIGQUIT, lambda _signum, _frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGHUP'):
+                # allow config file reloading without having to stop/start - e.g.: pkill -SIGHUP -f emailproxy.py
+                # (we don't use linux_restart() here as it exits then uses nohup to restart, which may not be desirable)
+                signal.signal(signal.SIGHUP, lambda _signum, _frame: self.load_and_start_servers(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2300,7 +2304,7 @@ class App:
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
             if not self.macos_launchctl('list'):
-                self.exit(icon, restart_callback=self.macos_launchctl('load'))
+                self.exit(icon, restart_callback=lambda: self.macos_launchctl('load'))
             elif recreate_login_file:
                 # Launch Agents need to be unloaded and reloaded to reflect changes in their plist file, but we can't
                 # do this ourselves because 1) unloading exits the agent; and, 2) we can't launch a completely separate
@@ -2460,6 +2464,7 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
+        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
         config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
@@ -2522,6 +2527,7 @@ class App:
             icon.update_menu()  # force refresh the menu to show running proxy servers
 
         threading.Thread(target=App.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         return True
 
     def post_create(self, icon):
@@ -2534,7 +2540,6 @@ class App:
         if not self.load_and_start_servers(icon, reload=False):
             return
 
-        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
