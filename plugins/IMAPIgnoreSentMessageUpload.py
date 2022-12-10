@@ -10,19 +10,20 @@ import plugins.BasePlugin
 
 IMAP_TAG_PATTERN = plugins.BasePlugin.IMAP.TAG_PATTERN
 IMAP_COMMAND_MATCHER = re.compile(IMAP_TAG_PATTERN.encode('utf-8') + b' (?P<command>APPEND) ', flags=re.IGNORECASE)
-IMAP_APPEND_REQUEST_MATCHER = re.compile(IMAP_TAG_PATTERN + r' (?P<command>APPEND) "(?P<mailbox>.+)" (?P<flags>.+)'
-                                                            r'{(?P<length>\d+)}\r\n', flags=re.IGNORECASE)
+IMAP_APPEND_REQUEST_MATCHER = re.compile(IMAP_TAG_PATTERN.encode('utf-8') + b' (?P<command>APPEND) "(?P<mailbox>.+)" '
+                                                                            b'(?P<flags>.+){(?P<length>\\d+)}\r\n',
+                                         flags=re.IGNORECASE)
 
 
 class IMAPIgnoreSentMessageUpload(plugins.BasePlugin.BasePlugin):
     def __init__(self, target_mailboxes=None):
         super().__init__()
-        self.target_mailboxes = target_mailboxes
+        self.target_mailboxes = [m.encode('utf-8') for m in target_mailboxes]
         self.appending, self.append_tag, self.expected_message_length, self.received_message_length = self.reset()
 
     def reset(self):
         self.appending = False
-        self.append_tag = ''
+        self.append_tag = b''
         self.expected_message_length = 0
         self.received_message_length = 0
         return self.appending, self.append_tag, self.expected_message_length, self.received_message_length
@@ -32,11 +33,10 @@ class IMAPIgnoreSentMessageUpload(plugins.BasePlugin.BasePlugin):
             # when receiving an APPEND command that matches our target mailbox, instruct the client to go ahead
             # with the message upload (and ignore received data), but don't actually send anything to the server
             if IMAP_COMMAND_MATCHER.match(byte_data):  # simplistic initial match to avoid parsing all messages
-                str_data = byte_data.decode('utf-8', 'replace')
-                match = IMAP_APPEND_REQUEST_MATCHER.match(str_data)
+                match = IMAP_APPEND_REQUEST_MATCHER.match(byte_data)
                 if match and match.group('mailbox') in self.target_mailboxes:
                     self.appending = True
-                    self.append_tag = match.group('tag').encode('utf-8')
+                    self.append_tag = match.group('tag')
                     self.expected_message_length = int(match.group('length'))
                     self.log_debug('Received APPEND command matching mailbox "%s" - intercepting and ignoring message '
                                    'of length %d' % (match.group('mailbox'), self.expected_message_length))

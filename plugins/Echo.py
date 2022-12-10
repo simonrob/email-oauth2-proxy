@@ -1,5 +1,5 @@
 """An example Email OAuth 2.0 Proxy IMAP plugin that does nothing except call `log_debug` with all received messages. As
-a result, it is not specific to IMAP or SMTP, and can be used with any type of server."""
+a result, it is not specific to IMAP, POP or SMTP, and can be used with any type of server."""
 
 import plugins.BasePlugin
 
