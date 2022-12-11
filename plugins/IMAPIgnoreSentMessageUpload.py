@@ -45,13 +45,12 @@ class IMAPIgnoreSentMessageUpload(plugins.BasePlugin.BasePlugin):
 
             return byte_data  # pass through all other messages unedited
 
-        else:
-            # if we've received the full message length, send an OK message (with the correct tag) to the client (note:
-            # received length is two bytes longer than stated (i.e., terminating \r\n), but that doesn't matter here)
-            self.received_message_length += len(byte_data)
-            if self.received_message_length > self.expected_message_length:
-                self.log_debug('Completed APPEND interception; confirming to client and resuming normal communication')
-                self.send_to_client(b'%s OK APPEND completed\r\n' % self.append_tag)
-                self.reset()
+        # if we've received the full message length, send an OK message (with the correct tag) to the client (note:
+        # received length is two bytes longer than stated (i.e., terminating \r\n), but that doesn't matter here)
+        self.received_message_length += len(byte_data)
+        if self.received_message_length > self.expected_message_length:
+            self.log_debug('Completed APPEND interception; confirming to client and resuming normal communication')
+            self.send_to_client(b'%s OK APPEND completed\r\n' % self.append_tag)
+            self.reset()
 
-            return None
+        return None

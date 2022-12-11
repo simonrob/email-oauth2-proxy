@@ -45,11 +45,8 @@ class SMTPSimpleMailingList(plugins.BasePlugin.BasePlugin):
     def __init__(self, list_file=None):
         super().__init__()
         self.list_addresses = self.parse_list(list_file)
-        print(
-            b'RCPT TO:<(?P<recipient>' + b'|'.join([a for a in self.list_addresses.keys()]) + b')>\r\n')
         self.list_address_matcher = re.compile(
-            b'RCPT TO:<(?P<recipient>' + b'|'.join([a for a in self.list_addresses.keys()]) + b')>\r\n',
-            flags=re.IGNORECASE)
+            b'RCPT TO:<(?P<recipient>' + b'|'.join(self.list_addresses.keys()) + b')>\r\n', flags=re.IGNORECASE)
         self.sending_state, self.previous_line_ended, self.matched_addresses, self.list_recipients = self.reset()
 
     def reset(self):
@@ -79,26 +76,26 @@ class SMTPSimpleMailingList(plugins.BasePlugin.BasePlugin):
                 self.sending_state = self.STATE.MAIL_FROM
             return byte_data  # pass through unedited
 
-        elif byte_data.lower() == b'rset\r\n':  # RSET can be sent at any point; discard state and reset
+        if byte_data.lower() == b'rset\r\n':  # RSET can be sent at any point; discard state and reset
             self.reset()
             return byte_data
 
-        elif self.sending_state == self.STATE.MAIL_FROM:
+        if self.sending_state == self.STATE.MAIL_FROM:
             if SMTP_RCPT_TO_MATCHER.match(byte_data):  # initial recipient
                 self.log_debug('Received RCPT TO; checking lists', byte_data)
                 self.sending_state = self.STATE.RCPT_TO
                 return self.check_rcpt_to(byte_data)
             return byte_data
 
-        elif self.sending_state == self.STATE.RCPT_TO:
+        if self.sending_state == self.STATE.RCPT_TO:
             if SMTP_RCPT_TO_MATCHER.match(byte_data):  # additional recipients
                 self.log_debug('Received additional RCPT TO; checking lists', byte_data)
                 return self.check_rcpt_to(byte_data)
-            elif byte_data.lower() == b'data\r\n':
+            if byte_data.lower() == b'data\r\n':
                 self.sending_state = self.STATE.DATA
             return byte_data
 
-        elif self.sending_state == self.STATE.DATA:  # message contents
+        if self.sending_state == self.STATE.DATA:  # message contents
             for address in self.matched_addresses:
                 if address in byte_data:
                     # note: this simplistic replacement assumes there will only be one occurrence of the recipient list,
@@ -110,6 +107,8 @@ class SMTPSimpleMailingList(plugins.BasePlugin.BasePlugin):
             else:
                 self.previous_line_ended = byte_data.endswith(b'\r\n')
             return byte_data
+
+        return byte_data
 
     def check_rcpt_to(self, byte_data):
         match = self.list_address_matcher.match(byte_data)

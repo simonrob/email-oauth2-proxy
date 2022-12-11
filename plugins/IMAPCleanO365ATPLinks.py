@@ -51,64 +51,59 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
 
         if self.fetching:
             self.fetched_message += byte_data
+            if len(self.fetched_message) < self.expected_message_length:
+                return None  # wait for more data
 
             # note: currently we only handle a single body part in each buffer (which is fine for O365)
-            if len(self.fetched_message) >= self.expected_message_length:
-                original_message = self.fetched_message[:self.expected_message_length]
-                original_buffer_end = self.fetched_message[self.expected_message_length:]
+            original_message = self.fetched_message[:self.expected_message_length]
+            original_buffer_end = self.fetched_message[self.expected_message_length:]
 
-                try:
-                    # we have to detect base64 encoding as we don't have the message headers
-                    base64_decoded = base64.decodebytes(original_message)
-                    is_base64 = base64.encodebytes(base64_decoded) == original_message.replace(b'\r\n', b'\n')
-                    if is_base64:
-                        original_message_decoded = base64_decoded
-                    else:
-                        raise binascii.Error
-                except binascii.Error:
-                    is_base64 = False
-                    original_message_decoded = quopri.decodestring(original_message)
+            try:
+                # we have to detect base64 encoding as we don't have the message headers
+                base64_decoded = base64.decodebytes(original_message)
+                is_base64 = base64.encodebytes(base64_decoded) == original_message.replace(b'\r\n', b'\n')
+                if is_base64:
+                    original_message_decoded = base64_decoded
+                else:
+                    raise binascii.Error
+            except binascii.Error:
+                is_base64 = False
+                original_message_decoded = quopri.decodestring(original_message)
 
-                edited_message = b''
-                link_count = 0
-                current_position = 0
-                for match in O365_ATP_MATCHER.finditer(original_message_decoded):
-                    start, end = match.span()
-                    edited_message += original_message_decoded[current_position:start]
+            edited_message = b''
+            link_count = 0
+            current_position = 0
+            for match in O365_ATP_MATCHER.finditer(original_message_decoded):
+                start, end = match.span()
+                edited_message += original_message_decoded[current_position:start]
 
-                    # parse_qsl not parse_qs because we only ever care about non-array values
-                    atp_url = match.group('atp')
-                    atp_url_parts = {key: value for key, value in
-                                     urllib.parse.parse_qsl(urllib.parse.urlparse(atp_url).query)}
-                    if b'url' in atp_url_parts:
-                        edited_message += atp_url_parts[b'url']
-                        link_count += 1
-                    else:
-                        edited_message += atp_url  # fall back to original
+                # parse_qsl not parse_qs because we only ever care about non-array values
+                atp_url = match.group('atp')
+                atp_url_parts = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(atp_url).query))
+                if b'url' in atp_url_parts:
+                    edited_message += atp_url_parts[b'url']
+                    link_count += 1
+                else:
+                    edited_message += atp_url  # fall back to original
 
-                    current_position = end
-                edited_message += original_message_decoded[current_position:]
+                current_position = end
+            edited_message += original_message_decoded[current_position:]
 
-                if link_count > 0:
-                    if is_base64:
-                        edited_message_encoded = base64.encodebytes(edited_message).replace(b'\n', b'\r\n')
-                        self.log_info(edited_message_encoded)
-                    else:
-                        edited_message_encoded = quopri.encodestring(edited_message)
-                    edited_command = self.fetch_command.replace(b'{%d}' % self.expected_message_length,
-                                                                b'{%d}' % len(edited_message_encoded))
-                    self.log_debug('Removed', link_count, 'O365 ATP links from message requested via',
-                                   self.fetch_command)
-
-                    self.reset()
-                    return edited_command + edited_message_encoded + original_buffer_end
-
-                # no replacements: either no links or potentially some encoding we don't handle - return original
-                self.log_debug('No links to remove; returning original message requested via', self.fetch_command)
-                original_command = self.fetch_command
-                original_message = self.fetched_message
+            if link_count > 0:
+                self.log_debug('Removed', link_count, 'O365 ATP links from message requested via', self.fetch_command)
+                if is_base64:
+                    edited_message_encoded = base64.encodebytes(edited_message).replace(b'\n', b'\r\n')
+                else:
+                    edited_message_encoded = quopri.encodestring(edited_message)
+                edited_command = self.fetch_command.replace(b'{%d}' % self.expected_message_length,
+                                                            b'{%d}' % len(edited_message_encoded))
                 self.reset()
-                return original_command + original_message
+                return edited_command + edited_message_encoded + original_buffer_end
 
-            else:
-                return None  # wait for more data
+            # no replacements: either no links or potentially some encoding we don't handle - return original
+            self.log_debug('No links to remove; returning original message requested via', self.fetch_command)
+            original_fetch_response = self.fetch_command + self.fetched_message
+            self.reset()
+            return original_fetch_response
+
+        return byte_data

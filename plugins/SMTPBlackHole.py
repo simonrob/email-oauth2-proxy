@@ -34,22 +34,21 @@ class SMTPBlackHole(plugins.BasePlugin.BasePlugin):
                 self.sending_state = self.STATE.MAIL_FROM
                 self.send_to_client(b'250 OK\r\n')
                 return None
-            else:
-                return byte_data  # pass through all other messages unedited
+            return byte_data  # pass through all other messages unedited
 
-        elif byte_data.lower() == b'rset\r\n':  # RSET can be sent at any point; discard state and reset
+        if byte_data.lower() == b'rset\r\n':  # RSET can be sent at any point; discard state and reset
             self.log_debug('Received RSET; resetting state')
             self.reset()
             return byte_data
 
-        elif self.sending_state == self.STATE.MAIL_FROM:
+        if self.sending_state == self.STATE.MAIL_FROM:
             if SMTP_RCPT_TO_MATCHER.match(byte_data):  # initial recipient
                 self.log_debug('Received RCPT TO; acknowledging')
                 self.sending_state = self.STATE.RCPT_TO
                 self.send_to_client(b'250 OK\r\n')
             return None
 
-        elif self.sending_state == self.STATE.RCPT_TO:
+        if self.sending_state == self.STATE.RCPT_TO:
             if SMTP_RCPT_TO_MATCHER.match(byte_data):  # additional recipients
                 self.log_debug('Received additional RCPT TO; acknowledging')
                 self.send_to_client(b'250 OK\r\n')
@@ -59,7 +58,7 @@ class SMTPBlackHole(plugins.BasePlugin.BasePlugin):
                 self.send_to_client(b'354 \r\n')
             return None
 
-        elif self.sending_state == self.STATE.DATA:  # message contents
+        if self.sending_state == self.STATE.DATA:  # message contents
             if byte_data.endswith(b'\r\n.\r\n') or (self.previous_line_ended and byte_data == b'.\r\n'):  # end of email
                 self.log_debug('Received DATA end: resetting')
                 self.reset()
@@ -68,3 +67,5 @@ class SMTPBlackHole(plugins.BasePlugin.BasePlugin):
             else:
                 self.previous_line_ended = byte_data.endswith(b'\r\n')
             return None
+
+        return byte_data
