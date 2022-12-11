@@ -1,6 +1,8 @@
 """An example Email OAuth 2.0 Proxy IMAP plugin that looks for Office 365 Advanced Threat Protection links and replaces
 them with their original values (i.e., removing the redirect). As with most of the proxy's plugins, it would be more
 efficient to handle this on the server side (i.e., by disabling link modification), but this is not always possible."""
+import base64
+import binascii
 import quopri
 import re
 import urllib.parse
@@ -54,7 +56,18 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
             if len(self.fetched_message) >= self.expected_message_length:
                 original_message = self.fetched_message[:self.expected_message_length]
                 original_buffer_end = self.fetched_message[self.expected_message_length:]
-                original_message_decoded = quopri.decodestring(original_message)
+
+                try:
+                    # we have to detect base64 encoding as we don't have the message headers
+                    base64_decoded = base64.decodebytes(original_message)
+                    is_base64 = base64.encodebytes(base64_decoded) == original_message.replace(b'\r\n', b'\n')
+                    if is_base64:
+                        original_message_decoded = base64_decoded
+                    else:
+                        raise binascii.Error
+                except binascii.Error:
+                    is_base64 = False
+                    original_message_decoded = quopri.decodestring(original_message)
 
                 edited_message = b''
                 link_count = 0
@@ -76,13 +89,26 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
                     current_position = end
                 edited_message += original_message_decoded[current_position:]
 
-                edited_message_encoded = quopri.encodestring(edited_message)
-                edited_command = self.fetch_command.replace(b'{%d}' % self.expected_message_length,
-                                                            b'{%d}' % len(edited_message_encoded))
-                self.log_debug('Removed', link_count, 'O365 ATP links from message requested via', self.fetch_command)
+                if link_count > 0:
+                    if is_base64:
+                        edited_message_encoded = base64.encodebytes(edited_message).replace(b'\n', b'\r\n')
+                        self.log_info(edited_message_encoded)
+                    else:
+                        edited_message_encoded = quopri.encodestring(edited_message)
+                    edited_command = self.fetch_command.replace(b'{%d}' % self.expected_message_length,
+                                                                b'{%d}' % len(edited_message_encoded))
+                    self.log_debug('Removed', link_count, 'O365 ATP links from message requested via',
+                                   self.fetch_command)
 
+                    self.reset()
+                    return edited_command + edited_message_encoded + original_buffer_end
+
+                # no replacements: either no links or potentially some encoding we don't handle - return original
+                self.log_debug('No links to remove; returning original message requested via', self.fetch_command)
+                original_command = self.fetch_command
+                original_message = self.fetched_message
                 self.reset()
-                return edited_command + edited_message_encoded + original_buffer_end
+                return original_command + original_message
 
             else:
                 return None  # wait for more data
