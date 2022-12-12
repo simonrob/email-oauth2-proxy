@@ -2291,7 +2291,7 @@ class App:
                 }
             else:
                 # just toggle the disabled value rather than loading/unloading, so we don't need to restart the proxy
-                with open(PLIST_FILE_PATH, mode='rb', encoding='utf-8') as plist_file:
+                with open(PLIST_FILE_PATH, mode='rb') as plist_file:
                     plist = plistlib.load(plist_file)
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
@@ -2299,7 +2299,7 @@ class App:
             plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
-            with open(PLIST_FILE_PATH, mode='wb', encoding='utf-8') as plist_file:
+            with open(PLIST_FILE_PATH, mode='wb') as plist_file:
                 plistlib.dump(plist, plist_file)
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
@@ -2400,7 +2400,7 @@ class App:
         if sys.platform == 'darwin':
             if PLIST_FILE_PATH.exists():
                 if App.macos_launchctl('list'):
-                    with open(PLIST_FILE_PATH, mode='rb', encoding='utf-8') as plist_file:
+                    with open(PLIST_FILE_PATH, mode='rb') as plist_file:
                         plist = plistlib.load(plist_file)
                     if 'Disabled' in plist:
                         return not plist['Disabled']
