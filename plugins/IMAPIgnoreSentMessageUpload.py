@@ -9,10 +9,9 @@ import re
 import plugins.BasePlugin
 
 IMAP_TAG_PATTERN = plugins.BasePlugin.IMAP.TAG_PATTERN
-IMAP_COMMAND_MATCHER = re.compile(IMAP_TAG_PATTERN.encode('utf-8') + b' (?P<command>APPEND) ', flags=re.IGNORECASE)
-IMAP_APPEND_REQUEST_MATCHER = re.compile(IMAP_TAG_PATTERN.encode('utf-8') + b' (?P<command>APPEND) "(?P<mailbox>.+)" '
-                                                                            b'(?P<flags>.+){(?P<length>\\d+)}\r\n',
-                                         flags=re.IGNORECASE)
+IMAP_COMMAND_MATCHER = re.compile(IMAP_TAG_PATTERN + b' (?P<command>APPEND) ', flags=re.IGNORECASE)
+IMAP_APPEND_REQUEST_MATCHER = re.compile(IMAP_TAG_PATTERN + b' (?P<command>APPEND) "(?P<mailbox>.+)" '
+                                                            b'(?P<flags>.+){(?P<length>\\d+)}\r\n', flags=re.IGNORECASE)
 
 
 class IMAPIgnoreSentMessageUpload(plugins.BasePlugin.BasePlugin):

@@ -9,10 +9,8 @@ import urllib.parse
 
 import plugins.BasePlugin
 
-IMAP_TAG_PATTERN = plugins.BasePlugin.IMAP.TAG_PATTERN
-IMAP_COMMAND_MATCHER = re.compile(b'^\\* \\d+ FETCH ', flags=re.IGNORECASE)
-
 # note: these patterns operate on byte-strings to avoid having to parse (and potentially cache) message encodings
+IMAP_COMMAND_MATCHER = re.compile(b'^\\* \\d+ FETCH ', flags=re.IGNORECASE)
 IMAP_FETCH_REQUEST_MATCHER = re.compile(b'^\\* \\d+ FETCH \\(BODY\\[(?:TEXT|1(?:\\.1|\\.2)?)] {(?P<length>\\d+)}\r\n',
                                         flags=re.IGNORECASE)  # https://stackoverflow.com/a/37794152
 O365_ATP_MATCHER = re.compile(b'(?P<atp>https://eur03\\.safelinks\\.protection\\.outlook\\.com/\\?url=.+?reserved=0)',
