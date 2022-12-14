@@ -1,10 +1,12 @@
+#!/usr/bin/env python3
+
 """A simple IMAP/POP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-11-02'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-14'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
@@ -107,7 +109,8 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
 
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
-CONFIG_FILE_PATH = '%s/%s.config' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME)
+script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
+CONFIG_FILE_PATH = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
@@ -162,19 +165,19 @@ EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copy
     <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a>
     <a id="copy" onclick="copyLink('%s')" style="margin-left:0.5em;margin-top:0.1em;font-weight:bold;font-size:150%%;
     text-decoration:none;cursor:pointer;float:right" title="Copy link">⧉</a></p>
-    <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the 
+    <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the
     resulting URL from the browser's address bar using the box at the bottom of this page to allow the %s script to
     transparently handle login requests on your behalf in future.</p>
-    <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after 
-    successfully logging in, but the final URL is the only important part, and as long as this begins with the  
+    <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after
+    successfully logging in, but the final URL is the only important part, and as long as this begins with the
     correct redirection URI and contains a valid authorisation code your email client's request will succeed.''' + (
-    ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p> 
+    ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p>
     <p style="margin-top:2em">According to your proxy configuration file, the expected URL will be of the form:</p>
     <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
-    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value); 
+    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value);
     document.auth.submit.value='Submitting...'; document.auth.submit.disabled=true; return false">
-    <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL: 
-    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit" 
+    <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL:
+    </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit"
     id="submit" value="Submit"></div></form></body></html>'''
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
@@ -330,7 +333,7 @@ class AppConfig:
     @staticmethod
     def save():
         if AppConfig._LOADED:
-            with open(CONFIG_FILE_PATH, 'w') as config_output:
+            with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
                 AppConfig._PARSER.write(config_output)
 
 
@@ -437,25 +440,24 @@ class OAuth2Helper:
                     access_token = OAuth2Helper.decrypt(fernet, access_token)
 
             if not access_token:
-                auth_code = None
+                auth_result = None
                 if permission_url:  # O365 CCG and ROPCG flows skip the authorisation step; no permission_url
                     oauth2_flow = 'authorization_code'
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
 
                     # note: get_oauth2_authorisation_code is a blocking call (waiting on user to provide code)
-                    success, auth_code = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
-                                                                                    redirect_listen_address, username)
+                    success, auth_result = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
+                                                                                      redirect_listen_address, username)
 
                     if not success:
-                        Log.info('Authentication request failed or expired for account', username, '- aborting login')
-                        return False, '%s: Login failed - the authentication request expired or was cancelled for ' \
-                                      'account %s' % (APP_NAME, username)
+                        Log.info('Authorisation result error for', username, '- aborting login.', auth_result)
+                        return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
                     oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_code, oauth2_scope,
+                                                                        client_secret, auth_result, oauth2_scope,
                                                                         oauth2_flow, username, password)
 
                 access_token = response['access_token']
@@ -502,9 +504,9 @@ class OAuth2Helper:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials for %s:' % username,
                          Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
-            else:
-                Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
-                return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
+
+            Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+            return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
             # note that we don't currently remove cached credentials here, as failures on the initial request are before
@@ -533,8 +535,16 @@ class OAuth2Helper:
         return urllib.parse.unquote(text)
 
     @staticmethod
+    def match_redirect_uri(config, received):
+        parsed_config = urllib.parse.urlparse(config)
+        parsed_received = urllib.parse.urlparse(received)
+        # match host:port and path (except trailing slashes), but allow mismatch of the scheme (i.e., http/https) (#96)
+        return parsed_config.netloc == parsed_received.netloc and parsed_config.path.rstrip(
+            '/') == parsed_received.path.rstrip('/')
+
+    @staticmethod
     def start_redirection_receiver_server(token_request):
-        """Starts a local WSGI web server at token_request['redirect_uri'] to receive OAuth responses"""
+        """Starts a local WSGI web server to receive OAuth responses"""
         redirect_listen_type = 'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri'
         parsed_uri = urllib.parse.urlparse(token_request[redirect_listen_type])
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
@@ -542,14 +552,15 @@ class OAuth2Helper:
             parsed_uri.hostname, parsed_port))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
-            def log_message(self, format_string, *args):
+            def log_message(self, _format_string, *args):
                 Log.debug('Local server auth mode (%s:%d): received authentication response' % (
                     parsed_uri.hostname, parsed_port), *args)
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
                 start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
-                token_request['response_url'] = wsgiref.util.request_uri(environ)
+                token_request['response_url'] = token_request['redirect_uri'].rstrip('/') + environ.get(
+                    'PATH_INFO') + '?' + environ.get('QUERY_STRING')
                 return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
                          '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
                          '</style></head><body><p>%s successfully authenticated account %s.</p><p>You can close this '
@@ -595,9 +606,7 @@ class OAuth2Helper:
         'Sign in with another account' option)"""
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
                   'access_type': 'offline', 'login_hint': username}
-        param_pairs = []
-        for param in params:
-            param_pairs.append('%s=%s' % (param, OAuth2Helper.oauth2_url_escape(params[param])))
+        param_pairs = ['%s=%s' % (param, OAuth2Helper.oauth2_url_escape(value)) for param, value in params.items()]
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
@@ -615,33 +624,43 @@ class OAuth2Helper:
                 wait_time += 1
                 if wait_time < AUTHENTICATION_TIMEOUT:
                     continue
-                else:
-                    token_request['expired'] = True
-                    REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
-                    return False, None
+
+                token_request['expired'] = True
+                REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
+                return False, 'Authorisation request timed out'
 
             if data is QUEUE_SENTINEL:  # app is closing
                 response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
-                return False, None
+                return False, '%s is shutting down' % APP_NAME
 
-            elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
+            if data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
                 # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
                 if 'expired' in data and data['expired']:  # local server auth wsgi request error or failure
-                    return False, None
+                    return False, 'Local server auth request failed'
 
-                elif 'local_server_auth' in data:
+                if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
                 else:
-                    if 'response_url' in data and 'code=' in data['response_url'] and data['response_url'].startswith(
-                            token_request['redirect_uri']):
-                        authorisation_code = OAuth2Helper.oauth2_url_unescape(
-                            data['response_url'].split('code=')[-1].split('&')[0])
-                        if authorisation_code:
-                            return True, authorisation_code
-                    return False, None
+                    if 'response_url' in data and OAuth2Helper.match_redirect_uri(token_request['redirect_uri'],
+                                                                                  data['response_url']):
+                        # parse_qsl not parse_qs because we only ever care about non-array values; extra dict formatting
+                        # as IntelliJ has a bug incorrectly detecting parse_qs/l as returning a dict with byte-type keys
+                        response = {str(key): value for key, value in
+                                    urllib.parse.parse_qsl(urllib.parse.urlparse(data['response_url']).query)}
+                        if 'code' in response and response['code']:
+                            authorisation_code = OAuth2Helper.oauth2_url_unescape(response['code'])
+                            if authorisation_code:
+                                return True, authorisation_code
+                            return False, 'No OAuth 2.0 authorisation code returned'
+                        if 'error' in response:
+                            message = 'OAuth 2.0 authorisation error: %s' % response['error']
+                            message += '; %s' % response['error_description'] if 'error_description' in response else ''
+                            return False, message
+                        return False, 'OAuth 2.0 authorisation response has no code or error message'
+                    return False, 'OAuth 2.0 authorisation response is missing or does not match `redirect_uri`'
 
             else:  # not for this thread - put back into queue
                 response_queue_reference.put(data)
@@ -690,7 +709,7 @@ class OAuth2Helper:
             e.message = json.loads(e.read())
             Log.debug('Error refreshing access token - received invalid response:', e.message)
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken(e.code, APP_PACKAGE)
+                raise InvalidToken(e.code, APP_PACKAGE) from e
             raise e
 
     @staticmethod
@@ -776,16 +795,16 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # noinspection PyUnresolvedReferences
             self.socket.do_handshake()
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-            return
+            pass
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
-            return
         else:
             Log.debug(self.info_string(), '<-> [ TLS handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
 
     def handle_read_event(self):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
         else:
@@ -796,8 +815,11 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 super().handle_read_event()
             except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
                 self.ssl_handshake_completed = False
+            except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+                self.handle_close()
 
     def handle_write_event(self):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         if not self.ssl_handshake_completed:
             self.ssl_handshake()
         else:
@@ -806,32 +828,28 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 super().handle_write_event()
             except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
                 self.ssl_handshake_completed = False
+            except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+                self.handle_close()
 
     def recv(self, buffer_size):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().recv(buffer_size)
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
             self.ssl_handshake_completed = False
-            return b''
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
-            return b''
-        except ssl.SSLError:
-            self.handle_error()
-            return b''
+        return b''
 
     def send(self, byte_data):
+        # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
         except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
             self.ssl_handshake_completed = False
-            return 0
         except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
             self.handle_close()
-            return 0
-        except ssl.SSLError:
-            self.handle_error()
-            return 0
+        return 0
 
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
@@ -840,12 +858,22 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
-                          'CERTIFICATE_VERIFY_FAILED', APP_PACKAGE]
+                          'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
+                          APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
-                    any([i in value.args[1] for i in ssl_errors]):
-                Log.error('Caught connection error in', self.info_string(), '- you have set `local_certificate_path`',
-                          'and `local_key_path`; is your client using a secure connection?', 'Error type', error_type,
-                          'with message:', value)
+                    any(i in value.args[1] for i in ssl_errors):
+                Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
+                if hasattr(self, 'custom_configuration') and hasattr(self, 'proxy_type'):
+                    if self.proxy_type == 'SMTP':
+                        Log.error('Is the server\'s `starttls` setting correct? Current value: %s' %
+                                  self.custom_configuration['starttls'])
+                    if self.custom_configuration['local_certificate_path'] and \
+                            self.custom_configuration['local_key_path']:
+                        Log.error('You have set `local_certificate_path` and `local_key_path`: is your client using a',
+                                  'secure connection? github.com/FiloSottile/mkcert is highly recommended for local',
+                                  'self-signed certificates, but these may still need an exception in your client')
+                Log.error('If you encounter this error repeatedly, please check that you have correctly configured',
+                          'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
                 self.handle_close()
             else:
                 super().handle_error()
@@ -935,7 +963,13 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                                       b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
 
                 Log.debug(self.info_string(), '-->', log_data)
-                self.process_data(line)
+                try:
+                    self.process_data(line)
+                except AttributeError:  # AttributeError("'NoneType' object has no attribute 'username'"), etc
+                    Log.info(self.info_string(),
+                             'Caught client exception in subclass; server connection closed before data could be sent')
+                    self.close()
+                    break
 
     def process_data(self, byte_data, censor_server_log=False):
         try:
@@ -1058,7 +1092,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                     self.authentication_tag = match.group('tag')
                     if len(split_flags) > 1:
                         username, password = OAuth2Helper.decode_credentials(' '.join(split_flags[1:]))
-                        self.authenticate_connection(username, password, 'authenticate')
+                        self.authenticate_connection(username, password, command=self.authentication_command)
                     else:
                         self.awaiting_credentials = True
                         self.censor_next_log = True
@@ -1077,8 +1111,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             # send authentication command to server (response checked in ServerConnection)
             # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
             super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
-            super().process_data(OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
-            super().process_data(b'\r\n')
+            super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
 
             # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
             if self.server_connection:
@@ -1338,7 +1371,13 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
             for line in complete_lines:
                 Log.debug(self.info_string(), '    <--', line)  # (log before edits)
-                self.process_data(line)
+                try:
+                    self.process_data(line)
+                except AttributeError:  # AttributeError("'NoneType' object has no attribute 'connection_state'"), etc
+                    Log.info(self.info_string(),
+                             'Caught server exception in subclass; client connection closed before data could be sent')
+                    self.close()
+                    break
 
     def process_data(self, byte_data):
         try:
@@ -1349,16 +1388,17 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated or self.has_plugins:  # after auth, only plugin edits require logs
-            Log.debug(self.info_string(), '    -->', CENSOR_MESSAGE if censor_log else byte_data)
+            Log.debug(self.info_string(), '    -->', b'%s\r\n' % CENSOR_MESSAGE if censor_log else byte_data)
         return super().send(byte_data)
 
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
+                error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
                 error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # TimeoutError 60 = 'Operation timed out'; OSError 0 = 'Error' (typically network failure);
-            # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
+            # TimeoutError 60 = 'Operation timed out'; # ConnectionResetError 54 = 'Connection reset by peer'; OSError
+            # 0 = 'Error' (typically network failure); OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.handle_close()
@@ -1572,8 +1612,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 if success:
                     self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
                     self.authenticated_username = self.username
-                    self.send(OAuth2Helper.encode_oauth2_string(result), censor_log=True)
-                    self.send(b'\r\n')
+                    self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
 
                 self.username = None
                 self.password = None
@@ -1668,16 +1707,6 @@ class OAuth2Proxy(asyncore.dispatcher):
                 connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
                 connection.close()
 
-            except ssl.SSLError:
-                error_text = '%s encountered an SSL error - is the server\'s starttls setting correct? Current ' \
-                             'value: %s' % (self.info_string(), self.custom_configuration['starttls'])
-                Log.error(error_text)
-                if sys.platform in ['darwin', 'win32']:
-                    Log.error('If you encounter this error repeatedly, please check that you have correctly configured '
-                              'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
-                connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
-                connection.close()
-
             except Exception:
                 connection.close()
                 if new_server_connection:
@@ -1735,9 +1764,9 @@ class OAuth2Proxy(asyncore.dispatcher):
     def bye_message(self, error_text=None):
         if self.proxy_type == 'IMAP':
             return '* BYE %s' % ('Server shutting down' if error_text is None else error_text)
-        elif self.proxy_type == 'POP':
+        if self.proxy_type == 'POP':
             return '+OK Server signing off' if error_text is None else ('-ERR %s' % error_text)
-        elif self.proxy_type == 'SMTP':
+        if self.proxy_type == 'SMTP':
             return '221 %s' % ('2.0.0 Service closing transmission channel' if error_text is None else error_text)
         return ''
 
@@ -1788,34 +1817,42 @@ class OAuth2Proxy(asyncore.dispatcher):
 
 
 if sys.platform == 'darwin':
-    # noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming,PyUnusedLocal
+    # noinspection PyUnresolvedReferences,PyMethodMayBeStatic,PyPep8Naming
     class ProvisionalNavigationBrowserDelegate:
         """Used to give pywebview the ability to navigate to unresolved local URLs (only required for macOS)"""
 
         # note: there is also webView_didFailProvisionalNavigation_withError_ as a broader alternative to these two
         # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
-        def webView_didStartProvisionalNavigation_(self, web_view, nav):
+        def webView_didStartProvisionalNavigation_(self, web_view, _nav):
             # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
             browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
-        def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, nav):
+        def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, _nav):
             # called when the server initiates a local redirect
             browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
+        def performKeyEquivalent_(self, event):
+            # modify the popup's default cmd+q behaviour to close the window rather than inadvertently exiting the proxy
+            if event.type() == AppKit.NSKeyDown and event.modifierFlags() & AppKit.NSCommandKeyMask and \
+                    event.keyCode() == 12 and self.window().firstResponder():
+                self.window().performClose_(event)
+                return True
+            return webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalentBase_(self, event)
+
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences
     class UserNotificationCentreDelegate(AppKit.NSObject):
-        # noinspection PyPep8Naming,PyUnusedLocal,PyMethodMayBeStatic
-        def userNotificationCenter_shouldPresentNotification_(self, notification_centre, notification):
+        # noinspection PyPep8Naming,PyMethodMayBeStatic
+        def userNotificationCenter_shouldPresentNotification_(self, _notification_centre, _notification):
             # the notification centre often decides that notifications shouldn't be presented; we want to override that
             return AppKit.YES
 
-        # noinspection PyPep8Naming,PyUnusedLocal
-        def userNotificationCenter_didActivateNotification_(self, notification_centre, notification):
+        # noinspection PyPep8Naming
+        def userNotificationCenter_didActivateNotification_(self, _notification_centre, notification):
             notification_text = notification.informativeText()
             if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
                 self._click(notification_text.split('account ')[-1].split(' ')[0])
@@ -1926,7 +1963,6 @@ class App:
 
         if self.args.config_file:
             CONFIG_FILE_PATH = self.args.config_file
-        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
 
         self.proxies = []
         self.authorisation_requests = []
@@ -1990,17 +2026,22 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-            # on macOS, catching SIGINT/SIGTERM/SIGQUIT while in pystray's main loop needs a Mach signal handler
-            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda signum: self.exit(self.icon))
-            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
-            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda signum: self.exit(self.icon))
+            # on macOS, catching SIGINT/SIGTERM/SIGQUIT/SIGHUP while in pystray's main loop needs a Mach signal handler
+            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGHUP, lambda _signum: self.load_and_start_servers(self.icon))
 
         else:
             # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
-            signal.signal(signal.SIGINT, lambda signum, frame: self.exit(self.icon))
-            signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
-            if hasattr(signal, 'SIGQUIT'):  # SIGQUIT does not exist on all platforms (e.g., Windows)
-                signal.signal(signal.SIGQUIT, lambda signum, frame: self.exit(self.icon))
+            signal.signal(signal.SIGINT, lambda _signum, _frame: self.exit(self.icon))
+            signal.signal(signal.SIGTERM, lambda _signum, _frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGQUIT'):  # not all signals exist on all platforms (e.g., Windows)
+                signal.signal(signal.SIGQUIT, lambda _signum, _frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGHUP'):
+                # allow config file reloading without having to stop/start - e.g.: pkill -SIGHUP -f emailproxy.py
+                # (we don't use linux_restart() here as it exits then uses nohup to restart, which may not be desirable)
+                signal.signal(signal.SIGHUP, lambda _signum, _frame: self.load_and_start_servers(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2070,25 +2111,20 @@ class App:
                 pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
             font_width, font_height = font.getsize(text)
             return font, font_width, font_height
-        else:
-            left, top, right, bottom = font.getbbox(text)
-            return font, right, bottom
+
+        _left, _top, right, bottom = font.getbbox(text)
+        return font, right, bottom
 
     def create_config_menu(self):
-        items = [pystray.MenuItem('Servers:', None, enabled=False)]
+        items = []
         if len(self.proxies) <= 0:
+            # note that we don't actually allow no servers when loading config, but just in case that behaviour changes
+            items.append(pystray.MenuItem('Servers:', None, enabled=False))
             items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
+            items.append(pystray.Menu.SEPARATOR)
         else:
-            for proxy in self.proxies:
-                items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
-                    ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
-                    proxy.local_address[0], proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]),
-                                              None, enabled=False))
-                last_plugin = len(proxy.custom_configuration['plugin_configuration']) - 1
-                for i, plugin in enumerate(proxy.custom_configuration['plugin_configuration']):
-                    items.append(pystray.MenuItem('        %s %s' % ('└' if i == last_plugin else '├', plugin), None,
-                                                  enabled=False))
-        items.append(pystray.Menu.SEPARATOR)
+            for server_type in ['IMAP', 'POP', 'SMTP']:
+                items.extend(App.get_config_menu_servers(self.proxies, server_type))
 
         config_accounts = AppConfig.accounts()
         items.append(pystray.MenuItem('Accounts (+ last authenticated activity):', None, enabled=False))
@@ -2103,10 +2139,11 @@ class App:
                 else:
                     items.append(pystray.MenuItem(App.get_last_activity(account), None, enabled=False))
             if len(catch_all_accounts) > 0:
+                items.append(pystray.Menu.SEPARATOR)
                 items.append(pystray.MenuItem('Catch-all accounts:', None, enabled=False))
                 for account in catch_all_accounts:
                     items.append(pystray.MenuItem('    %s' % account, None, enabled=False))
-            if not sys.platform == 'darwin':
+            if sys.platform != 'darwin':
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
@@ -2116,6 +2153,26 @@ class App:
         # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
         items.append(pystray.MenuItem('Reload configuration file', self.linux_restart if sys.platform.startswith(
             'linux') else self.load_and_start_servers))
+        return items
+
+    @staticmethod
+    def get_config_menu_servers(proxies, server_type):
+        items = []
+        heading_appended = False
+        for proxy in filter(lambda p: p.proxy_type == server_type, proxies):
+            if not heading_appended:
+                items.append(pystray.MenuItem('%s servers:' % server_type, None, enabled=False))
+                heading_appended = True
+            items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
+                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
+                proxy.local_address[0], proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]),
+                                          None, enabled=False))
+            last_plugin = len(proxy.custom_configuration['plugin_configuration']) - 1
+            for i, plugin in enumerate(proxy.custom_configuration['plugin_configuration']):
+                items.append(pystray.MenuItem('        %s %s' % ('└' if i == last_plugin else '├', plugin), None,
+                                              enabled=False))
+        if heading_appended:
+            items.append(pystray.Menu.SEPARATOR)
         return items
 
     @staticmethod
@@ -2205,7 +2262,7 @@ class App:
             authorisation_window.events.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
-        if not sys.platform == 'darwin':
+        if sys.platform != 'darwin':
             return
 
         # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
@@ -2217,6 +2274,10 @@ class App:
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
                                                                      'Navigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
+                webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
+                ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
@@ -2226,8 +2287,7 @@ class App:
             data = WEBVIEW_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
-            else:
-                self.create_authorisation_window(data)
+            self.create_authorisation_window(data)
 
     def authorisation_window_loaded(self):
         for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
@@ -2242,8 +2302,8 @@ class App:
             # respond to both the original request and any duplicates in the list
             completed_request = None
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                if url.startswith(request['redirect_uri']) and username == request['username']:
-                    Log.info('Successfully authorised request for', request['username'])
+                if OAuth2Helper.match_redirect_uri(request['redirect_uri'], url) and request['username'] == username:
+                    Log.info('Returning authorisation request result for', request['username'])
                     RESPONSE_QUEUE.put(
                         {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
                     self.authorisation_requests.remove(request)
@@ -2284,7 +2344,7 @@ class App:
                 }
             else:
                 # just toggle the disabled value rather than loading/unloading, so we don't need to restart the proxy
-                with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                with open(PLIST_FILE_PATH, mode='rb') as plist_file:
                     plist = plistlib.load(plist_file)
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
@@ -2292,12 +2352,12 @@ class App:
             plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
-            with open(PLIST_FILE_PATH, 'wb') as plist_file:
+            with open(PLIST_FILE_PATH, mode='wb') as plist_file:
                 plistlib.dump(plist, plist_file)
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
             if not self.macos_launchctl('list'):
-                self.exit(icon, restart_callback=self.macos_launchctl('load'))
+                self.exit(icon, restart_callback=lambda: self.macos_launchctl('load'))
             elif recreate_login_file:
                 # Launch Agents need to be unloaded and reloaded to reflect changes in their plist file, but we can't
                 # do this ourselves because 1) unloading exits the agent; and, 2) we can't launch a completely separate
@@ -2313,7 +2373,7 @@ class App:
                 windows_start_command = 'start %s' % ' '.join(start_command)
 
                 os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
-                with open(CMD_FILE_PATH, 'w') as cmd_file:
+                with open(CMD_FILE_PATH, mode='w', encoding='utf-8') as cmd_file:
                     cmd_file.write(windows_start_command)
 
                 # on Windows we don't have a service to run, but it is still useful to exit the terminal instance
@@ -2333,7 +2393,7 @@ class App:
                 }
 
                 os.makedirs(AUTOSTART_FILE_PATH.parent, exist_ok=True)
-                with open(AUTOSTART_FILE_PATH, 'w') as desktop_file:
+                with open(AUTOSTART_FILE_PATH, mode='w', encoding='utf-8') as desktop_file:
                     desktop_file.write('[Desktop Entry]\n')
                     for key, value in xdg_autostart.items():
                         desktop_file.write('%s=%s\n' % (key, value))
@@ -2393,7 +2453,7 @@ class App:
         if sys.platform == 'darwin':
             if PLIST_FILE_PATH.exists():
                 if App.macos_launchctl('list'):
-                    with open(PLIST_FILE_PATH, 'rb') as plist_file:
+                    with open(PLIST_FILE_PATH, mode='rb') as plist_file:
                         plist = plistlib.load(plist_file)
                     if 'Disabled' in plist:
                         return not plist['Disabled']
@@ -2457,6 +2517,7 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
+        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
         config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
@@ -2539,6 +2600,7 @@ class App:
             icon.update_menu()  # force refresh the menu to show running proxy servers
 
         threading.Thread(target=App.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         return True
 
     def post_create(self, icon):
@@ -2551,29 +2613,27 @@ class App:
         if not self.load_and_start_servers(icon, reload=False):
             return
 
-        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
+            if not data['expired']:
+                Log.info('Authorisation request received for', data['username'],
+                         '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
+                if self.args.local_server_auth:
+                    data['local_server_auth'] = True
+                    RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                    self.notify(APP_NAME,
+                                'Local server auth mode: please authorise a request for account %s' % data['username'])
+                elif icon:
+                    self.authorisation_requests.append(data)
+                    icon.update_menu()  # force refresh the menu
+                    self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
             else:
-                if not data['expired']:
-                    Log.info('Authorisation request received for', data['username'],
-                             '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
-                    if self.args.local_server_auth:
-                        data['local_server_auth'] = True
-                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
-                        self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
-                                    data['username'])
-                    elif icon:
-                        self.authorisation_requests.append(data)
-                        icon.update_menu()  # force refresh the menu
-                        self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
-                else:
-                    for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                        if request['permission_url'] == data['permission_url']:
-                            self.authorisation_requests.remove(request)
-                            break  # we could have multiple simultaneous requests, some not yet expired
+                for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
+                    if request['permission_url'] == data['permission_url']:
+                        self.authorisation_requests.remove(request)
+                        break  # we could have multiple simultaneous requests, some not yet expired
 
     @staticmethod
     def run_proxy():

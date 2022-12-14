@@ -133,4 +133,5 @@ emailproxy.config
 versions
 launchd
 .idea
+*.config
 *.iml
