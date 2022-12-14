@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-12-05'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-14'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -1075,7 +1075,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                     self.authentication_tag = match.group('tag')
                     if len(split_flags) > 1:
                         username, password = OAuth2Helper.decode_credentials(' '.join(split_flags[1:]))
-                        self.authenticate_connection(username, password, 'authenticate')
+                        self.authenticate_connection(username, password, command=self.authentication_command)
                     else:
                         self.awaiting_credentials = True
                         self.censor_next_log = True
@@ -1094,8 +1094,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             # send authentication command to server (response checked in ServerConnection)
             # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
             super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
-            super().process_data(OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
-            super().process_data(b'\r\n')
+            super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
 
             # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
             if self.server_connection:
@@ -1363,7 +1362,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
-            Log.debug(self.info_string(), '    -->', CENSOR_MESSAGE if censor_log else byte_data)
+            Log.debug(self.info_string(), '    -->', b'%s\r\n' % CENSOR_MESSAGE if censor_log else byte_data)
         return super().send(byte_data)
 
     def handle_error(self):
@@ -1587,8 +1586,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 if success:
                     self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
                     self.authenticated_username = self.username
-                    self.send(OAuth2Helper.encode_oauth2_string(result), censor_log=True)
-                    self.send(b'\r\n')
+                    self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
 
                 self.username = None
                 self.password = None
