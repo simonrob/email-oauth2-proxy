@@ -134,7 +134,7 @@ IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#n
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
     r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
-IMAP_CAPABILITY_MATCHER = re.compile(r'^(\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
+IMAP_CAPABILITY_MATCHER = re.compile(r'^(?:\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
@@ -1654,7 +1654,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 new_server_connection.client_connection = new_client_connection
                 self.client_connections.append(new_client_connection)
 
-                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map, address),
+                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
 
             except Exception:
@@ -1670,17 +1670,16 @@ class OAuth2Proxy(asyncore.dispatcher):
             connection.close()
 
     @staticmethod
-    def run_server(client, socket_map, address):
+    def run_server(client, socket_map):
         try:
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.debug(client.proxy_type, address, '[ Connection closed ]')
+                    Log.debug(client.info_string(), '[ Connection closed ]')
                 else:
-                    Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
-                             Log.error_string(e))
+                    Log.info(client.info_string(), 'Caught asyncore exception in thread loop:', Log.error_string(e))
 
     def start(self):
         Log.info('Starting', self.info_string())
