@@ -259,10 +259,10 @@ class Log:
         return getattr(error, 'message', repr(error))
 
     @staticmethod
-    def get_labelled_logs(*labels):
-        return (lambda *args: Log.debug(*labels, ':', *args),
-                lambda *args: Log.info(*labels, ':', *args),
-                lambda *args: Log.error(*labels, ':', *args))
+    def get_labelled_logs(info_string, *labels):
+        return (lambda *args: Log.debug(info_string(), *labels, ':', *args),
+                lambda *args: Log.info(info_string(), *labels, ':', *args),
+                lambda *args: Log.error(info_string(), *labels, ':', *args))
 
 
 class AppConfig:
@@ -1358,26 +1358,34 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
         # if not authenticated, buffer incoming data and process line-by-line
         else:
-            self.receive_buffer += byte_data
-            complete_lines = []
-            while True:
-                terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
-                if terminator_index != -1:
-                    split_position = terminator_index + LINE_TERMINATOR_LENGTH
-                    complete_lines.append(self.receive_buffer[:split_position])
-                    self.receive_buffer = self.receive_buffer[split_position:]
-                else:
-                    break
+            Log.debug(self.info_string(), '    <--', byte_data)  # original unedited message
+            if self.has_plugins:
+                # server -> client: process messages through plugins in descending order
+                for i in range(1, len(self.custom_configuration['plugins']) + 1):
+                    byte_data = self.custom_configuration['plugins'][-i].receive_from_server(byte_data)
+                    if not byte_data:
+                        break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
 
-            for line in complete_lines:
-                Log.debug(self.info_string(), '    <--', line)  # (log before edits)
-                try:
-                    self.process_data(line)
-                except AttributeError:  # AttributeError("'NoneType' object has no attribute 'connection_state'"), etc
-                    Log.info(self.info_string(),
-                             'Caught server exception in subclass; client connection closed before data could be sent')
-                    self.close()
-                    break
+            if byte_data:
+                self.receive_buffer += byte_data
+                complete_lines = []
+                while True:
+                    terminator_index = self.receive_buffer.find(LINE_TERMINATOR)
+                    if terminator_index != -1:
+                        split_position = terminator_index + LINE_TERMINATOR_LENGTH
+                        complete_lines.append(self.receive_buffer[:split_position])
+                        self.receive_buffer = self.receive_buffer[split_position:]
+                    else:
+                        break
+
+                for line in complete_lines:
+                    try:
+                        self.process_data(line)
+                    except AttributeError:  # "'NoneType' object has no attribute 'connection_state'", etc
+                        Log.info(self.info_string(), 'Caught server exception in subclass; client connection closed',
+                                 'before data could be sent')
+                        self.close()
+                        break
 
     def process_data(self, byte_data):
         try:
@@ -1677,9 +1685,6 @@ class OAuth2Proxy(asyncore.dispatcher):
                     plugin_class = getattr(options['module'], name)
                     plugin_options = options['options']
                     plugin_object = plugin_class(**plugin_options)
-
-                    # noinspection PyProtectedMember
-                    plugin_object._attach_log(*Log.get_labelled_logs(self.proxy_type, address, name))
                     configuration['plugin_configuration'][name]['object'] = plugin_object
                     configuration['plugins'].append(plugin_object)  # just for ease of access/use
 
@@ -1693,6 +1698,9 @@ class OAuth2Proxy(asyncore.dispatcher):
                 self.client_connections.append(new_client_connection)
 
                 for i, plugin in enumerate(configuration['plugins']):
+                    # noinspection PyProtectedMember
+                    plugin._attach_log(
+                        *Log.get_labelled_logs(new_server_connection.info_string, plugin.__class__.__name__))
                     # noinspection PyProtectedMember
                     plugin._register_senders(configuration['plugins'][i + 1:], new_server_connection.send,
                                              list(reversed(configuration['plugins'][:i])), new_client_connection.send)

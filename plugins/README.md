@@ -7,6 +7,8 @@ This allows a wide range of additional capabilities or triggers to be added the 
 - [`Echo`](plugins/Echo.py): An example plugin that does nothing except call `log_debug` with all received messages.
 As a result, it is not specific to IMAP, POP or SMTP, and can be used with any type of server.
 
+- [`IMAPCapabilityModifier`](plugins/IMAPCapabilityModifier.py): An example plugin that intercepts a single IMAP `CAPABILITY` response and modifies it to remove support for `LITERAL+` (chosen only as a common example for demonstration purposes; this is not a useful plugin).
+
 - [`IMAPCleanO365ATPLinks`](plugins/IMAPCleanO365ATPLinks.py): An example IMAP plugin that looks for Office 365 Advanced Threat Protection links and replaces them with their original values (i.e., removing the redirect).
 As with most of the proxy's plugins, it would be more efficient to handle this on the server side (i.e., by disabling link modification), but this is not always possible.
 
@@ -15,8 +17,12 @@ Place this plugin before any others if you use a client that automatically tries
 An alternative option here if you do not need to actually edit messages is to keep compression enabled, but decompress within the plugin – see [`IMAPDecodeDeflateCompression`](plugins/IMAPDecodeDeflateCompression.py).
 
 - [`IMAPDecodeDeflateCompression`](plugins/IMAPDecodeDeflateCompression.py): An example IMAP plugin that looks for client requests to enable compression (RFC 1951 and 4978) and, unlike [`IMAPDisableDeflateCompression`](plugins/IMAPDisableDeflateCompression.py), permits compression but decompresses messages within the plugin.
-This allows monitoring and editing of compressed incoming and outgoing communication (but only within this plugin, not any others).
-A further improvement that would allow message editing in any plugin but keep the benefits of compression would be to disable compression between the client and proxy, but keep it enabled between the proxy and server.
+This allows monitoring and editing of compressed incoming and outgoing communication, but only within this plugin, not any others (and as a result only other deflate-aware plugins can be chained).
+An alternative option and further improvement can be found in [`IMAPDeflateCompressionRemoteEnabler`](plugins/IMAPDeflateCompressionRemoteEnabler.py).
+
+- [`IMAPDeflateCompressionRemoteEnabler`](plugins/IMAPDeflateCompressionRemoteEnabler.py): An example Email OAuth 2.0 Proxy IMAP plugin that looks for `COMPRESS=DEFLATE` in server capability responses (RFC 1951
+and 4978) and, unlike [`IMAPDecodeDeflateCompression`](plugins/IMAPDecodeDeflateCompression.py), handles this entirely within the plugin, keeping an uncompressed channel to the client, but enabling compressed communication with the server.
+Place this plugin at the end of the chain in the proxy's configuration file.
 
 - [`IMAPIgnoreSentMessageUpload`](plugins/IMAPIgnoreSentMessageUpload.py): An example IMAP plugin that accepts client requests to upload sent messages to an IMAP mailbox, but silently discards them without sending to the server.
 This plugin helps avoid message duplication for servers that automatically place messages sent via SMTP into the relevant IMAP mailbox.

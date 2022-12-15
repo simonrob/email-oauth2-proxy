@@ -1,8 +1,9 @@
 """An example Email OAuth 2.0 Proxy IMAP plugin that looks for client requests to enable compression (RFC 1951 and 4978)
 and, unlike IMAPDisableDeflateCompression.py, permits compression but decompresses messages within the plugin. This
-allows monitoring and editing of compressed incoming and outgoing communication (but only within this plugin, not any
-others). A further improvement that would allow message editing in any plugin but keep the benefits of compression would
-be to disable compression between the client and proxy, but keep it enabled between the proxy and server."""
+allows monitoring and editing of compressed incoming and outgoing communication, but only within this plugin, not any
+others (and as a result only other deflate-aware plugins can be chained). A further improvement can be found in
+IMAPDeflateCompressionRemoteEnabler.py, which enables compression between the proxy and server, but keeps messages
+uncompressed between the client and proxy, improving network efficiency and enabling chaining with any other plugin."""
 
 import re
 import zlib
@@ -10,8 +11,8 @@ import zlib
 import plugins.BasePlugin
 
 IMAP_TAG_PATTERN = plugins.BasePlugin.IMAP.TAG_PATTERN
-IMAP_COMPRESS_START_MATCHER = re.compile(IMAP_TAG_PATTERN + b' COMPRESS DEFLATE\r\n', flags=re.IGNORECASE)
-IMAP_COMPRESS_RESPONSE_MATCHER = re.compile(IMAP_TAG_PATTERN + b' OK.+\r\n', flags=re.IGNORECASE)
+IMAP_COMPRESS_START_MATCHER = re.compile(b'%s COMPRESS DEFLATE\r\n' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_COMPRESS_RESPONSE_MATCHER = re.compile(b'%s OK.+\r\n' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 
 
 class IMAPDecodeDeflateCompression(plugins.BasePlugin.BasePlugin):
@@ -53,7 +54,7 @@ class IMAPDecodeDeflateCompression(plugins.BasePlugin.BasePlugin):
         if self.deflate_sent:
             if not self.deflate_acknowledged:
                 if IMAP_COMPRESS_RESPONSE_MATCHER.match(byte_data):
-                    self.log_debug('Received COMPRESS confirmation; enabling decompressors')
+                    self.log_debug('Received COMPRESS confirmation; enabling de/compressors')
 
                     self.client_decompressor = zlib.decompressobj(-15)
                     self.server_decompressor = zlib.decompressobj(-15)

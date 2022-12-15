@@ -1,14 +1,15 @@
 """An example Email OAuth 2.0 Proxy IMAP plugin that looks for client requests to enable compression (RFC 1951 and 4978)
 and responds with NO every time, so that other plugins can continue to intercept requests. Place this plugin before any
-others if you use a client that automatically tries to enable compression when it finds COMPRESS=DEFLATE in a CAPABILITY
-response. An alternative option here if you do not need to actually edit messages is to keep compression enabled, but
-decompress within the plugin - see IMAPDecodeDeflateCompression.py."""
+others in the chain if you use a client that automatically tries to enable compression when it finds `COMPRESS=DEFLATE`
+in a `CAPABILITY` response. An alternative option here if you do not need to actually edit messages is to keep
+compression enabled, but decompress within a plugin - see IMAPDecodeDeflateCompression.py."""
 
 import re
 
 import plugins.BasePlugin
 
-IMAP_COMPRESS_MATCHER = re.compile(plugins.BasePlugin.IMAP.TAG_PATTERN + b' COMPRESS DEFLATE\r\n', flags=re.IGNORECASE)
+IMAP_COMPRESS_MATCHER = re.compile(b'%s COMPRESS DEFLATE\r\n' % plugins.BasePlugin.IMAP.TAG_PATTERN,
+                                   flags=re.IGNORECASE)
 
 
 class IMAPDisableDeflateCompression(plugins.BasePlugin.BasePlugin):

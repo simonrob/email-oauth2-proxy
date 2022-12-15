@@ -2,9 +2,10 @@
 two overridable methods `receive_from_client` and `receive_from_server` give access to raw IMAP/POP/SMTP messages and/or
 commands as they are received. The return values from the overridden methods and the two sender methods `send_to_server`
 and `send_to_client` allow you to send messages/commands to the client/server (and other chained plugins) in response.
-The `log_debug`, `log_info` and `log_error` methods allow you to post messages to the proxy's main log. Note that
-plugins are inserted after authentication has finished – you will not receive (or be able to send) anything between the
-client or server until that process is complete."""
+The `log_debug`, `log_info` and `log_error` methods allow you to post messages to the proxy's main log. When developing
+plugins, it is important to note that on the client side, plugins are only inserted after authentication has finished
+(in order to prevent any interference with authentication). As a result, you will not receive any messages from the
+client until that process is complete."""
 
 
 class BasePlugin:
@@ -17,10 +18,10 @@ class BasePlugin:
         self.log_info = lambda *args: None
         self.log_error = lambda *args: None
 
-        self.server_plugin_chain = []
-        self.client_plugin_chain = []
-        self.send_to_server_root = lambda _: None
-        self.send_to_client_root = lambda _: None
+        self._server_plugin_chain = []
+        self._client_plugin_chain = []
+        self._send_to_server_root = lambda _: None
+        self._send_to_client_root = lambda _: None
 
     def _attach_log(self, debug, info, error):
         """Internal only - register log methods. Do not override this method."""
@@ -30,36 +31,36 @@ class BasePlugin:
 
     def _register_senders(self, server_plugin_chain, server, client_plugin_chain, client):
         """Internal only - register sender methods and other chained plugins. Do not override this method."""
-        self.server_plugin_chain = server_plugin_chain
-        self.client_plugin_chain = client_plugin_chain
-        self.send_to_server_root = server
-        self.send_to_client_root = client
+        self._server_plugin_chain = server_plugin_chain
+        self._client_plugin_chain = client_plugin_chain
+        self._send_to_server_root = server
+        self._send_to_client_root = client
 
     def send_to_server(self, byte_data):
         """Call `send_to_server` to send messages to the server (and any plugins further down the chain). Use only in
         `receive_from_server`; always handle any client sending needs by returning a value from `receive_from_server`.
         Do not override this method."""
         self.log_debug('-->', byte_data)
-        if self.server_plugin_chain:
-            for plugin in self.server_plugin_chain:
+        if self._server_plugin_chain:
+            for plugin in self._server_plugin_chain:
                 byte_data = plugin.receive_from_client(byte_data)
                 if not byte_data:
                     break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
         if byte_data:
-            self.send_to_server_root(byte_data)
+            self._send_to_server_root(byte_data)
 
     def send_to_client(self, byte_data):
         """Call `send_to_client` to send messages to the client (and any plugins further up the chain). Use only in
         `receive_from_client`; always handle any server sending needs by returning a value from `receive_from_client`.
         Do not override this method."""
         self.log_debug('<--', byte_data)
-        if self.client_plugin_chain:
-            for plugin in self.client_plugin_chain:
+        if self._client_plugin_chain:
+            for plugin in self._client_plugin_chain:
                 byte_data = plugin.receive_from_server(byte_data)
                 if not byte_data:
                     break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
         if byte_data:
-            self.send_to_client_root(byte_data)
+            self._send_to_client_root(byte_data)
 
     # noinspection PyMethodMayBeStatic
     def receive_from_client(self, byte_data):
