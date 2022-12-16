@@ -96,7 +96,7 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
                 if is_base64:
                     edited_message_encoded = base64.encodebytes(edited_message).replace(b'\n', b'\r\n')
                 elif original_message_quopri_count > 0:
-                    edited_message_encoded = quopri.encodestring(edited_message)
+                    edited_message_encoded = quopri.encodestring(edited_message.replace(b'\n', b'\r\n'))
                     edited_message_quopri_count = len(re.findall(QUOPRI_MATCH_PATTERN, edited_message_encoded))
                     if original_message_quopri_count < edited_message_quopri_count * 0.8:
                         # probably not quoted-printable encoded (threshold of 80% match to allow for removed link text)
