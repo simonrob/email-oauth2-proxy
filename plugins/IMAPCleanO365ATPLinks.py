@@ -1,6 +1,7 @@
-"""An example Email OAuth 2.0 Proxy IMAP plugin that looks for Office 365 Advanced Threat Protection links and replaces
-them with their original values (i.e., removing the redirect). As with most of the proxy's plugins, it would be more
-efficient to handle this on the server side (i.e., by disabling link modification), but this is not always possible."""
+"""An example Email OAuth 2.0 Proxy IMAP plugin that looks for Office 365 Advanced Threat Protection links (also known
+as Safe Links in Microsoft Defender for Office 365) and replaces them with their original values (i.e., removing the
+redirect). As with most of the proxy's plugins, it would be more efficient to handle this on the server side (i.e.,
+by disabling link modification), but this is not always possible."""
 
 import base64
 import binascii
@@ -15,8 +16,8 @@ IMAP_COMMAND_MATCHER = re.compile(b'^\\* \\d+ FETCH ', flags=re.IGNORECASE)
 IMAP_FETCH_REQUEST_MATCHER = re.compile(b'^\\* \\d+ FETCH \\(BODY\\[(?:TEXT|1(?:\\.1|\\.2)?|2)] {(?P<length>\\d+)}\r\n',
                                         flags=re.IGNORECASE)  # https://stackoverflow.com/a/37794152
 QUOPRI_MATCH_PATTERN = b'=(?:[A-F\\d]{2}|\r\n)'  # similar to above, we need to guess quoted-printable encoding
-O365_ATP_MATCHER = re.compile(b'(?P<atp>https://eur03\\.safelinks\\.protection\\.outlook\\.com/\\?url=.+?reserved=0)',
-                              flags=re.IGNORECASE)
+O365_ATP_MATCHER = re.compile(b'(?P<atp>https://(?:nam|eur)\\d{2}\\.safelinks\\.protection\\.outlook\\.com/'
+                              b'\\?url=.+?reserved=0)', flags=re.IGNORECASE)
 
 
 class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):

@@ -9,7 +9,7 @@ As a result, it is not specific to IMAP, POP or SMTP, and can be used with any t
 
 - [`IMAPCapabilityModifier`](plugins/IMAPCapabilityModifier.py): An example plugin that intercepts a single IMAP `CAPABILITY` response and modifies it to remove support for `LITERAL+` (chosen only as a common example for demonstration purposes; this is not a useful plugin).
 
-- [`IMAPCleanO365ATPLinks`](plugins/IMAPCleanO365ATPLinks.py): An example IMAP plugin that looks for Office 365 Advanced Threat Protection links and replaces them with their original values (i.e., removing the redirect).
+- [`IMAPCleanO365ATPLinks`](plugins/IMAPCleanO365ATPLinks.py): An example IMAP plugin that looks for Office 365 Advanced Threat Protection links (also known as Safe Links in Microsoft Defender for Office 365) and replaces them with their original values (i.e., removing the redirect).
 As with most of the proxy's plugins, it would be more efficient to handle this on the server side (i.e., by disabling link modification), but this is not always possible.
 
 - [`IMAPDisableDeflateCompression`](plugins/IMAPDisableDeflateCompression.py): An example IMAP plugin that looks for client requests to enable compression (RFC 1951 and 4978) and responds with NO every time, so that other plugins can continue to intercept requests.
