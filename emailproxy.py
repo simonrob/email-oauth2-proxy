@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-12-05'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-14'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -144,7 +144,7 @@ IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#n
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
     r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
-IMAP_CAPABILITY_MATCHER = re.compile(r'^(\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
+IMAP_CAPABILITY_MATCHER = re.compile(r'^(?:\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
@@ -629,7 +629,8 @@ class OAuth2Helper:
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
                 start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
-                token_request['response_url'] = wsgiref.util.request_uri(environ)
+                token_request['response_url'] = token_request['redirect_uri'].rstrip('/') + environ.get(
+                    'PATH_INFO') + '?' + environ.get('QUERY_STRING')
                 return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
                          '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
                          '</style></head><body><p>%s successfully authenticated account %s.</p><p>You can close this '
@@ -1153,7 +1154,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                     self.authentication_tag = match.group('tag')
                     if len(split_flags) > 1:
                         username, password = OAuth2Helper.decode_credentials(' '.join(split_flags[1:]))
-                        self.authenticate_connection(username, password, 'authenticate')
+                        self.authenticate_connection(username, password, command=self.authentication_command)
                     else:
                         self.awaiting_credentials = True
                         self.censor_next_log = True
@@ -1172,8 +1173,7 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             # send authentication command to server (response checked in ServerConnection)
             # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
             super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
-            super().process_data(OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
-            super().process_data(b'\r\n')
+            super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
 
             # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
             if self.server_connection:
@@ -1441,7 +1441,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
-            Log.debug(self.info_string(), '    -->', CENSOR_MESSAGE if censor_log else byte_data)
+            Log.debug(self.info_string(), '    -->', b'%s\r\n' % CENSOR_MESSAGE if censor_log else byte_data)
         return super().send(byte_data)
 
     def handle_error(self):
@@ -1665,8 +1665,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 if success:
                     self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
                     self.authenticated_username = self.username
-                    self.send(OAuth2Helper.encode_oauth2_string(result), censor_log=True)
-                    self.send(b'\r\n')
+                    self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
 
                 self.username = None
                 self.password = None
@@ -1734,7 +1733,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                 new_server_connection.client_connection = new_client_connection
                 self.client_connections.append(new_client_connection)
 
-                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map, address),
+                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
 
             except Exception:
@@ -1750,17 +1749,16 @@ class OAuth2Proxy(asyncore.dispatcher):
             connection.close()
 
     @staticmethod
-    def run_server(client, socket_map, address):
+    def run_server(client, socket_map):
         try:
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.debug(client.proxy_type, address, '[ Connection closed ]')
+                    Log.debug(client.info_string(), '[ Connection closed ]')
                 else:
-                    Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
-                             Log.error_string(e))
+                    Log.info(client.info_string(), 'Caught asyncore exception in thread loop:', Log.error_string(e))
 
     def start(self):
         Log.info('Starting', self.info_string())
@@ -1995,7 +1993,6 @@ class App:
 
         if self.args.config_file:
             CONFIG_FILE_PATH = self.args.config_file
-        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
 
         self.proxies = []
         self.authorisation_requests = []
@@ -2059,17 +2056,22 @@ class App:
                                                                          SystemConfiguration.CFRunLoopGetCurrent(),
                                                                          SystemConfiguration.kCFRunLoopCommonModes)
 
-            # on macOS, catching SIGINT/SIGTERM/SIGQUIT while in pystray's main loop needs a Mach signal handler
-            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda signum: self.exit(self.icon))
-            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda signum: self.exit(self.icon))
-            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda signum: self.exit(self.icon))
+            # on macOS, catching SIGINT/SIGTERM/SIGQUIT/SIGHUP while in pystray's main loop needs a Mach signal handler
+            PyObjCTools.MachSignals.signal(signal.SIGINT, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda _signum: self.exit(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGHUP, lambda _signum: self.load_and_start_servers(self.icon))
 
         else:
             # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
-            signal.signal(signal.SIGINT, lambda signum, frame: self.exit(self.icon))
-            signal.signal(signal.SIGTERM, lambda signum, frame: self.exit(self.icon))
-            if hasattr(signal, 'SIGQUIT'):  # SIGQUIT does not exist on all platforms (e.g., Windows)
-                signal.signal(signal.SIGQUIT, lambda signum, frame: self.exit(self.icon))
+            signal.signal(signal.SIGINT, lambda _signum, _frame: self.exit(self.icon))
+            signal.signal(signal.SIGTERM, lambda _signum, _frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGQUIT'):  # not all signals exist on all platforms (e.g., Windows)
+                signal.signal(signal.SIGQUIT, lambda _signum, _frame: self.exit(self.icon))
+            if hasattr(signal, 'SIGHUP'):
+                # allow config file reloading without having to stop/start - e.g.: pkill -SIGHUP -f emailproxy.py
+                # (we don't use linux_restart() here as it exits then uses nohup to restart, which may not be desirable)
+                signal.signal(signal.SIGHUP, lambda _signum, _frame: self.load_and_start_servers(self.icon))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2368,7 +2370,7 @@ class App:
                 }
             else:
                 # just toggle the disabled value rather than loading/unloading, so we don't need to restart the proxy
-                with open(PLIST_FILE_PATH, mode='rb', encoding='utf-8') as plist_file:
+                with open(PLIST_FILE_PATH, mode='rb') as plist_file:
                     plist = plistlib.load(plist_file)
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
@@ -2376,12 +2378,12 @@ class App:
             plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
-            with open(PLIST_FILE_PATH, mode='wb', encoding='utf-8') as plist_file:
+            with open(PLIST_FILE_PATH, mode='wb') as plist_file:
                 plistlib.dump(plist, plist_file)
 
             # if loading, need to exit so we're not running twice (also exits the terminal instance for convenience)
             if not self.macos_launchctl('list'):
-                self.exit(icon, restart_callback=self.macos_launchctl('load'))
+                self.exit(icon, restart_callback=lambda: self.macos_launchctl('load'))
             elif recreate_login_file:
                 # Launch Agents need to be unloaded and reloaded to reflect changes in their plist file, but we can't
                 # do this ourselves because 1) unloading exits the agent; and, 2) we can't launch a completely separate
@@ -2479,7 +2481,7 @@ class App:
         if sys.platform == 'darwin':
             if PLIST_FILE_PATH.exists():
                 if App.macos_launchctl('list'):
-                    with open(PLIST_FILE_PATH, mode='rb', encoding='utf-8') as plist_file:
+                    with open(PLIST_FILE_PATH, mode='rb') as plist_file:
                         plist = plistlib.load(plist_file)
                     if 'Disabled' in plist:
                         return not plist['Disabled']
@@ -2543,6 +2545,7 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
+        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
         config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
@@ -2605,6 +2608,7 @@ class App:
             icon.update_menu()  # force refresh the menu to show running proxy servers
 
         threading.Thread(target=App.run_proxy, name='EmailOAuth2Proxy-main', daemon=True).start()
+        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         return True
 
     def post_create(self, icon):
@@ -2617,7 +2621,6 @@ class App:
         if not self.load_and_start_servers(icon, reload=False):
             return
 
-        Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
