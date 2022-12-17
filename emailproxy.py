@@ -62,14 +62,16 @@ if sys.platform == 'darwin':
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
 no_gui_parser = argparse.ArgumentParser(add_help=False)
 no_gui_parser.add_argument('--no-gui', action='store_true')
-if not no_gui_parser.parse_known_args()[0].no_gui:
+no_gui_parser.add_argument('--external-auth', action='store_true')
+no_gui_args = no_gui_parser.parse_known_args()[0]
+if not no_gui_args.no_gui:
     import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
 
     # noinspection PyPackageRequirements
-    import webview  # the popup authentication window (in default and `--external-auth` modes only)
+    import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
 
     # for macOS-specific functionality
     if sys.platform == 'darwin':
@@ -89,7 +91,18 @@ else:
     class AppKit:
         class NSObject:
             pass
+
+
+    if no_gui_args.external_auth:
+        try:
+            # prompt_toolkit is a recent dependency addition that is only required in no-GUI external authorisation
+            # mode, but may not be present if only the proxy script itself has been updated
+            import prompt_toolkit
+        except ModuleNotFoundError:
+            sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in `--no-gui` '
+                     'mode. Please run `python -m pip install -r requirements-no-gui.txt`')
 del no_gui_parser
+del no_gui_args
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -2525,6 +2538,7 @@ class App:
             prompt_toolkit.application.current.get_app().exit(exception=EOFError)
             time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
+        # noinspection PyUnresolvedReferences
         with prompt_toolkit.patch_stdout.patch_stdout():
             open_time = 0
             response_url = None
@@ -2569,10 +2583,6 @@ class App:
                 time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
     def terminal_external_auth_prompt(self, data):
-        # prompt_toolkit is a recent addition that is not essential - importing here so that it is not a core dependency
-        # noinspection PyGlobalUndefined
-        global prompt_toolkit
-        import prompt_toolkit
         prompt_session = prompt_toolkit.PromptSession()
         prompt_stop_event = threading.Event()
         threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
