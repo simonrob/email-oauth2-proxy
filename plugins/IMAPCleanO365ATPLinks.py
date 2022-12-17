@@ -16,8 +16,13 @@ IMAP_COMMAND_MATCHER = re.compile(b'^\\* \\d+ FETCH ', flags=re.IGNORECASE)
 IMAP_FETCH_REQUEST_MATCHER = re.compile(b'^\\* \\d+ FETCH \\(BODY\\[(?:TEXT|1(?:\\.1|\\.2)?|2)] {(?P<length>\\d+)}\r\n',
                                         flags=re.IGNORECASE)  # https://stackoverflow.com/a/37794152
 QUOPRI_MATCH_PATTERN = b'=(?:[A-F\\d]{2}|\r\n)'  # similar to above, we need to guess quoted-printable encoding
-O365_ATP_MATCHER = re.compile(b'(?P<atp>https://(?:nam|eur)\\d{2}\\.safelinks\\.protection\\.outlook\\.com/'
-                              b'\\?url=.+?reserved=0)', flags=re.IGNORECASE)
+
+# github.com/MicrosoftDocs/microsoft-365-docs/blob/public/microsoft-365/includes/microsoft-365-multi-geo-locations.md
+O365_GEO_LOCATIONS = '|'.join(['APC', 'AUS', 'BRA', 'CAN', 'EUR', 'FRA', 'DEU', 'IND', 'JPN', 'KOR', 'NAM', 'NOR',
+                               'QAT', 'ZAF', 'SWE', 'CHE', 'ARE', 'GBR']).lower().encode('utf-8')
+# noinspection RegExpUnnecessaryNonCapturingGroup
+O365_ATP_MATCHER = re.compile(b'(?P<atp>https://(?:%s)\\d{2}\\.safelinks\\.protection\\.outlook\\.com/'
+                              b'\\?url=.+?reserved=0)' % O365_GEO_LOCATIONS, flags=re.IGNORECASE)
 
 
 class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
