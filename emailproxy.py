@@ -305,25 +305,28 @@ class AppConfig:
                 try:
                     get_secret_value_response = aws_client.get_secret_value(SecretId=secret_id)
                 except ClientError as err_getsecret:
-                    # For a list of exceptions thrown, see
-                    # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
                     if err_getsecret.response['Error']['Code'] == 'ResourceNotFoundException':
-                        if secret_id.startswith('arn:'):
-                            Log.error('Error: AWS Secret "%s"'
-                                      ' does not exist, cannot create secret with specific ARN.' % (secret_id))
-                            raise err_getsecret
+                        if err_getsecret.response['Error']['Message'] == "Secrets Manager can't find the specified secret.":
+                            if secret_id.startswith('arn:'):
+                                Log.error('Error: AWS Secret "%s"'
+                                          ' does not exist, cannot create secret with specific ARN.' % (secret_id))
+                                raise err_getsecret
+                            else:
+                                Log.info('Warning: AWS Secret "%s" does not exist, attempting to create it' % (secret_id))
+                                try:
+                                    create_secret_value_response = aws_client.create_secret(
+                                        Name=secret_id,
+                                        ForceOverwriteReplicaSecret=False)
+                                except ClientError as err_createsecret:
+                                    if err_createsecret.response['Error']['Code'] == 'AccessDeniedException':
+                                        Log.error('Error: could not create secret, does your IAM user have'
+                                                  ' "secretsmanager:CreateSecret" permissions?')
+                                    raise err_createsecret
+                        elif err_getsecret.response['Error']['Message'] == "Secrets Manager can't find the specified secret value for staging label: AWSCURRENT":
+                            # no need to raise error, the secret exists in AWS Secrets Manager but no value has been stored yet
+                            pass
                         else:
-                            Log.info('Warning: AWS Secret "%s" does not exist, attempting to create it' % (secret_id))
-                            try:
-                                create_secret_value_response = aws_client.create_secret(
-                                    Name=secret_id,
-                                    SecretString='{}',
-                                    ForceOverwriteReplicaSecret=False)
-                            except ClientError as err_createsecret:
-                                if err_createsecret.response['Error']['Code'] == 'AccessDeniedException':
-                                    Log.error('Error: could not create secret, does your IAM user have'
-                                              ' "secretsmanager:CreateSecret" permissions?')
-                                raise err_createsecret
+                            raise err_getsecret
                     else:
                         raise err_getsecret
                 else:
