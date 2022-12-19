@@ -384,42 +384,41 @@ class AppConfig:
     def save():
         if AppConfig._LOADED:
             def store_and_clear_aws_secrets():
-                accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
-                if accounts_using_aws_secret and 'boto3' in sys.modules:
-                    TOKEN_KEYS = ['token_salt','access_token','access_token_expiry','refresh_token']
+                TOKEN_KEYS = ['token_salt','access_token','access_token_expiry','refresh_token']
 
-                    # Create deep copy of config (to write tokens to AWS Secrets Manager, not to local config file)
-                    appconfig_to_save = configparser.ConfigParser()
-                    appconfig_to_save.read_dict(AppConfig._PARSER)
+                # Create deep copy of config (to write tokens to AWS Secrets Manager, not to local config file)
+                appconfig_to_save = configparser.ConfigParser()
+                appconfig_to_save.read_dict(AppConfig._PARSER)
 
-                    # Create dict of AWS Secret IDs across all accounts
-                    aws_secrets = dict.fromkeys([appconfig_to_save[account]['aws_secret'] for account in accounts_using_aws_secret], {})
+                # Create dict of AWS Secret IDs across all accounts
+                aws_secrets = dict.fromkeys([appconfig_to_save[account]['aws_secret'] for account in accounts_using_aws_secret], {})
 
-                    # Populate dict with OAuth tokens from each account
-                    for account in accounts_using_aws_secret:
-                        aws_secrets[appconfig_to_save[account]['aws_secret']][account] = { key : appconfig_to_save[account][key] for key in TOKEN_KEYS }
-                        for key in TOKEN_KEYS:
-                            appconfig_to_save.remove_option(account, key)
+                # Populate dict with OAuth tokens from each account
+                for account in accounts_using_aws_secret:
+                    aws_secrets[appconfig_to_save[account]['aws_secret']][account] = { key : appconfig_to_save[account][key] for key in TOKEN_KEYS }
+                    for key in TOKEN_KEYS:
+                        appconfig_to_save.remove_option(account, key)
 
-                    # Update AWS Secrets
-                    aws_client = boto3.client('secretsmanager')
-                    for secret_id in aws_secrets:
-                        try:
-                            response = aws_client.put_secret_value(
-                                SecretId=secret_id,
-                                SecretString=json.dumps(aws_secrets[secret_id]),
-                            )
-                        except ClientError as e:
-                            # For a list of exceptions thrown, see
-                            # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-                            raise e
+                # Update AWS Secrets
+                aws_client = boto3.client('secretsmanager')
+                for secret_id in aws_secrets:
+                    try:
+                        response = aws_client.put_secret_value(
+                            SecretId=secret_id,
+                            SecretString=json.dumps(aws_secrets[secret_id]),
+                        )
+                    except ClientError as e:
+                        raise e
 
-                    # Return copy of config without OAuth tokens to write to disk
-                    return appconfig_to_save
-                else:
-                    return AppConfig._PARSER
+                # Return copy of config without OAuth tokens to write to disk
+                return appconfig_to_save
+            
+            accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
+            if accounts_using_aws_secret:
+                config_to_write = store_and_clear_aws_secrets()
+            else:
+                config_to_write = AppConfig._PARSER
 
-            config_to_write = store_and_clear_aws_secrets()
             with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
                 config_to_write.write(config_output)
 
