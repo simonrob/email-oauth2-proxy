@@ -291,35 +291,53 @@ class AppConfig:
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
 
         def fetch_aws_secrets():
-            # TODO: handle scenario where aws secret has not yet been created
-            accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
-            if accounts_using_aws_secret:
-                if 'boto3' not in sys.modules:
-                    Log.info('Warning: client configuration for some accounts includes an aws_secret'
-                             ' parameter, but the app has been loaded without the --aws-secrets option.'
-                             ' Therefore tokens will be saved to the local configuration file rather than the'
-                             ' remote AWS Secrets Manager.')
+            if 'boto3' not in sys.modules:
+                Log.error('Error: client configuration for some accounts includes an aws_secret'
+                          ' parameter, but the app has been loaded without the --aws-secrets option.')
+                raise ValueError("--aws-secrets must be specified if account configuration includes aws_secret")
+
+            # Create dict of AWS Secret IDs across all accounts
+            aws_secrets = dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in accounts_using_aws_secret], {})
+
+            # Download AWS Secrets
+            aws_client = boto3.client('secretsmanager')
+            for secret_id in aws_secrets:
+                try:
+                    get_secret_value_response = aws_client.get_secret_value(SecretId=secret_id)
+                except ClientError as err_getsecret:
+                    # For a list of exceptions thrown, see
+                    # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+                    if err_getsecret.response['Error']['Code'] == 'ResourceNotFoundException':
+                        if secret_id.startswith('arn:'):
+                            Log.error('Error: AWS Secret "%s"'
+                                      ' does not exist, cannot create secret with specific ARN.' % (secret_id))
+                            raise err_getsecret
+                        else:
+                            Log.info('Warning: AWS Secret "%s" does not exist, attempting to create it' % (secret_id))
+                            try:
+                                create_secret_value_response = aws_client.create_secret(
+                                    Name=secret_id,
+                                    SecretString='{}',
+                                    ForceOverwriteReplicaSecret=False)
+                            except ClientError as err_createsecret:
+                                if err_createsecret.response['Error']['Code'] == 'AccessDeniedException':
+                                    Log.error('Error: could not create secret, does your IAM user have'
+                                              ' "secretsmanager:CreateSecret" permissions?')
+                                raise err_createsecret
+                    else:
+                        raise err_getsecret
                 else:
-                    # Create dict of AWS Secret IDs across all accounts
-                    aws_secrets = dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in accounts_using_aws_secret], {})
-        
-                    # Download AWS Secrets
-                    aws_client = boto3.client('secretsmanager')
-                    for secret_id in aws_secrets:
-                        try:
-                            get_secret_value_response = aws_client.get_secret_value(SecretId=secret_id)
-                        except ClientError as e:
-                            # For a list of exceptions thrown, see
-                            # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-                            raise e
-                        aws_secrets[secret_id] = json.loads(get_secret_value_response['SecretString'])
+                    aws_secrets[secret_id] = json.loads(get_secret_value_response['SecretString'])
 
-                    # Update local config
-                    for account in accounts_using_aws_secret:
-                        for key in ['token_salt','access_token','access_token_expiry','refresh_token']:
-                            AppConfig._PARSER.set(account, key, aws_secrets[AppConfig._PARSER[account]['aws_secret']][account][key])
+            # Update local config
+            for account in accounts_using_aws_secret:
+                if account in aws_secrets[AppConfig._PARSER[account]['aws_secret']]:
+                    for key in ['token_salt','access_token','access_token_expiry','refresh_token']:
+                        AppConfig._PARSER.set(account, key, aws_secrets[AppConfig._PARSER[account]['aws_secret']][account][key])
 
-        fetch_aws_secrets()
+        accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
+        if accounts_using_aws_secret:
+            fetch_aws_secrets()
         AppConfig._LOADED = True
 
     @staticmethod
@@ -366,7 +384,6 @@ class AppConfig:
     def save():
         if AppConfig._LOADED:
             def store_and_clear_aws_secrets():
-                # TODO: handle scenario where aws secret has not yet been created
                 accounts_using_aws_secret = [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
                 if accounts_using_aws_secret and 'boto3' in sys.modules:
                     TOKEN_KEYS = ['token_salt','access_token','access_token_expiry','refresh_token']
