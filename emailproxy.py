@@ -98,7 +98,7 @@ aws_secrets_parser.add_argument('--aws-secrets', action='store_true')
 
 if aws_secrets_parser.parse_known_args()[0].aws_secrets:
     import boto3
-    from botocore.exceptions import ClientError
+    import botocore.exceptions
 del aws_secrets_parser
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
@@ -304,7 +304,7 @@ class AppConfig:
             for secret_id in aws_secrets:
                 try:
                     get_secret_value_response = aws_client.get_secret_value(SecretId=secret_id)
-                except ClientError as err_getsecret:
+                except botocore.exceptions as err_getsecret:
                     if err_getsecret.response['Error']['Code'] == 'ResourceNotFoundException':
                         if err_getsecret.response['Error']['Message'] == "Secrets Manager can't find the specified secret.":
                             if secret_id.startswith('arn:'):
@@ -317,7 +317,7 @@ class AppConfig:
                                     create_secret_value_response = aws_client.create_secret(
                                         Name=secret_id,
                                         ForceOverwriteReplicaSecret=False)
-                                except ClientError as err_createsecret:
+                                except botocore.exceptions as err_createsecret:
                                     if err_createsecret.response['Error']['Code'] == 'AccessDeniedException':
                                         Log.error('Error: could not create secret, does your IAM user have'
                                                   ' "secretsmanager:CreateSecret" permissions?')
@@ -410,7 +410,7 @@ class AppConfig:
                             SecretId=secret_id,
                             SecretString=json.dumps(aws_secrets[secret_id]),
                         )
-                    except ClientError as e:
+                    except botocore.exceptions as e:
                         raise e
 
                 # Return copy of config without OAuth tokens to write to disk
