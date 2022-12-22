@@ -405,13 +405,10 @@ class AppConfig:
                 # Update AWS Secrets
                 aws_client = boto3.client('secretsmanager')
                 for secret_id in aws_secrets:
-                    try:
-                        response = aws_client.put_secret_value(
-                            SecretId=secret_id,
-                            SecretString=json.dumps(aws_secrets[secret_id]),
-                        )
-                    except botocore.exceptions as e:
-                        raise e
+                    response = aws_client.put_secret_value(
+                        SecretId=secret_id,
+                        SecretString=json.dumps(aws_secrets[secret_id]),
+                    )
 
                 # Return copy of config without OAuth tokens to write to disk
                 return appconfig_to_save
@@ -2469,7 +2466,7 @@ class App:
         if self.args.config_file:
             script_command.extend(['--config-file', CONFIG_FILE_PATH])
         if self.args.aws_secrets:
-            script_command.extend(['--aws-secrets', CONFIG_FILE_PATH])
+            script_command.append('--aws-secrets')
 
         return script_command
 
