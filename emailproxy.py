@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-12-14'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2022-12-23'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
@@ -63,16 +63,18 @@ if sys.platform == 'darwin':
 
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-no_gui_parser = argparse.ArgumentParser()
+no_gui_parser = argparse.ArgumentParser(add_help=False)
 no_gui_parser.add_argument('--no-gui', action='store_true')
-if not no_gui_parser.parse_known_args()[0].no_gui:
+no_gui_parser.add_argument('--external-auth', action='store_true')
+no_gui_args = no_gui_parser.parse_known_args()[0]
+if not no_gui_args.no_gui:
     import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
 
     # noinspection PyPackageRequirements
-    import webview  # the popup authentication window (in default and `--external-auth` modes only)
+    import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
 
     # for macOS-specific functionality
     if sys.platform == 'darwin':
@@ -92,7 +94,18 @@ else:
     class AppKit:
         class NSObject:
             pass
+
+
+    if no_gui_args.external_auth:
+        try:
+            # prompt_toolkit is a recent dependency addition that is only required in no-GUI external authorisation
+            # mode, but may not be present if only the proxy script itself has been updated
+            import prompt_toolkit
+        except ModuleNotFoundError:
+            sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in `--no-gui` '
+                     'mode. Please run `python -m pip install -r requirements-no-gui.txt`')
 del no_gui_parser
+del no_gui_args
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -137,7 +150,7 @@ IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#n
 IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
     r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
-IMAP_CAPABILITY_MATCHER = re.compile(r'^(\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
+IMAP_CAPABILITY_MATCHER = re.compile(r'^(?:\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
@@ -634,10 +647,10 @@ class OAuth2Helper:
                 return False, '%s is shutting down' % APP_NAME
 
             if data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
-                # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
-                # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
-                if 'expired' in data and data['expired']:  # local server auth wsgi request error or failure
-                    return False, 'Local server auth request failed'
+                # to improve no-GUI mode we also support the use of a local redirection receiver server or terminal
+                # entry to authenticate; this result is a timeout, wsgi request error/failure, or terminal auth ctrl+c
+                if 'expired' in data and data['expired']:
+                    return False, 'No-GUI authorisation request failed or timed out'
 
                 if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
@@ -1712,7 +1725,7 @@ class OAuth2Proxy(asyncore.dispatcher):
                     plugin._register_senders(configuration['plugins'][i + 1:], new_server_connection.send,
                                              list(reversed(configuration['plugins'][:i])), new_client_connection.send)
 
-                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map, address),
+                threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
 
             except TypeError as e:
@@ -1735,17 +1748,16 @@ class OAuth2Proxy(asyncore.dispatcher):
             connection.close()
 
     @staticmethod
-    def run_server(client, socket_map, address):
+    def run_server(client, socket_map):
         try:
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.debug(client.proxy_type, address, '[ Connection closed ]')
+                    Log.debug(client.info_string(), '[ Connection closed ]')
                 else:
-                    Log.info('Caught asyncore exception in', client.proxy_type, address, 'thread loop:',
-                             Log.error_string(e))
+                    Log.info(client.info_string(), 'Caught asyncore exception in thread loop:', Log.error_string(e))
 
     def start(self):
         Log.info('Starting', self.info_string())
@@ -1951,12 +1963,16 @@ class App:
     def __init__(self):
         global CONFIG_FILE_PATH
         parser = argparse.ArgumentParser(description=APP_NAME)
-        parser.add_argument('--external-auth', action='store_true', help='handle authorisation via an external browser '
-                                                                         'rather than this script\'s own popup window')
         parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
                                                                   'account authorisation requests will fail unless a '
                                                                   'pre-authorised configuration file is used, or you '
-                                                                  'enable `--local-server-auth` and monitor output)')
+                                                                  'enable `--external-auth` or `--local-server-auth` '
+                                                                  'and monitor log output)')
+        parser.add_argument('--external-auth', action='store_true', help='handle authorisation externally: rather than '
+                                                                         'intercepting `redirect_uri`, the proxy will '
+                                                                         'wait for you to paste the result into either '
+                                                                         'its popup window (GUI-mode) or the terminal '
+                                                                         '(no-GUI mode; requires `prompt_toolkit`)')
         parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
                                                                              'URLs to the log and starting a local web '
                                                                              'server on demand to receive responses')
@@ -2162,7 +2178,7 @@ class App:
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
-        items.append(pystray.MenuItem('Edit configuration file...', self.edit_config))
+        items.append(pystray.MenuItem('Edit configuration file...', lambda: self.system_open(CONFIG_FILE_PATH)))
 
         # asyncore sockets on Linux have a shutdown delay (the time.sleep() call in asyncore.poll), which means we can't
         # easily reload the server configuration without exiting the script and relying on daemon threads to be stopped
@@ -2202,16 +2218,16 @@ class App:
         return '    %s (%s)' % (account, formatted_sync_time)
 
     @staticmethod
-    def edit_config():
+    def system_open(path):
         AppConfig.save()  # so we are always editing the most recent version of the file
         if sys.platform == 'darwin':
-            result = os.system('open %s' % CONFIG_FILE_PATH)
+            result = subprocess.call(['open', path])
             if result != 0:  # no default editor found for this file type; open as a text file
-                os.system('open -t %s' % CONFIG_FILE_PATH)
+                subprocess.call(['open', '-t', path])
         elif sys.platform == 'win32':
-            os.startfile(CONFIG_FILE_PATH)
+            os.startfile(path)
         elif sys.platform.startswith('linux'):
-            os.system('xdg-open %s' % CONFIG_FILE_PATH)
+            subprocess.call(['xdg-open', path])
         else:
             pass  # nothing we can do
 
@@ -2317,7 +2333,7 @@ class App:
             # respond to both the original request and any duplicates in the list
             completed_request = None
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
-                if OAuth2Helper.match_redirect_uri(request['redirect_uri'], url) and request['username'] == username:
+                if request['username'] == username and OAuth2Helper.match_redirect_uri(request['redirect_uri'], url):
                     Log.info('Returning authorisation request result for', request['username'])
                     RESPONSE_QUEUE.put(
                         {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
@@ -2503,7 +2519,7 @@ class App:
                     for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
                         text = text.replace(*replacement)
                         title = title.replace(*replacement)
-                    os.system('osascript -e \'display notification "%s" with title "%s"\'' % (text, title))
+                    subprocess.call(['osascript', '-e', 'display notification "%s" with title "%s"' % (text, title)])
 
             elif self.icon.HAS_NOTIFICATION:
                 self.icon.remove_notification()
@@ -2618,6 +2634,67 @@ class App:
         Log.info('Initialised', APP_NAME, '- listening for authentication requests. Connect your email client to begin')
         return True
 
+    @staticmethod
+    def terminal_external_auth_input(prompt_session, prompt_stop_event, data):
+        with contextlib.suppress(Exception):  # cancel any other prompts; thrown if there are none to cancel
+            prompt_toolkit.application.current.get_app().exit(exception=EOFError)
+            time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
+
+        # noinspection PyUnresolvedReferences
+        with prompt_toolkit.patch_stdout.patch_stdout():
+            open_time = 0
+            response_url = None
+            Log.info('Please visit the following URL to authenticate account %s: %s' % (
+                data['username'], data['permission_url']))
+            # noinspection PyUnresolvedReferences
+            style = prompt_toolkit.styles.Style.from_dict({'url': 'underline'})
+            prompt = [('', '\nCopy+paste or press [↵ Return] to visit the following URL and authenticate account %s: ' %
+                       data['username']), ('class:url', data['permission_url']), ('', ' then paste here the full '),
+                      ('', 'post-authentication URL from the browser\'s address bar (it should start with %s): ' %
+                       data['redirect_uri'])]
+            while True:
+                try:
+                    response_url = prompt_session.prompt(prompt, style=style)
+                except (KeyboardInterrupt, EOFError):
+                    break
+                if not response_url:
+                    if time.time() - open_time > 1:  # don't open many windows on key repeats
+                        App.system_open(data['permission_url'])
+                        open_time = time.time()
+                else:
+                    break
+
+            prompt_stop_event.set()  # cancel the timeout thread
+
+            result = {'permission_url': data['permission_url'], 'username': data['username']}
+            if response_url:
+                Log.debug('No-GUI external auth mode: returning response', response_url)
+                result['response_url'] = response_url
+            else:
+                Log.debug('No-GUI external auth mode: no response provided; cancelling authorisation request')
+                result['expired'] = True
+            RESPONSE_QUEUE.put(result)
+
+    @staticmethod
+    def terminal_external_auth_timeout(prompt_session, prompt_stop_event):
+        prompt_time = 0
+        while prompt_time < AUTHENTICATION_TIMEOUT and not prompt_stop_event.is_set():
+            time.sleep(1)
+            prompt_time += 1
+
+        if not prompt_stop_event.is_set():
+            with contextlib.suppress(Exception):  # thrown if the prompt session has already exited
+                prompt_session.app.exit(exception=EOFError)
+                time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
+
+    def terminal_external_auth_prompt(self, data):
+        prompt_session = prompt_toolkit.PromptSession()
+        prompt_stop_event = threading.Event()
+        threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
+                         daemon=True).start()
+        threading.Thread(target=self.terminal_external_auth_timeout, args=(prompt_session, prompt_stop_event),
+                         daemon=True).start()
+
     def post_create(self, icon):
         if EXITING:
             return  # to handle launch in pystray 'dummy' mode without --no-gui option (partial initialisation failure)
@@ -2634,12 +2711,20 @@ class App:
                 break
             if not data['expired']:
                 Log.info('Authorisation request received for', data['username'],
-                         '(local server auth mode)' if self.args.local_server_auth else '(interactive mode)')
+                         '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
+                         self.args.external_auth else '(interactive mode)')
                 if self.args.local_server_auth:
+                    self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
+                                data['username'])
                     data['local_server_auth'] = True
                     RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
-                    self.notify(APP_NAME,
-                                'Local server auth mode: please authorise a request for account %s' % data['username'])
+                elif self.args.external_auth and self.args.no_gui:
+                    if sys.stdin.isatty():
+                        self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
+                                              '%s' % data['username'])
+                        self.terminal_external_auth_prompt(data)
+                    else:
+                        Log.error('Not running interactively; unable to handle no-GUI external auth request')
                 elif icon:
                     self.authorisation_requests.append(data)
                     icon.update_menu()  # force refresh the menu
