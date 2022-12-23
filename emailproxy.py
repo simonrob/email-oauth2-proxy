@@ -639,10 +639,10 @@ class OAuth2Helper:
                 return False, '%s is shutting down' % APP_NAME
 
             elif data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
-                # to improve no-GUI mode we also support the use of a local server to receive the OAuth redirection
-                # (note: not enabled by default because no-GUI mode is typically unattended, but useful in some cases)
-                if 'expired' in data and data['expired']:  # local server auth wsgi request error or failure
-                    return False, 'Local server auth request failed'
+                # to improve no-GUI mode we also support the use of a local redirection receiver server or terminal
+                # entry to authenticate; this result is a timeout, wsgi request error/failure, or terminal auth ctrl+c
+                if 'expired' in data and data['expired']:
+                    return False, 'No-GUI authorisation request failed or timed out'
 
                 elif 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
@@ -2544,12 +2544,15 @@ class App:
             response_url = None
             Log.info('Please visit the following URL to authenticate account %s: %s' % (
                 data['username'], data['permission_url']))
-            prompt_text = 'Press enter or copy+paste to visit the following URL and authenticate account %s: %s. ' \
-                          'Next, paste here the full post-authentication URL from the browser\'s address bar - it ' \
-                          'should start with %s: ' % (data['username'], data['permission_url'], data['redirect_uri'])
+            # noinspection PyUnresolvedReferences
+            style = prompt_toolkit.styles.Style.from_dict({'url': 'underline'})
+            prompt = [('', '\nCopy+paste or press [↵ Return] to visit the following URL and authenticate account %s: ' %
+                       data['username']), ('class:url', data['permission_url']), ('', ' then paste here the full '),
+                      ('', 'post-authentication URL from the browser\'s address bar (it should start with %s): ' %
+                       data['redirect_uri'])]
             while True:
                 try:
-                    response_url = prompt_session.prompt('\n%s' % prompt_text)
+                    response_url = prompt_session.prompt(prompt, style=style)
                 except (KeyboardInterrupt, EOFError):
                     break
                 if not response_url:
@@ -2563,10 +2566,10 @@ class App:
 
             result = {'permission_url': data['permission_url'], 'username': data['username']}
             if response_url:
-                Log.debug('Terminal auth mode: returning response', response_url)
+                Log.debug('No-GUI external auth mode: returning response', response_url)
                 result['response_url'] = response_url
             else:
-                Log.debug('Terminal auth mode: no response provided; cancelling authorisation request')
+                Log.debug('No-GUI external auth mode: no response provided; cancelling authorisation request')
                 result['expired'] = True
             RESPONSE_QUEUE.put(result)
 
