@@ -85,9 +85,14 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
                 start, end = match.span()
                 edited_message += original_message_decoded[current_position:start]
 
-                # parse_qsl not parse_qs because we only ever care about non-array values
                 atp_url = match.group('atp')
-                atp_url_parts = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(atp_url).query))
+                try:
+                    # parse_qsl not parse_qs because we only ever care about non-array values
+                    atp_url_query = urllib.parse.urlparse(atp_url).query
+                except UnicodeDecodeError:
+                    # urlparse assumes ascii encoding which is not always the case; try to recover if possible
+                    atp_url_query = atp_url.rsplit(b'&data', 2)[0].partition(b'?')[2]
+                atp_url_parts = dict(urllib.parse.parse_qsl(atp_url_query))
                 if b'url' in atp_url_parts:
                     edited_message += atp_url_parts[b'url']
                     link_count += 1

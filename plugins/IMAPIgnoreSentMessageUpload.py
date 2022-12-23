@@ -38,8 +38,8 @@ class IMAPIgnoreSentMessageUpload(plugins.BasePlugin.BasePlugin):
                     self.appending = True
                     self.append_tag = match.group('tag')
                     self.expected_message_length = int(match.group('length'))
-                    self.log_debug('Received APPEND command matching mailbox "%s" - intercepting and ignoring message '
-                                   'of length %d' % (match.group('mailbox'), self.expected_message_length))
+                    self.log_debug('Received APPEND command matching mailbox', match.group('mailbox'), '- intercepting',
+                                   'and ignoring message of length', self.expected_message_length)
                     self.send_to_client(b'+\r\n')  # request full message data
                     return None
 

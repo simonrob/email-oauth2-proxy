@@ -60,11 +60,10 @@ class IMAPDeflateCompressionRemoteEnabler(plugins.BasePlugin.BasePlugin):
                 self.deflate_capability_command += byte_data  # make sure messages are not received out of order
                 return None
 
+            if self.server_decompressor.unconsumed_tail:
+                compressed_data = self.server_decompressor.unconsumed_tail + byte_data
             else:
-                if self.server_decompressor.unconsumed_tail:
-                    compressed_data = self.server_decompressor.unconsumed_tail + byte_data
-                else:
-                    compressed_data = byte_data
-                return self.server_decompressor.decompress(compressed_data)
+                compressed_data = byte_data
+            return self.server_decompressor.decompress(compressed_data)
 
         return byte_data

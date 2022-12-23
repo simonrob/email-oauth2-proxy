@@ -76,37 +76,33 @@ class SMTPSimpleMailingList(plugins.BasePlugin.BasePlugin):
                 self.sending_state = self.STATE.MAIL_FROM
             return byte_data  # pass through unedited
 
-        if byte_data.lower() == b'rset\r\n':  # RSET can be sent at any point; discard state and reset
+        if len(byte_data) == 6 and byte_data.lower() == b'rset\r\n':  # RSET can be sent at any point; discard state
             self.reset()
-            return byte_data
 
-        if self.sending_state == self.STATE.MAIL_FROM:
+        elif self.sending_state == self.STATE.MAIL_FROM:
             if SMTP_RCPT_TO_MATCHER.match(byte_data):  # initial recipient
                 self.log_debug('Received RCPT TO; checking lists', byte_data)
                 self.sending_state = self.STATE.RCPT_TO
                 return self.check_rcpt_to(byte_data)
-            return byte_data
 
-        if self.sending_state == self.STATE.RCPT_TO:
+        elif self.sending_state == self.STATE.RCPT_TO:
             if SMTP_RCPT_TO_MATCHER.match(byte_data):  # additional recipients
                 self.log_debug('Received additional RCPT TO; checking lists', byte_data)
                 return self.check_rcpt_to(byte_data)
             if byte_data.lower() == b'data\r\n':
                 self.sending_state = self.STATE.DATA
-            return byte_data
 
-        if self.sending_state == self.STATE.DATA:  # message contents
+        elif self.sending_state == self.STATE.DATA:  # message contents
             for address in self.matched_addresses:
                 if address in byte_data:
                     # note: this simplistic replacement assumes there will only be one occurrence of the recipient list,
-                    # and will not work with named recipients (e.g., My List<list@example.com>)
+                    # and will not work with named recipients (e.g., My List<list@example.com>) or unmatched casing
                     byte_data = byte_data.replace(address, b', '.join(self.list_addresses[address]), 1)
 
             if byte_data.endswith(b'\r\n.\r\n') or (self.previous_line_ended and byte_data == b'.\r\n'):  # end of email
                 self.reset()
             else:
                 self.previous_line_ended = byte_data.endswith(b'\r\n')
-            return byte_data
 
         return byte_data
 
@@ -118,8 +114,7 @@ class SMTPSimpleMailingList(plugins.BasePlugin.BasePlugin):
             self.list_recipients = self.list_addresses[matched_address][:]  # clone to allow popping
             self.log_debug('Found RCPT TO list match:', matched_address)
             if len(self.list_recipients) > 0:  # replace the list with the first recipient
-                byte_data = b'RCPT TO:<' + self.list_recipients.pop(0) + b'>\r\n'
-                self.send_to_server(byte_data)
+                return b'RCPT TO:<' + self.list_recipients.pop(0) + b'>\r\n'
             return None
 
         return byte_data
@@ -127,8 +122,7 @@ class SMTPSimpleMailingList(plugins.BasePlugin.BasePlugin):
     def receive_from_server(self, byte_data):
         if self.sending_state == self.STATE.RCPT_TO:  # send any additional recipients directly to the server
             if len(self.list_recipients) > 0:
-                byte_data = b'RCPT TO:<' + self.list_recipients.pop(0) + b'>\r\n'
-                self.send_to_server(byte_data)
+                self.send_to_server(b'RCPT TO:<' + self.list_recipients.pop(0) + b'>\r\n')
                 return None
 
         return byte_data
