@@ -93,7 +93,7 @@ del no_gui_parser
 
 # by default the proxy stores the OAuth 2.0 tokens in a local config file, but it can optionally store them
 # remotely in AWS Secrets Manager. import the dependency only if this option is specified.
-aws_secrets_parser = argparse.ArgumentParser()
+aws_secrets_parser = argparse.ArgumentParser(add_help=False)
 aws_secrets_parser.add_argument('--aws-secrets', action='store_true')
 
 if aws_secrets_parser.parse_known_args()[0].aws_secrets:
