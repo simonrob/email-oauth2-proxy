@@ -8,3 +8,6 @@ pyasyncore; python_version >= '3.12'
 
 # macOS only: output to unified logging
 pyoslog>=0.3.0; sys_platform == 'darwin'
+
+# required only if using the --external-auth option in --no-gui mode
+prompt_toolkit
