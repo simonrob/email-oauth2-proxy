@@ -341,56 +341,49 @@ class AppConfig:
         return [a for a in AppConfig._ACCOUNTS if 'aws_secret' in AppConfig._PARSER[a]]
 
     @staticmethod
+    def aws_secrets_ids():
+        return dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in AppConfig.aws_secrets_accounts()], {})
+
+    @staticmethod
     def aws_secrets_boto3client():
         try:
             # Load dependencies and create client
+            global boto3
             import boto3
+            global botocore
             import botocore.exceptions
             aws_client = boto3.client('secretsmanager')
         except Exception as e:
-            Log.error('Error: "aws_secret" specified in config for some accounts, have you installed requirements-aws-secrets.txt?',
-                      Log.error_string(e))
+            Log.error('Failed to load AWS SDK - "aws_secret" is specified in config file for some accounts, have you installed requirements-aws-secrets.txt?')
+            Log.debug(Log.error_string(e))
             return
         else:
             return aws_client
+
+    @staticmethod
+    def aws_secrets_debuglog_boto3error(err):
+        Log.debug(err.response.get("Error", {}).get("Code") + ":",
+                  err.response.get("Error", {}).get("Message"))
 
     @staticmethod
     def aws_secrets_fetch():
         aws_client = AppConfig.aws_secrets_boto3client()
         if aws_client:
             # Create dict of AWS Secret IDs across all accounts
-            aws_secrets = dict.fromkeys([AppConfig._PARSER[account]['aws_secret'] for account in AppConfig.aws_secrets_accounts()], {})
+            aws_secrets = AppConfig.aws_secrets_ids()
 
             # Download AWS Secrets
             for secret_id in aws_secrets:
                 try:
                     get_secret_value_response = aws_client.get_secret_value(SecretId=secret_id)
-                except botocore.exceptions as err_getsecret:
-                    # Todo: improve boto3 error handling
+                except botocore.exceptions.ClientError as err_getsecret:
                     if err_getsecret.response['Error']['Code'] == 'ResourceNotFoundException':
-                        if err_getsecret.response['Error']['Message'] == "Secrets Manager can't find the specified secret.":
-                            if secret_id.startswith('arn:'):
-                                Log.error('Error: AWS Secret "%s"'
-                                          ' does not exist, cannot create secret with specific ARN.' % (secret_id),
-                                          Log.error_string(err_getsecret))
-                            else:
-                                Log.info('Warning: AWS Secret "%s" does not exist, attempting to create it' % (secret_id))
-                                try:
-                                    create_secret_value_response = aws_client.create_secret(
-                                        Name=secret_id,
-                                        ForceOverwriteReplicaSecret=False)
-                                except botocore.exceptions as err_createsecret:
-                                    if err_createsecret.response['Error']['Code'] == 'AccessDeniedException':
-                                        Log.error('Error: could not create secret, does your IAM user have'
-                                                  ' "secretsmanager:CreateSecret" permissions?')
-                                    Log.error(Log.error_string(err_createsecret))
-                        elif err_getsecret.response['Error']['Message'] == "Secrets Manager can't find the specified secret value for staging label: AWSCURRENT":
-                            # no need to raise error, the secret exists in AWS Secrets Manager but no value has been stored yet
-                            pass
-                        else:
-                            Log.error(Log.error_string(err_getsecret))
+                        Log.info('Fetching AWS Secret "%s" - secret does not exist or does not contain a secret value' % (secret_id))
+                    elif err_getsecret.response['Error']['Code'] == 'AccessDeniedException':
+                        Log.error('Fetching AWS Secret "%s" - access denied, does IAM user have "secretsmanager:GetSecretValue" permissions?' % (secret_id))
                     else:
-                        Log.error(Log.error_string(err_getsecret))
+                        Log.error('Fetching AWS Secret "%s" - unexpected error, see debug logs for details' % (secret_id))
+                    AppConfig.aws_secrets_debuglog_boto3error(err_getsecret)
                 else:
                     aws_secrets[secret_id] = json.loads(get_secret_value_response['SecretString'])
 
@@ -400,7 +393,7 @@ class AppConfig:
                     for key in ['token_salt','access_token','access_token_expiry','refresh_token']:
                         AppConfig._PARSER.set(account, key, aws_secrets[AppConfig._PARSER[account]['aws_secret']][account][key])
         else:
-            Log.error(' Could not load OAuth 2.0 tokens from AWS Secrets Manager.')
+            Log.error('Failed to fetch OAuth 2.0 tokens from AWS Secrets Manager')
 
     @staticmethod
     def aws_secrets_save():
@@ -409,7 +402,7 @@ class AppConfig:
         appconfig_to_save.read_dict(AppConfig._PARSER)
 
         # Create dict of AWS Secret IDs across all accounts
-        aws_secrets = dict.fromkeys([appconfig_to_save[account]['aws_secret'] for account in AppConfig.aws_secrets_accounts()], {})
+        aws_secrets = AppConfig.aws_secrets_ids()
 
         # Populate dict with OAuth 2.0 tokens from each account, removing those tokens from config to be saved
         TOKEN_KEYS = ['token_salt','access_token','access_token_expiry','refresh_token']
@@ -427,14 +420,46 @@ class AppConfig:
                         SecretId=secret_id,
                         SecretString=json.dumps(aws_secrets[secret_id]),
                     )
-                except botocore.exceptions as e:
-                    Log.error('Error: Could not store OAuth 2.0 tokens to AWS Secret "%s".'
-                              ' Tokens will remain in memory but will not be stored locally on disk'
-                              ' nor stored remotely in AWS Secrets Manager.' % (secret_id),
-                              Log.error_string(e))
+                except botocore.exceptions.ClientError as err_putsecret:
+                    if err_putsecret.response['Error']['Code'] == 'ResourceNotFoundException':
+                        if secret_id.startswith('arn:'):
+                            Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s" - secret does not exist, cannot create a secret with a specific ARN'  % (secret_id))
+                            AppConfig.aws_secrets_debuglog_boto3error(err_putsecret)
+                        else:
+                            Log.error('AWS Secret "%s" does not exist - attempting to create it'  % (secret_id))
+                            AppConfig.aws_secrets_debuglog_boto3error(err_putsecret)
+                            try:
+                                aws_client.create_secret(
+                                    Name=secret_id,
+                                    ForceOverwriteReplicaSecret=False
+                                )
+                            except botocore.exceptions.ClientError as err_createsecret:
+                                if err_createsecret.response['Error']['Code'] == 'AccessDeniedException':
+                                    Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s" - access denied in attempt to create it. does your IAM user have "secretsmanager:CreateSecret" permissions?'  % (secret_id))
+                                else:
+                                    Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s" - attempt to create it failed with unexpected error, see debug logs for details')
+                                AppConfig.aws_secrets_debuglog_boto3error(err_createsecret)
+                            else:
+                                Log.info('Created AWS Secret "%s"' % (secret_id))
+                                try:
+                                    aws_client.put_secret_value(
+                                        SecretId=secret_id,
+                                        SecretString=json.dumps(aws_secrets[secret_id]),
+                                    )
+                                except botocore.exceptions.ClientError as err_putsecret_aftercreate:
+                                    if err_putsecret_aftercreate.response['Error']['Code'] == 'AccessDeniedException':
+                                        Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s" - access denied, does IAM user have "secretsmanager:PutSecretValue" permissions?' % (secret_id))
+                                    else:
+                                        Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s" - unexpected error, see debug logs for details')
+                                    AppConfig.aws_secrets_debuglog_boto3error(err_putsecret_aftercreate)
+                    elif err_putsecret.response['Error']['Code'] == 'AccessDeniedException':
+                        Log.error('Failed to store OAuth tokens in AWS Secret "%s" - access denied, does IAM user have "secretsmanager:PutSecretValue" permissions?' % (secret_id))
+                        AppConfig.aws_secrets_debuglog_boto3error(err_putsecret)
+                    else:
+                        Log.error('Failed to store OAuth tokens in AWS Secret "%s" - unexpected error, see debug logs for details' % (secret_id))
+                        AppConfig.aws_secrets_debuglog_boto3error(err_putsecret)
         else:
-            Log.error(' OAuth 2.0 tokens will remain in memory but will not be stored locally on disk'
-                      ' nor stored remotely in AWS Secrets Manager.')
+            Log.error('Failed to store OAuth 2.0 tokens in AWS Secrets Manager')
 
         # Return copy of config without OAuth 2.0 tokens to write to disk
         return appconfig_to_save
