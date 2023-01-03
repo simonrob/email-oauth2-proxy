@@ -91,7 +91,7 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
                     atp_url_query = urllib.parse.urlparse(atp_url).query
                 except UnicodeDecodeError:
                     # urlparse assumes ascii encoding which is not always the case; try to recover if possible
-                    atp_url_query = atp_url.rsplit(b'&data', 2)[0].partition(b'?')[2]
+                    atp_url_query = atp_url.replace(b'&amp;', b'&').rsplit(b'&data', 2)[0].partition(b'?')[2]
                 atp_url_parts = dict(urllib.parse.parse_qsl(atp_url_query))
                 if b'url' in atp_url_parts:
                     edited_message += atp_url_parts[b'url']
