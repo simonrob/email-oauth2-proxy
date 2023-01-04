@@ -279,6 +279,9 @@ class AppConfig:
     _SERVERS = []
     _ACCOUNTS = []
 
+    # the account keys to be stored in a secrets manager, if used (currently only AWS Secrets Manager is supported)
+    _SECRETS_MANAGER_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token']
+
     @staticmethod
     def _load():
         AppConfig.unload()
