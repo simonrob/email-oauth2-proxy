@@ -381,8 +381,8 @@ class AppConfig:
 
     @staticmethod
     def _aws_secrets_debug_log_boto3_error(err):
-        Log.debug(err.response.get("Error", {}).get("Code") + ":",
-                  err.response.get("Error", {}).get("Message"))
+        Log.debug(err.response['Error']['Code'] + ":",
+                  err.response['Error']['Code'])
 
     @staticmethod
     def _aws_secrets_fetch():
