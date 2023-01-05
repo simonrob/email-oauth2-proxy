@@ -477,7 +477,6 @@ class AppConfig:
                                                   '- access denied: does the IAM user have the',
                                                   '"secretsmanager:PutSecretValue" permission?')
                                     else:
-                                        # TODO: missing format string
                                         Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s"' % secret_id,
                                                   '- unexpected error; see the proxy\'s debug mode log for details')
                                     AppConfig._aws_secrets_debug_log_boto3_error(err_put_secret_after_create)
