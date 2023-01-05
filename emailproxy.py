@@ -354,7 +354,7 @@ class AppConfig:
 
     @staticmethod
     def _aws_secrets_accounts():
-    # all accounts that are using AWS Secrets
+        # all accounts that are using AWS Secrets
         return [a for a in AppConfig._ACCOUNTS if AppConfig._PARSER.get(a, 'aws_secret', fallback=None)]
 
     @staticmethod
