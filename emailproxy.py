@@ -443,7 +443,7 @@ class AppConfig:
                 except botocore.exceptions.ClientError as err_put_secret:
                     if err_put_secret.response['Error']['Code'] == 'ResourceNotFoundException':
                         if secret_id.startswith('arn:'):
-                            Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s"' % secret_id, '- the Secret',
+                            Log.error('Failed to store OAuth 2.0 tokens in AWS Secret "%s"' % secret_id, '- the secret',
                                       'does not exist, and it is not possible to create a secret with a specific ARN')
                             AppConfig._aws_secrets_debug_log_boto3_error(err_put_secret)
 
