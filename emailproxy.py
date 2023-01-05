@@ -296,8 +296,8 @@ class AppConfig:
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
 
-        if AppConfig.aws_secrets_accounts():
-            AppConfig.aws_secrets_fetch()
+        if AppConfig._aws_secrets_accounts():
+            AppConfig._aws_secrets_fetch()
 
         AppConfig._LOADED = True
 
