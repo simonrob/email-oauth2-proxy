@@ -64,9 +64,11 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
             original_message = self.fetched_message[:self.expected_message_length]
             original_buffer_end = self.fetched_message[self.expected_message_length:]
 
+            # see w3.org/Protocols/rfc1341/5_Content-Transfer-Encoding.html and summary at stackoverflow.com/a/28531705
             original_message_quopri_count = 0
             try:
-                # we have to detect base64 encoding as we don't have the message headers
+                # we have to detect base64 encoding as we don't have the message headers (and need to remove \r\n
+                # from the original IMAP-formatted string to enable comparison with \n-only base64-encoded data)
                 base64_decoded = base64.decodebytes(original_message)
                 is_base64 = base64.encodebytes(base64_decoded) == original_message.replace(b'\r\n', b'\n')
                 if is_base64:
@@ -105,9 +107,12 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
             if link_count > 0:
                 self.log_debug('Removed', link_count, 'O365 ATP links from message requested via', self.fetch_command)
                 if is_base64:
+                    # replace original line endings (base64 is \n; we need \r\n for IMAP)
                     edited_message_encoded = base64.encodebytes(edited_message).replace(b'\n', b'\r\n')
                 elif original_message_quopri_count > 0:
-                    edited_message_encoded = quopri.encodestring(edited_message.replace(b'\n', b'\r\n'))
+                    # see: https://github.com/python/cpython/issues/64320 - quopri guesses at \r\n; replace consistently
+                    edited_message_encoded = quopri.encodestring(
+                        edited_message.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
                     edited_message_quopri_count = len(re.findall(QUOPRI_MATCH_PATTERN, edited_message_encoded))
                     if original_message_quopri_count < edited_message_quopri_count * 0.8:
                         # probably not quoted-printable encoded (threshold of 80% match to allow for removed link text)
