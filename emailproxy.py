@@ -1696,7 +1696,7 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def start(self):
         Log.info('Starting', self.info_string())
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.create_socket(socket.AF_INET6, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
         self.listen(5)
