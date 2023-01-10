@@ -414,7 +414,8 @@ class AppConfig:
                 account_secret = AppConfig._PARSER.get(account, 'aws_secret')
                 if account in aws_secrets[account_secret]:
                     for key in AppConfig._SECRETS_MANAGER_KEYS:
-                        AppConfig._PARSER.set(account, key, aws_secrets[account_secret][account][key])
+                        if k in aws_secrets[account_secret][account]:
+                            AppConfig._PARSER.set(account, key, aws_secrets[account_secret][account][key])
         else:
             Log.error('Unable to get AWS client; cannot fetch OAuth 2.0 tokens from AWS Secrets Manager')
 
@@ -428,10 +429,11 @@ class AppConfig:
         aws_secrets = AppConfig._aws_secrets_ids()
         for account in AppConfig._aws_secrets_accounts():
             account_secret = appconfig_to_save.get(account, 'aws_secret')
-            aws_secrets[account_secret][account] = {key: appconfig_to_save.get(account, key) for key in
-                                                    AppConfig._SECRETS_MANAGER_KEYS}
+            aws_secrets[account_secret][account] = {}
             for key in AppConfig._SECRETS_MANAGER_KEYS:
-                appconfig_to_save.remove_option(account, key)
+                if appconfig_to_save.has_option(account, key):
+                    aws_secrets[account_secret][account][key] = appconfig_to_save.get(account, key)
+                    appconfig_to_save.remove_option(account, key)
 
         # save the extracted AWS Secrets, attempting to create new secrets if they do not already exist
         aws_client = AppConfig._aws_secrets_boto3_client()
