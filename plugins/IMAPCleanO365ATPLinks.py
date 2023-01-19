@@ -65,20 +65,21 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
             original_buffer_end = self.fetched_message[self.expected_message_length:]
 
             # see w3.org/Protocols/rfc1341/5_Content-Transfer-Encoding.html and summary at stackoverflow.com/a/28531705
-            original_message_quopri_count = 0
+            is_base64 = False
+            is_quopri = False
             try:
                 # we have to detect base64 encoding as we don't have the message headers (and need to remove \r\n
                 # from the original IMAP-formatted string to enable comparison with \n-only base64-encoded data)
-                base64_decoded = base64.decodebytes(original_message)
-                is_base64 = base64.encodebytes(base64_decoded) == original_message.replace(b'\r\n', b'\n')
-                if is_base64:
-                    original_message_decoded = base64_decoded
-                else:
-                    raise binascii.Error
+                original_message_decoded = base64.decodebytes(original_message)
+                is_base64 = base64.encodebytes(original_message_decoded) == original_message.replace(b'\r\n', b'\n')
+                if not is_base64:
+                    raise binascii.Error  # raise rather than if/else because base64 enc/dec can also raise this error
             except binascii.Error:
-                is_base64 = False
                 original_message_decoded = quopri.decodestring(original_message)
-                original_message_quopri_count = len(re.findall(QUOPRI_MATCH_PATTERN, original_message))
+                is_quopri = len(re.findall(QUOPRI_MATCH_PATTERN, original_message)) == len(
+                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded)))
+                if not is_quopri:
+                    original_message_decoded = original_message
 
             edited_message = b''
             link_count = 0
@@ -109,14 +110,10 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
                 if is_base64:
                     # replace original line endings (base64 is \n; we need \r\n for IMAP)
                     edited_message_encoded = base64.encodebytes(edited_message).replace(b'\n', b'\r\n')
-                elif original_message_quopri_count > 0:
+                elif is_quopri:
                     # see: https://github.com/python/cpython/issues/64320 - quopri guesses at \r\n; replace consistently
                     edited_message_encoded = quopri.encodestring(
                         edited_message.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
-                    edited_message_quopri_count = len(re.findall(QUOPRI_MATCH_PATTERN, edited_message_encoded))
-                    if original_message_quopri_count < edited_message_quopri_count * 0.8:
-                        # probably not quoted-printable encoded (threshold of 80% match to allow for removed link text)
-                        edited_message_encoded = edited_message
                 else:
                     edited_message_encoded = edited_message
                 edited_command = self.fetch_command.replace(b'{%d}' % self.expected_message_length,
