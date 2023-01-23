@@ -92,6 +92,10 @@ Please note also that while authentication links can be processed from anywhere,
 - `--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load.
 If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
 
+- `--cache-store` is used to provide a separate location in which to cache authorised OAuth 2.0 tokens.
+The value of this argument can either be the full path to a local file or, if the extra requirements are installed (via `python -m pip install -r requirements-aws-secrets.txt`), an [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/) name that begins with `aws_emailproxy@` or a full ARN.
+If this argument is not provided, credentials will be cached in the proxy's configuration file.
+
 - `--log-file` allows you to specify the location of a file to send log output to.
 Log files are rotated at 32MB and 10 older log files are kept.
 This option overrides the proxy's default behaviour, which varies by platform (see [below](#troubleshooting) for details).
