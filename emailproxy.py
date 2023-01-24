@@ -414,11 +414,11 @@ class OAuth2Helper:
                                              backend=default_backend())
         fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
 
-        # if both secret values are present we use the unencrypted version (as it may have been user-edited)
-        if client_secret_encrypted and not client_secret:
-            client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
-
         try:
+            # if both secret values are present we use the unencrypted version (as it may have been user-edited)
+            if client_secret_encrypted and not client_secret:
+                client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
+
             if access_token:
                 if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # refresh if expiring soon (if possible)
                     if refresh_token:
