@@ -1,0 +1,21 @@
+# -*- conf -*-
+[Unit]
+Description=Service for the Microsoft365 OAuth2 proxying
+ConditionPathExists=@configdir@/emailproxy/emailproxy.config
+
+[Service]
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectProc=noaccess
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET
+UMask=077
+
+ConfigurationDirectory=emailproxy
+CacheDirectory=emailproxy
+CacheDirectoryMode=0700
+
+ExecStart=python3 @bindir@/emailproxy.py --no-gui --local-server-auth --config-file ${CONFIGURATION_DIRECTORY}/emailproxy.config --cache-store ${CACHE_DIRECTORY}/auth-cache
+Group=emailproxy
+User=emailproxy
