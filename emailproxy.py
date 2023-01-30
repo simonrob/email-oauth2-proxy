@@ -6,8 +6,9 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-01-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-01-30'  # ISO 8601 (YYYY-MM-DD)
 
+import abc
 import argparse
 import base64
 import binascii
@@ -270,6 +271,112 @@ class Log:
         return getattr(error, 'message', repr(error))
 
 
+class CacheStore(abc.ABC):
+    """Override this class to provide additional cache store options for a dictionary of OAuth 2.0 credentials, then add
+    an entry in AppConfig's `_EXTERNAL_CACHE_STORES` to make them available via the proxy's `--cache-store` parameter"""
+
+    @staticmethod
+    @abc.abstractmethod
+    def load(store_id):
+        return {}
+
+    @staticmethod
+    @abc.abstractmethod
+    def save(store_id, config_dict):
+        pass
+
+
+class AWSSecretsManagerCacheStore(CacheStore):
+    # noinspection PyGlobalUndefined,PyPackageRequirements
+    @staticmethod
+    def _get_boto3_client():
+        try:
+            global boto3, botocore
+            import boto3
+            import botocore.exceptions
+        except ModuleNotFoundError:
+            Log.error('Unable to load AWS SDK - please install the `boto3` module: `python -m pip install boto3`')
+        else:
+            return boto3.client(service_name='secretsmanager')
+
+    @staticmethod
+    def _log_error(error_message, debug_error):
+        Log.error(error_message)
+        Log.debug('AWS %s: %s' % (debug_error.response['Error']['Code'], debug_error.response['Error']['Message']))
+
+    @staticmethod
+    def load(store_id):
+        aws_client = AWSSecretsManagerCacheStore._get_boto3_client()
+        if aws_client:
+            try:
+                Log.info('Requesting credential cache from AWS Secret "%s"' % store_id)
+                retrieved_secrets = json.loads(aws_client.get_secret_value(SecretId=store_id)['SecretString'])
+                Log.info('Fetched', len(retrieved_secrets), 'cached accounts from AWS Secret "%s"' % store_id)
+                return retrieved_secrets
+            except botocore.exceptions.ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == 'ResourceNotFoundException':
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Fetching AWS Secret "%s" failed - the secret does not exist, or is empty' % store_id, e)
+                elif error_code == 'AccessDeniedException':
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Fetching AWS Secret "%s" failed - access denied: does the IAM user have the '
+                        '`secretsmanager:GetSecretValue` permission?' % store_id, e)
+                else:
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Fetching AWS Secret "%s" failed - unexpected error; see the proxy debug log' % store_id, e)
+        else:
+            Log.error('Unable to get AWS SDK client; cannot fetch credentials from AWS Secrets Manager')
+        return {}
+
+    @staticmethod
+    def save(store_id, config_dict):
+        aws_client = AWSSecretsManagerCacheStore._get_boto3_client()
+        if not aws_client:
+            Log.error('Unable to get AWS SDK client; cannot save credentials to AWS Secrets Manager')
+            return
+
+        # save the ConfigParser dictionary, attempting to create a new AWS Secret if it does not already exist
+        str_secret = json.dumps(config_dict)
+        try:
+            Log.info('Saving credential cache to AWS Secret "%s"' % store_id)
+            aws_client.put_secret_value(SecretId=store_id, SecretString=str_secret)
+            Log.info('Cached', len(config_dict), 'accounts to AWS Secret "%s"' % store_id)
+
+        except botocore.exceptions.ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'ResourceNotFoundException':
+                if store_id.startswith('arn:'):
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Caching to AWS Secret "%s" failed - the secret does not exist, and it is not possible to '
+                        'choose specific ARNs when creating new secrets', e)
+                    return
+
+                Log.info('AWS Secret "%s" does not exist - attempting to create it' % store_id)
+                try:
+                    aws_client.create_secret(Name=store_id, SecretString=str_secret, ForceOverwriteReplicaSecret=False)
+                    Log.info('Cached', len(config_dict), 'accounts to new AWS Secret "%s"' % store_id)
+                    return
+
+                except botocore.exceptions.ClientError as create_error:
+                    if create_error.response['Error']['Code'] == 'AccessDeniedException':
+                        AWSSecretsManagerCacheStore._log_error(
+                            'Caching to AWS Secret "%s" failed - access denied: does the IAM user have the '
+                            '`secretsmanager:CreateSecret` permission?' % store_id, create_error)
+                        return
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Caching to AWS Secret "%s" failed - attempt to create failed with an unexpected error; see '
+                        'the proxy\'s debug log' % store_id, create_error)
+
+            elif error_code == 'AccessDeniedException':
+                AWSSecretsManagerCacheStore._log_error(
+                    'Caching to AWS Secret "%s" failed - access denied: does the IAM user have the '
+                    '`secretsmanager:PutSecretValue` permission?' % store_id, e)
+                return
+            AWSSecretsManagerCacheStore._log_error(
+                'Caching to AWS Secret "%s" failed - unexpected error; see the proxy debug log' % store_id, e)
+
+
 class AppConfig:
     """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
 
@@ -283,6 +390,9 @@ class AppConfig:
     # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
     _CACHED_OPTION_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token', 'last_activity',
                            'client_secret_encrypted']
+
+    # additional cache stores may be implemented by extending CacheStore and adding a prefix entry in this dict
+    _EXTERNAL_CACHE_STORES = {'aws:': AWSSecretsManagerCacheStore}
 
     @staticmethod
     def _load():
@@ -318,6 +428,16 @@ class AppConfig:
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
 
         AppConfig._LOADED = True
+
+    @staticmethod
+    def _load_cache(cache_store_identifier):
+        cache_file_parser = configparser.ConfigParser()
+        for prefix, cache_store_handler in AppConfig._EXTERNAL_CACHE_STORES.items():
+            if cache_store_identifier.startswith(prefix):
+                cache_file_parser.read_dict(cache_store_handler.load(cache_store_identifier[len(prefix):]))
+                return cache_file_parser
+        cache_file_parser.read(cache_store_identifier)  # default cache is a local file (does not error if non-existent)
+        return cache_file_parser
 
     @staticmethod
     def get():
@@ -383,103 +503,16 @@ class AppConfig:
                 with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
                     AppConfig._PARSER.write(config_output)
 
-    # additional cache stores may be implemented by adding methods to this class and appropriately redirecting load/save
     @staticmethod
-    def _load_cache(cache_store):
-        cache_file_parser = configparser.ConfigParser()
-        if cache_store.startswith('arn:') or cache_store.startswith('aws_%s@' % APP_SHORT_NAME):
-            cache_file_parser.read_dict(AppConfig._aws_secrets_fetch(cache_store))
-        else:
-            cache_file_parser.read(cache_store)  # default cache is a local file (does not error if non-existent)
-        return cache_file_parser
-
-    @staticmethod
-    def _save_cache(cache_store, output_config_parser):
-        if cache_store.startswith('arn:') or cache_store.startswith('aws_%s@' % APP_SHORT_NAME):
-            AppConfig._aws_secrets_save(cache_store, {account: dict(output_config_parser.items(account)) for account in
-                                                      output_config_parser.sections()})
-        else:
-            with open(cache_store, mode='w', encoding='utf-8') as config_output:
-                output_config_parser.write(config_output)
-
-    # noinspection PyGlobalUndefined,PyPackageRequirements
-    @staticmethod
-    def _aws_secrets_boto3_client():
-        try:
-            global boto3, botocore
-            import boto3
-            import botocore.exceptions
-            aws_client = boto3.client('secretsmanager')
-        except Exception as e:
-            Log.error('Failed to load AWS SDK - have you installed dependencies from `requirements-aws-secrets.txt`?')
-            Log.debug('AWS SDK load error:', Log.error_string(e))
-        else:
-            return aws_client
-
-    @staticmethod
-    def _aws_secrets_fetch(secret_id):
-        aws_client = AppConfig._aws_secrets_boto3_client()
-        if aws_client:
-            try:
-                Log.info('Fetching credential cache from AWS Secret "%s"' % secret_id)
-                return json.loads(aws_client.get_secret_value(SecretId=secret_id)['SecretString'])
-            except botocore.exceptions.ClientError as e:
-                error_code = e.response['Error']['Code']
-                if error_code == 'ResourceNotFoundException':
-                    Log.error('Fetching AWS Secret "%s" failed - the secret does not exist, or is empty' % secret_id)
-                elif error_code == 'AccessDeniedException':
-                    Log.error('Fetching AWS Secret "%s"' % secret_id, 'failed - access denied: does the IAM user have ',
-                              'the "secretsmanager:GetSecretValue" permission?')
-                else:
-                    Log.error('Fetching AWS Secret "%s" failed - unexpected error; see the proxy debug log' % secret_id)
-                Log.debug('AWS', error_code + ':', e.response['Error']['Message'])
-        else:
-            Log.error('Unable to get AWS client; cannot fetch credentials from AWS Secrets Manager')
-        return {}
-
-    @staticmethod
-    def _aws_secrets_save(secret_id, config_dict):
-        aws_client = AppConfig._aws_secrets_boto3_client()
-        if not aws_client:
-            Log.error('Unable to get AWS client; cannot save credentials to AWS Secrets Manager')
-            return
-
-        def log_aws_error(error_message, debug_error):
-            Log.error(error_message)
-            Log.debug('AWS %s: %s' % (debug_error.response['Error']['Code'], debug_error.response['Error']['Message']))
-
-        # save the ConfigParser dictionary, attempting to create a new AWS Secret if it does not already exist
-        str_secret = json.dumps(config_dict)
-        try:
-            Log.info('Saving credential cache to AWS Secret "%s"' % secret_id)
-            aws_client.put_secret_value(SecretId=secret_id, SecretString=str_secret)
-
-        except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == 'ResourceNotFoundException':
-                if not secret_id.startswith('aws_%s@' % APP_SHORT_NAME):
-                    log_aws_error('Saving to AWS Secret "%s" failed - the secret does not exist, and it is not possible'
-                                  ' to choose ARNs; please provide as "aws_%s@[name]"' % (secret_id, APP_SHORT_NAME), e)
-                    return
-
-                Log.info('AWS Secret "%s" does not exist - attempting to create it' % secret_id)
-                try:
-                    aws_client.create_secret(Name=secret_id, SecretString=str_secret, ForceOverwriteReplicaSecret=False)
-                    Log.info('Created and saved to new AWS Secret "%s"' % secret_id)
-                    return
-
-                except botocore.exceptions.ClientError as create_error:
-                    if create_error.response['Error']['Code'] == 'AccessDeniedException':
-                        log_aws_error('Saving to AWS Secret "%s" failed - access denied: does the IAM user have the '
-                                      '"secretsmanager:CreateSecret" permission?' % secret_id, create_error)
-                        return
-                    log_aws_error('Saving to AWS Secret "%s" failed - attempt to create failed with an unexpected '
-                                  'error; see the proxy\'s debug log' % secret_id, create_error)
-
-            elif e.response['Error']['Code'] == 'AccessDeniedException':
-                log_aws_error('Saving to AWS Secret "%s" failed - access denied: does the IAM user have the '
-                              '"secretsmanager:PutSecretValue" permission?' % secret_id, e)
+    def _save_cache(cache_store_identifier, output_config_parser):
+        for prefix, cache_store_handler in AppConfig._EXTERNAL_CACHE_STORES.items():
+            if cache_store_identifier.startswith(prefix):
+                cache_store_handler.save(cache_store_identifier[len(prefix):],
+                                         {account: dict(output_config_parser.items(account)) for account in
+                                          output_config_parser.sections()})
                 return
-            log_aws_error('Saving to AWS Secret "%s" failed - unexpected error; see the proxy debug log' % secret_id, e)
+        with open(cache_store_identifier, mode='w', encoding='utf-8') as config_output:
+            output_config_parser.write(config_output)
 
 
 class OAuth2Helper:
@@ -2050,7 +2083,7 @@ class App:
                                                                   'account authorisation requests will fail unless a '
                                                                   'pre-authorised configuration file is used, or you '
                                                                   'enable `--external-auth` or `--local-server-auth` '
-                                                                  'and monitor log output)')
+                                                                  'and monitor log/terminal output)')
         parser.add_argument('--external-auth', action='store_true', help='handle authorisation externally: rather than '
                                                                          'intercepting `redirect_uri`, the proxy will '
                                                                          'wait for you to paste the result into either '
@@ -2062,13 +2095,14 @@ class App:
         parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
                                                                 '(optional; default: `%s` in the same directory as the '
                                                                 'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
-        parser.add_argument('--cache-store', default=None, help='either the full path to a local file or, if `boto3` '
-                                                                'is available, an AWS Secrets Manager name that begins '
-                                                                'with `aws_%s@` or a full ARN (optional; default: save '
-                                                                'credentials in `--config-file`)' % APP_SHORT_NAME)
+        parser.add_argument('--cache-store', default=None, help='the full path to a local file to use for credential'
+                                                                'caching (optional; default: save to `--config-file`); '
+                                                                'alternatively, an external store such as a secrets '
+                                                                'manager can be used - see the proxy\'s readme for '
+                                                                'instructions and requirements')
         parser.add_argument('--log-file', default=None, help='the full path to a file where log output should be sent '
                                                              '(optional; default behaviour varies by platform, but see '
-                                                             'Log.initialise() for details)')
+                                                             'Log.initialise() for details of each implementation)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
         parser.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__))
