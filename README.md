@@ -161,7 +161,7 @@ To do this, install the script's requirements via `python -m pip install -r requ
 Please note that the proxy was designed as a GUI-based tool from the outset due to the inherently interactive nature of OAuth 2.0 authorisation, and there are limits to its ability to support fully no-GUI operation.
 See the [optional arguments and configuration](#optional-arguments-and-configuration) section of this file for further details.
 
-The proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
+After installing its requirements, the proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
 If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en` until [this timeago issue](https://github.com/hustcc/timeago/issues/40) is resolved.
 
 Python 3.6 or later is required to run the proxy.
