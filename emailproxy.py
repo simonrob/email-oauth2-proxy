@@ -2482,7 +2482,7 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
+        Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
         config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
