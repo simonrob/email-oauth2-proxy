@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-01-30'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-01-31'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -300,24 +300,46 @@ class AWSSecretsManagerCacheStore(CacheStore):
             return boto3.client(service_name='secretsmanager')
 
     @staticmethod
+    def _create_secret(aws_client, store_id):
+        if store_id.startswith('arn:'):
+            Log.info('Creating new AWS Secret "%s" failed - it is not possible to choose specific ARNs for new secrets')
+            return False
+
+        try:
+            aws_client.create_secret(Name=store_id, ForceOverwriteReplicaSecret=False)
+            Log.info('Created new AWS Secret "%s"' % store_id)
+            return True
+
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == 'AccessDeniedException':
+                AWSSecretsManagerCacheStore._log_error(
+                    'Creating new AWS Secret "%s" failed - access denied: does the IAM user have the '
+                    '`secretsmanager:CreateSecret` permission?' % store_id, e)
+            else:
+                AWSSecretsManagerCacheStore._log_error('Creating new AWS Secret "%s" failed with an unexpected error; '
+                                                       'see the proxy\'s debug log' % store_id, e)
+        return False
+
+    @staticmethod
     def _log_error(error_message, debug_error):
-        Log.error(error_message)
         Log.debug('AWS %s: %s' % (debug_error.response['Error']['Code'], debug_error.response['Error']['Message']))
+        Log.error(error_message)
 
     @staticmethod
     def load(store_id):
         aws_client = AWSSecretsManagerCacheStore._get_boto3_client()
         if aws_client:
             try:
-                Log.info('Requesting credential cache from AWS Secret "%s"' % store_id)
+                Log.debug('Requesting credential cache from AWS Secret "%s"' % store_id)
                 retrieved_secrets = json.loads(aws_client.get_secret_value(SecretId=store_id)['SecretString'])
-                Log.info('Fetched', len(retrieved_secrets), 'cached accounts from AWS Secret "%s"' % store_id)
+                Log.info('Fetched', len(retrieved_secrets), 'cached account entries from AWS Secret "%s"' % store_id)
                 return retrieved_secrets
+
             except botocore.exceptions.ClientError as e:
                 error_code = e.response['Error']['Code']
                 if error_code == 'ResourceNotFoundException':
-                    AWSSecretsManagerCacheStore._log_error(
-                        'Fetching AWS Secret "%s" failed - the secret does not exist, or is empty' % store_id, e)
+                    Log.info('AWS Secret "%s" does not exist - attempting to create it' % store_id)
+                    AWSSecretsManagerCacheStore._create_secret(aws_client, store_id)
                 elif error_code == 'AccessDeniedException':
                     AWSSecretsManagerCacheStore._log_error(
                         'Fetching AWS Secret "%s" failed - access denied: does the IAM user have the '
@@ -330,51 +352,29 @@ class AWSSecretsManagerCacheStore(CacheStore):
         return {}
 
     @staticmethod
-    def save(store_id, config_dict):
+    def save(store_id, config_dict, create_secret=True):
         aws_client = AWSSecretsManagerCacheStore._get_boto3_client()
-        if not aws_client:
-            Log.error('Unable to get AWS SDK client; cannot save credentials to AWS Secrets Manager')
-            return
+        if aws_client:
+            try:
+                Log.debug('Saving credential cache to AWS Secret "%s"' % store_id)
+                aws_client.put_secret_value(SecretId=store_id, SecretString=json.dumps(config_dict))
+                Log.info('Cached', len(config_dict), 'account entries to AWS Secret "%s"' % store_id)
 
-        # save the ConfigParser dictionary, attempting to create a new AWS Secret if it does not already exist
-        str_secret = json.dumps(config_dict)
-        try:
-            Log.info('Saving credential cache to AWS Secret "%s"' % store_id)
-            aws_client.put_secret_value(SecretId=store_id, SecretString=str_secret)
-            Log.info('Cached', len(config_dict), 'accounts to AWS Secret "%s"' % store_id)
-
-        except botocore.exceptions.ClientError as e:
-            error_code = e.response['Error']['Code']
-            if error_code == 'ResourceNotFoundException':
-                if store_id.startswith('arn:'):
+            except botocore.exceptions.ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == 'ResourceNotFoundException' and create_secret:
+                    Log.info('AWS Secret "%s" does not exist - attempting to create it' % store_id)
+                    if AWSSecretsManagerCacheStore._create_secret(aws_client, store_id):
+                        AWSSecretsManagerCacheStore.save(store_id, config_dict, create_secret=False)
+                elif error_code == 'AccessDeniedException':
                     AWSSecretsManagerCacheStore._log_error(
-                        'Caching to AWS Secret "%s" failed - the secret does not exist, and it is not possible to '
-                        'choose specific ARNs when creating new secrets', e)
-                    return
-
-                Log.info('AWS Secret "%s" does not exist - attempting to create it' % store_id)
-                try:
-                    aws_client.create_secret(Name=store_id, SecretString=str_secret, ForceOverwriteReplicaSecret=False)
-                    Log.info('Cached', len(config_dict), 'accounts to new AWS Secret "%s"' % store_id)
-                    return
-
-                except botocore.exceptions.ClientError as create_error:
-                    if create_error.response['Error']['Code'] == 'AccessDeniedException':
-                        AWSSecretsManagerCacheStore._log_error(
-                            'Caching to AWS Secret "%s" failed - access denied: does the IAM user have the '
-                            '`secretsmanager:CreateSecret` permission?' % store_id, create_error)
-                        return
+                        'Caching to AWS Secret "%s" failed - access denied: does the IAM user have the '
+                        '`secretsmanager:PutSecretValue` permission?' % store_id, e)
+                else:
                     AWSSecretsManagerCacheStore._log_error(
-                        'Caching to AWS Secret "%s" failed - attempt to create failed with an unexpected error; see '
-                        'the proxy\'s debug log' % store_id, create_error)
-
-            elif error_code == 'AccessDeniedException':
-                AWSSecretsManagerCacheStore._log_error(
-                    'Caching to AWS Secret "%s" failed - access denied: does the IAM user have the '
-                    '`secretsmanager:PutSecretValue` permission?' % store_id, e)
-                return
-            AWSSecretsManagerCacheStore._log_error(
-                'Caching to AWS Secret "%s" failed - unexpected error; see the proxy debug log' % store_id, e)
+                        'Caching to AWS Secret "%s" failed - unexpected error; see the proxy debug log' % store_id, e)
+        else:
+            Log.error('Unable to get AWS SDK client; cannot cache credentials to AWS Secrets Manager')
 
 
 class AppConfig:
