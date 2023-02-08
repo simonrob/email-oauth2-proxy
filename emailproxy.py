@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-01-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-02-08'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -805,20 +805,17 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         # see: https://github.com/python/cpython/issues/54293
         try:
             self.socket.do_handshake()
-        except self.ssl_handshake_errors as e:
-            self._ssl_handshake_error(e)
+        except ssl.SSLWantReadError:
+            select.select([self.socket], [], [], 0.01)  # wait for the socket to be readable (10ms timeout)
+        except ssl.SSLWantWriteError:
+            select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
+        except self.ssl_handshake_errors:  # also includes SSLWant[Read/Write]Error, but already handled above
+            self.handle_close()
         else:
-            Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
+            if not self.ssl_handshake_completed:  # only notify once (we may need to repeat the handshake later)
+                Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
-
-    def _ssl_handshake_error(self, error):
-        if isinstance(error, ssl.SSLWantReadError):
-            select.select([self.socket], [], [], 0.01)  # wait for the socket to be readable (10ms timeout)
-        elif isinstance(error, ssl.SSLWantWriteError):
-            select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
-        else:
-            self.handle_close()
 
     def handle_read_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
@@ -830,8 +827,8 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # have to deal with both unsecured, wrapped *and* STARTTLS-type sockets would only need this in recv/send
             try:
                 super().handle_read_event()
-            except self.ssl_handshake_errors as e:
-                self._ssl_handshake_error(e)
+            except self.ssl_handshake_errors:
+                self._ssl_handshake()
 
     def handle_write_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
@@ -841,23 +838,23 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # as in handle_read_event, we need to handle SSL handshake events
             try:
                 super().handle_write_event()
-            except self.ssl_handshake_errors as e:
-                self._ssl_handshake_error(e)
+            except self.ssl_handshake_errors:
+                self._ssl_handshake()
 
     def recv(self, buffer_size):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().recv(buffer_size)
-        except self.ssl_handshake_errors as e:
-            self._ssl_handshake_error(e)
+        except self.ssl_handshake_errors:
+            self._ssl_handshake()
         return b''
 
     def send(self, byte_data):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
-        except self.ssl_handshake_errors as e:
-            self._ssl_handshake_error(e)
+        except self.ssl_handshake_errors:
+            self._ssl_handshake()
         return 0
 
     def handle_error(self):
