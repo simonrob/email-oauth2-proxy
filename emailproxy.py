@@ -2295,7 +2295,7 @@ class App:
         # verifies actions have a maximum of two parameters (_assert_action()), so we must use 'item' and check its type
         recreate_login_file = False if isinstance(force_rewrite, pystray.MenuItem) else force_rewrite
 
-        start_command = self.get_script_start_command()
+        start_command = self.get_script_start_command(quote_args=sys.platform != 'darwin')  # plistlib handles quoting
 
         if sys.platform == 'darwin':
             if recreate_login_file or not PLIST_FILE_PATH.exists():
@@ -2332,7 +2332,7 @@ class App:
 
         elif sys.platform == 'win32':
             if recreate_login_file or not CMD_FILE_PATH.exists():
-                windows_start_command = 'start %s' % ' '.join(start_command)
+                windows_start_command = 'start "" %s' % ' '.join(start_command)  # first quoted start arg = window title
 
                 os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
                 with open(CMD_FILE_PATH, mode='w', encoding='utf-8') as cmd_file:
@@ -2370,23 +2370,24 @@ class App:
         else:
             pass  # nothing we can do
 
-    def get_script_start_command(self):
+    def get_script_start_command(self, quote_args=True):
         python_command = sys.executable
         if sys.platform == 'win32':
             # pythonw to avoid a terminal when background launching on Windows
             python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
-        # preserve selected options if starting automatically (note: could do the same for --debug but that is unlikely
-        # to be useful; similarly for --no-gui, but that makes no sense as the GUI is needed for this interaction)
-        script_command = [python_command, os.path.realpath(__file__)]
+        script_command = [python_command]
+        if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
+            script_command.append(os.path.realpath(__file__))
+
+        # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
+        script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
+        if Log.get_level() == logging.DEBUG:
+            script_command.append('--debug')
         if self.args.external_auth:
             script_command.append('--external-auth')
-        if self.args.local_server_auth:
-            script_command.append('--local-server-auth')
-        if self.args.config_file:
-            script_command.extend(['--config-file', CONFIG_FILE_PATH])
 
-        return script_command
+        return ['"%s"' % arg.replace('"', '\\"') if quote_args and ' ' in arg else arg for arg in script_command]
 
     def linux_restart(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
