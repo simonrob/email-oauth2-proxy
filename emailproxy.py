@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2022-12-23'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-02-08'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import ast
@@ -28,6 +28,7 @@ import pathlib
 import plistlib
 import queue
 import re
+import select
 import signal
 import socket
 import ssl
@@ -130,7 +131,7 @@ MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limi
 
 RECEIVE_BUFFER_SIZE = 65536  # number of bytes to try to read from the socket at a time (limit is per socket)
 
-MAX_SSL_HANDSHAKE_ATTEMPTS = 65536  # maximum number of attempts before aborting local SSL/TLS handshake; 0 = no limit
+MAX_SSL_HANDSHAKE_ATTEMPTS = 1024  # number of attempts before aborting SSL/TLS handshake (max 10ms each); 0 = no limit
 
 # IMAP/POP/SMTP require \r\n as a line terminator (we use lines only pre-authentication; afterwards just pass through)
 LINE_TERMINATOR = b'\r\n'
@@ -423,11 +424,11 @@ class OAuth2Helper:
                                              backend=default_backend())
         fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
 
-        # if both secret values are present we use the unencrypted version (as it may have been user-edited)
-        if client_secret_encrypted and not client_secret:
-            client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
-
         try:
+            # if both secret values are present we use the unencrypted version (as it may have been user-edited)
+            if client_secret_encrypted and not client_secret:
+                client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
+
             if access_token:
                 if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # refresh if expiring soon (if possible)
                     if refresh_token:
@@ -774,9 +775,11 @@ class OAuth2Helper:
 class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
     def __init__(self, connection=None, socket_map=None):
         asyncore.dispatcher_with_send.__init__(self, sock=connection, map=socket_map)
-        self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self.reset()
+        self.ssl_handshake_errors = (ssl.SSLWantReadError, ssl.SSLWantWriteError,
+                                     ssl.SSLEOFError, ssl.SSLZeroReturnError)
+        self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self._reset()
 
-    def reset(self, is_ssl=False):
+    def _reset(self, is_ssl=False):
         self.ssl_connection = is_ssl
         self.ssl_handshake_attempts = 0
         self.ssl_handshake_completed = not is_ssl
@@ -788,80 +791,79 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
     def set_ssl_connection(self, is_ssl=False):
         # note that the actual SSLContext.wrap_socket (and associated unwrap()) are handled outside this class
         if not self.ssl_connection and is_ssl:
-            self.reset(True)
+            self._reset(True)
             if is_ssl:
                 # we don't start negotiation here because a failed handshake in __init__ means remove_client also fails
                 Log.debug(self.info_string(), '<-> [ Starting TLS handshake ]')
 
         elif self.ssl_connection and not is_ssl:
-            self.reset()
+            self._reset()
 
-    def ssl_handshake(self):
+    def _ssl_handshake(self):
+        if not isinstance(self.socket, ssl.SSLSocket):
+            Log.error(self.info_string(), 'Unable to initiate handshake with a non-SSL socket; aborting')
+            raise ssl.SSLError(-1, APP_PACKAGE)
+
+        # attempting to connect insecurely to a secure socket could loop indefinitely here - we set a maximum attempt
+        # count and catch in handle_error() when `ssl_handshake_attempts` expires, but there's not much else we can do
         self.ssl_handshake_attempts += 1
         if 0 < MAX_SSL_HANDSHAKE_ATTEMPTS < self.ssl_handshake_attempts:
+            Log.error(self.info_string(), 'SSL socket handshake failed (reached `MAX_SSL_HANDSHAKE_ATTEMPTS`)')
             raise ssl.SSLError(-1, APP_PACKAGE)
 
         # see: https://github.com/python/cpython/issues/54293
         try:
-            # note that attempting to connect insecurely to a secure socket may loop indefinitely here - we attempt
-            # to catch this in handle_error() when the client gives up, but there's not much else we can do
-            # noinspection PyUnresolvedReferences
             self.socket.do_handshake()
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-            pass
-        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
+        except ssl.SSLWantReadError:
+            select.select([self.socket], [], [], 0.01)  # wait for the socket to be readable (10ms timeout)
+        except ssl.SSLWantWriteError:
+            select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
+        except self.ssl_handshake_errors:  # also includes SSLWant[Read/Write]Error, but already handled above
             self.handle_close()
         else:
-            Log.debug(self.info_string(), '<-> [ TLS handshake complete ]')
+            if not self.ssl_handshake_completed:  # only notify once (we may need to repeat the handshake later)
+                Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
 
     def handle_read_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         if not self.ssl_handshake_completed:
-            self.ssl_handshake()
+            self._ssl_handshake()
         else:
             # on the first connection event to a secure server we need to handle SSL handshake events (because we don't
             # have a 'not_currently_ssl_but_will_be_once_connected'-type state) - a version of this class that didn't
             # have to deal with both unsecured, wrapped *and* STARTTLS-type sockets would only need this in recv/send
             try:
                 super().handle_read_event()
-            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-                self.ssl_handshake_completed = False
-            except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
-                self.handle_close()
+            except self.ssl_handshake_errors:
+                self._ssl_handshake()
 
     def handle_write_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         if not self.ssl_handshake_completed:
-            self.ssl_handshake()
+            self._ssl_handshake()
         else:
             # as in handle_read_event, we need to handle SSL handshake events
             try:
                 super().handle_write_event()
-            except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-                self.ssl_handshake_completed = False
-            except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
-                self.handle_close()
+            except self.ssl_handshake_errors:
+                self._ssl_handshake()
 
     def recv(self, buffer_size):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().recv(buffer_size)
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-            self.ssl_handshake_completed = False
-        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
-            self.handle_close()
+        except self.ssl_handshake_errors:
+            self._ssl_handshake()
         return b''
 
     def send(self, byte_data):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
-        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
-            self.ssl_handshake_completed = False
-        except (ssl.SSLEOFError, ssl.SSLZeroReturnError):
-            self.handle_close()
+        except self.ssl_handshake_errors:
+            self._ssl_handshake()
         return 0
 
     def handle_error(self):
@@ -869,7 +871,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if self.ssl_connection:
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
-            # APP_PACKAGE is used when we throw our own SSLError on handshake timeout
+            # APP_PACKAGE is used when we throw our own SSLError on handshake timeout or socket misconfiguration
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
                           APP_PACKAGE]
@@ -915,7 +917,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
         self.authenticated = False
 
         self.set_ssl_connection(
-            custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
+            bool(custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']))
 
     def info_string(self):
         debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
@@ -1423,10 +1425,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
-                error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
+                issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # TimeoutError 60 = 'Operation timed out'; # ConnectionResetError 54 = 'Connection reset by peer'; OSError
-            # 0 = 'Error' (typically network failure); OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
+            # TimeoutError 60 = 'Operation timed out'; ConnectionError 54 = 'Connection reset by peer', 61 = 'Connection
+            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.handle_close()
@@ -1816,14 +1818,12 @@ class OAuth2Proxy(asyncore.dispatcher):
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if error_type == socket.gaierror and value.errno in [8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
-                error_type == ConnectionResetError and value.errno == errno.ECONNRESET or \
-                error_type == ConnectionRefusedError and value.errno == errno.ECONNREFUSED or \
+                issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # gaierror 8 = 'nodename nor servname provided, or not known'; gaierror 11001 = 'getaddrinfo failed'
-            # (caused by getpeername() failing due to no network connection); TimeoutError 60 = 'Operation timed out';
-            # ConnectionResetError 54 = 'Connection reset by peer';  ConnectionRefusedError 61 = 'Connection refused';
-            # OSError 0 = 'Error' (local SSL failure); OSError 22 = 'Invalid argument' (same cause as gaierror 11001);
-            # OSError 50 = 'Network is down'; OSError 65 = 'No route to host'
+            # gaierror 8 = 'nodename nor servname provided, or not known', gaierror 11001 = 'getaddrinfo failed' (caused
+            # by getpeername() failing due to no connection); TimeoutError 60 = 'Operation timed out'; ConnectionError
+            # 54 = 'Connection reset by peer', 61 = 'Connection refused; OSError 0 = 'Error' (local SSL failure),
+            # 22 = 'Invalid argument' (same cause as gaierror 11001), 50 = 'Network is down', 65 = 'No route to host'
             Log.info('Caught network error in', self.info_string(), '- is there a network connection?',
                      'Error type', error_type, 'with message:', value)
         else:
@@ -2364,7 +2364,7 @@ class App:
         # verifies actions have a maximum of two parameters (_assert_action()), so we must use 'item' and check its type
         recreate_login_file = False if isinstance(force_rewrite, pystray.MenuItem) else force_rewrite
 
-        start_command = self.get_script_start_command()
+        start_command = self.get_script_start_command(quote_args=sys.platform != 'darwin')  # plistlib handles quoting
 
         if sys.platform == 'darwin':
             if recreate_login_file or not PLIST_FILE_PATH.exists():
@@ -2401,7 +2401,7 @@ class App:
 
         elif sys.platform == 'win32':
             if recreate_login_file or not CMD_FILE_PATH.exists():
-                windows_start_command = 'start %s' % ' '.join(start_command)
+                windows_start_command = 'start "" %s' % ' '.join(start_command)  # first quoted start arg = window title
 
                 os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
                 with open(CMD_FILE_PATH, mode='w', encoding='utf-8') as cmd_file:
@@ -2439,23 +2439,24 @@ class App:
         else:
             pass  # nothing we can do
 
-    def get_script_start_command(self):
+    def get_script_start_command(self, quote_args=True):
         python_command = sys.executable
         if sys.platform == 'win32':
             # pythonw to avoid a terminal when background launching on Windows
             python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
-        # preserve selected options if starting automatically (note: could do the same for --debug but that is unlikely
-        # to be useful; similarly for --no-gui, but that makes no sense as the GUI is needed for this interaction)
-        script_command = [python_command, os.path.realpath(__file__)]
+        script_command = [python_command]
+        if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
+            script_command.append(os.path.realpath(__file__))
+
+        # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
+        script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
+        if Log.get_level() == logging.DEBUG:
+            script_command.append('--debug')
         if self.args.external_auth:
             script_command.append('--external-auth')
-        if self.args.local_server_auth:
-            script_command.append('--local-server-auth')
-        if self.args.config_file:
-            script_command.extend(['--config-file', CONFIG_FILE_PATH])
 
-        return script_command
+        return ['"%s"' % arg.replace('"', '\\"') if quote_args and ' ' in arg else arg for arg in script_command]
 
     def linux_restart(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
@@ -2548,7 +2549,7 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
+        Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
         config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations
