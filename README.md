@@ -66,7 +66,7 @@ The [sample configuration file](emailproxy.config) provides example scope values
 
 The proxy also supports the [client credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth-ropc) OAuth 2.0 flows if needed.
 Please note that currently only Office 365 is known to support these methods.
-In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections).
+In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections) (use [smtp2graph](https://github.com/EvanTrow/smtp2graph) instead here).
 See the [sample configuration file](emailproxy.config) for further details.
 
 
@@ -197,7 +197,7 @@ See the documentation and examples in this branch for further details, additiona
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status; clickable notifications)
 - STARTTLS for IMAP/POP?
 - Python 2 support? (see [discussion](https://github.com/simonrob/email-oauth2-proxy/issues/38))
-- Package as .app/.exe etc?
+- Releases packaged as .app/.exe etc?
 
 
 ## Related projects and alternatives
