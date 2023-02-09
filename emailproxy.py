@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-01-31'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-02-08'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -983,20 +983,17 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         # see: https://github.com/python/cpython/issues/54293
         try:
             self.socket.do_handshake()
-        except self.ssl_handshake_errors as e:
-            self._ssl_handshake_error(e)
+        except ssl.SSLWantReadError:
+            select.select([self.socket], [], [], 0.01)  # wait for the socket to be readable (10ms timeout)
+        except ssl.SSLWantWriteError:
+            select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
+        except self.ssl_handshake_errors:  # also includes SSLWant[Read/Write]Error, but already handled above
+            self.handle_close()
         else:
-            Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
+            if not self.ssl_handshake_completed:  # only notify once (we may need to repeat the handshake later)
+                Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
-
-    def _ssl_handshake_error(self, error):
-        if isinstance(error, ssl.SSLWantReadError):
-            select.select([self.socket], [], [], 0.01)  # wait for the socket to be readable (10ms timeout)
-        elif isinstance(error, ssl.SSLWantWriteError):
-            select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
-        else:
-            self.handle_close()
 
     def handle_read_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
@@ -1008,8 +1005,8 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # have to deal with both unsecured, wrapped *and* STARTTLS-type sockets would only need this in recv/send
             try:
                 super().handle_read_event()
-            except self.ssl_handshake_errors as e:
-                self._ssl_handshake_error(e)
+            except self.ssl_handshake_errors:
+                self._ssl_handshake()
 
     def handle_write_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
@@ -1019,23 +1016,23 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # as in handle_read_event, we need to handle SSL handshake events
             try:
                 super().handle_write_event()
-            except self.ssl_handshake_errors as e:
-                self._ssl_handshake_error(e)
+            except self.ssl_handshake_errors:
+                self._ssl_handshake()
 
     def recv(self, buffer_size):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().recv(buffer_size)
-        except self.ssl_handshake_errors as e:
-            self._ssl_handshake_error(e)
+        except self.ssl_handshake_errors:
+            self._ssl_handshake()
         return b''
 
     def send(self, byte_data):
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
-        except self.ssl_handshake_errors as e:
-            self._ssl_handshake_error(e)
+        except self.ssl_handshake_errors:
+            self._ssl_handshake()
         return 0
 
     def handle_error(self):
@@ -2483,7 +2480,7 @@ class App:
         # verifies actions have a maximum of two parameters (_assert_action()), so we must use 'item' and check its type
         recreate_login_file = False if isinstance(force_rewrite, pystray.MenuItem) else force_rewrite
 
-        start_command = self.get_script_start_command()
+        start_command = self.get_script_start_command(quote_args=sys.platform != 'darwin')  # plistlib handles quoting
 
         if sys.platform == 'darwin':
             if recreate_login_file or not PLIST_FILE_PATH.exists():
@@ -2520,7 +2517,7 @@ class App:
 
         elif sys.platform == 'win32':
             if recreate_login_file or not CMD_FILE_PATH.exists():
-                windows_start_command = 'start %s' % ' '.join(start_command)
+                windows_start_command = 'start "" %s' % ' '.join(start_command)  # first quoted start arg = window title
 
                 os.makedirs(CMD_FILE_PATH.parent, exist_ok=True)
                 with open(CMD_FILE_PATH, mode='w', encoding='utf-8') as cmd_file:
@@ -2558,23 +2555,24 @@ class App:
         else:
             pass  # nothing we can do
 
-    def get_script_start_command(self):
+    def get_script_start_command(self, quote_args=True):
         python_command = sys.executable
         if sys.platform == 'win32':
             # pythonw to avoid a terminal when background launching on Windows
             python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
-        # preserve selected options if starting automatically (note: could do the same for --debug but that is unlikely
-        # to be useful; similarly for --no-gui, but that makes no sense as the GUI is needed for this interaction)
-        script_command = [python_command, os.path.realpath(__file__)]
+        script_command = [python_command]
+        if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
+            script_command.append(os.path.realpath(__file__))
+
+        # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
+        script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
+        if Log.get_level() == logging.DEBUG:
+            script_command.append('--debug')
         if self.args.external_auth:
             script_command.append('--external-auth')
-        if self.args.local_server_auth:
-            script_command.append('--local-server-auth')
-        if self.args.config_file:
-            script_command.extend(['--config-file', CONFIG_FILE_PATH])
 
-        return script_command
+        return ['"%s"' % arg.replace('"', '\\"') if quote_args and ' ' in arg else arg for arg in script_command]
 
     def linux_restart(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
@@ -2667,7 +2665,7 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        Log.info('Initialising', APP_NAME, 'from config file', CONFIG_FILE_PATH)
+        Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
         config = AppConfig.reload() if reload else AppConfig.get()
 
         # load server types and configurations

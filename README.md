@@ -66,7 +66,7 @@ The [sample configuration file](emailproxy.config) provides example scope values
 
 The proxy also supports the [client credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth-ropc) OAuth 2.0 flows if needed.
 Please note that currently only Office 365 is known to support these methods.
-In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections).
+In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections) (use [smtp2graph](https://github.com/EvanTrow/smtp2graph) instead here).
 See the [sample configuration file](emailproxy.config) for further details.
 
 
@@ -117,6 +117,8 @@ If you are using the proxy in a non-GUI environment it is possible to skip insta
 To do this, install the script's requirements via `python -m pip install -r requirements-no-gui.txt`, and pass the [`--no-gui`](#optional-arguments-and-configuration) argument when starting the proxy.
 Please note that the proxy was designed as a GUI-based tool from the outset due to the inherently interactive nature of OAuth 2.0 authorisation, and there are limits to its ability to support fully no-GUI operation.
 See the [optional arguments and configuration](#optional-arguments-and-configuration) section of this file for further details.
+
+If your network requires connections to use an existing proxy, you can instruct the script to use this by setting the [proxy handler](https://docs.python.org/3/library/urllib.request.html#urllib.request.ProxyHandler) environment variable `https_proxy` (and/or `http_proxy`) – for example, `https_proxy=localhost python emailproxy.py`.
 
 After installing its requirements, the proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
 If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
@@ -211,7 +213,7 @@ See the documentation and examples in this branch for further details, additiona
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status; clickable notifications)
 - STARTTLS for IMAP/POP?
 - Python 2 support? (see [discussion](https://github.com/simonrob/email-oauth2-proxy/issues/38))
-- Package as .app/.exe etc?
+- Releases packaged as .app/.exe etc?
 
 
 ## Related projects and alternatives
