@@ -5,6 +5,7 @@ by disabling link modification), but this is not always possible."""
 
 import base64
 import binascii
+import math
 import quopri
 import re
 import urllib.parse
@@ -76,8 +77,8 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
                     raise binascii.Error  # raise rather than if/else because base64 enc/dec can also raise this error
             except binascii.Error:
                 original_message_decoded = quopri.decodestring(original_message)
-                is_quopri = len(re.findall(QUOPRI_MATCH_PATTERN, original_message)) == len(
-                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded)))
+                is_quopri = math.isclose(len(re.findall(QUOPRI_MATCH_PATTERN, original_message)), len(
+                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded))), rel_tol=0.01)
                 if not is_quopri:
                     original_message_decoded = original_message
 
