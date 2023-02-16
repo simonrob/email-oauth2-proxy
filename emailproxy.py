@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-02-08'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-02-16'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -121,6 +121,8 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
+if '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle; fix path to config file
+    script_path =  '/'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
 CONFIG_FILE_PATH = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
 
