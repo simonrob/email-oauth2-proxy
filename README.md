@@ -10,12 +10,12 @@ The proxy works in the background with a menu bar/taskbar helper or as a system 
 
 ### Example use-cases
 - You need to use an Office 365 email account, but don't get on with Outlook.
-The email client you like doesn't support OAuth 2.0, which will be mandatory from [January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437).
+The email client you like doesn't support OAuth 2.0, which is mandatory [from January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437).
 - You used to use Gmail via IMAP/POP/SMTP with your raw account credentials (i.e., your real password), but cannot do this now that Google has disabled this method, and don't want to use an [App Password](https://support.google.com/accounts/answer/185833) (or cannot enable this option).
 - You have an account already set up in an email client, and you need to switch it to OAuth 2.0 authentication.
 You can edit the server details, but the client forces you to delete and re-add the account to enable OAuth 2.0, and you don't want to do this.
 - You have made your own script or application that sends or receives email, but it doesn't support OAuth 2.0, and you don't want to have to modify it to implement this.
-- You run a server with multiple services that use IMAP/POP/SMTP, and you don't want to have to set up OAuth 2.0 independently for each one.
+- You work with multiple services or applications that use IMAP/POP/SMTP, and you don't want to have to set up OAuth 2.0 independently for each one.
 
 In all of these cases and more, this proxy script can help.
 Follow the instructions below to get started, and please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) with any problems or suggestions.
@@ -24,7 +24,7 @@ For commercial support or feature requests, please also consider [sponsoring thi
 
 ## Getting started
 After cloning or [downloading](https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip) (and starring :-) this repository, start by editing the file `emailproxy.config` to add configuration details for each email server and account that you want to use with the proxy.
-[Documentation and example account configurations](emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](#oauth-20-client-credentials)).
+[Guidance and example account configurations](emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](#oauth-20-client-credentials)).
 You can remove details from the sample configuration file for services you don't use, or add additional ones for any other OAuth 2.0-authenticated IMAP/POP/SMTP servers you would like to use with the proxy.
 
 Next, from a terminal, install the script's requirements: `python -m pip install -r requirements.txt`, and start the proxy: `python emailproxy.py` – a menu bar/taskbar icon should appear.
@@ -35,7 +35,7 @@ Finally, open your email client and configure its server details to match the on
 The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, `localhost` on port `1995` for POP and `localhost` on port `1587` for SMTP.
 The proxy supports multiple accounts simultaneously, and all accounts associated with the same provider can share the same proxy server.
 The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is always secure (implicit SSL/TLS for IMAP and POP; implicit or explicit (STARTTLS) SSL/TLS for SMTP).
-See the [sample configuration file](emailproxy.config) for additional documentation about advanced features, including local encryption, account inheritance and support for running in a container.
+See the [sample configuration file](emailproxy.config) for additional documentation about advanced features, including local encryption, account configuration inheritance and support for running in a container.
 
 The first time your email client makes a request you should see a notification from the proxy about authorising your account.
 Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup browser window that appears.
@@ -62,7 +62,7 @@ The [sample configuration file](emailproxy.config) provides example scope values
 
 - Office 365: register a new [Microsoft identity application](https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app)
 - Gmail / Google Workspace: register a [Google API desktop app client](https://developers.google.com/identity/protocols/oauth2/native-app)
-- AOL and Yahoo Mail are not currently allowing new client registrations with the OAuth email scope – the only option here is to use the credentials from an existing client that does have this permission.
+- AOL and Yahoo Mail (and subproviders such as AT&T) are not currently allowing new client registrations with the OAuth email scope – the only option here is to reuse the credentials from an existing client that does have this permission.
 
 The proxy also supports the [client credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth-ropc) OAuth 2.0 flows if needed.
 Please note that currently only Office 365 is known to support these methods.
@@ -73,21 +73,23 @@ See the [sample configuration file](emailproxy.config) for further details.
 ## Optional arguments and configuration
 When starting the proxy there are several optional arguments that can be set to customise its behaviour.
 
-- `--no-gui` will launch the proxy without an icon, which allows it to be run as a `systemctl` service as demonstrated in [issue 2](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677), or fully headless as demonstrated in [various](https://github.com/michaelstepner/email-oauth2-proxy-aws) [other](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) subprojects.
+- `--no-gui` will launch the proxy without an icon, which allows it to be run as a `systemctl` service as demonstrated in [this example](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677), or fully headless as demonstrated in [various](https://github.com/michaelstepner/email-oauth2-proxy-aws) [other](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) subprojects.
 Please note that on its own this mode is only of use if you have already authorised your accounts through the proxy in GUI mode, or are importing a pre-authorised proxy configuration file from elsewhere.
-Unless this option is used in conjunction with `--external-auth` or `--local-server-auth`, accounts that have not yet been authorised (or for whatever reason require reauthorisation) will time out when authenticating, and an error will be printed to the log.
+Unless this option is used in conjunction with `--external-auth` or `--local-server-auth`, accounts that have not yet been authorised (or for whatever reason require re-authorisation) will time out when authenticating, and an error will be printed to the log.
 
 - `--external-auth` configures the proxy to present an account authorisation URL to be opened in an external browser and wait for you to copy+paste the post-authorisation result.
 In GUI mode this can be useful in situations where the script's own browser window does not have access to some required authentication attribute of your typical setup.
-In no-GUI mode this option allows you to authenticate accounts without needing to start a local web server.
-Once you have authorised account access using this method, paste the final URL from your browser's address bar back into the script's popup window (GUI mode) or the terminal (no-GUI mode) to give it access to transparently proxy your login.
-You should ignore any browser error message that is shown (e.g., `localhost refused to connect`); the important part is the URL itself.
-This argument is identical to enabling external authorisation mode from the `Authorise account` submenu of the menu bar icon.
+In no-GUI mode this option allows you to authenticate accounts entirely externally (unlike `--local-server-auth`, which starts a local web server), though you will need to monitor the proxy's log for authentication notifications.
 
-- `--local-server-auth` instructs the proxy to print account authorisation links to its log and temporarily start an internal web server to receive responses, rather than displaying a browser popup window or relying on any GUI interaction.
-This argument is useful primarily in conjunction with the `--no-gui` option and some form of log monitoring.
+    After visiting the link provided and authorising account access, paste the final URL from your browser's address bar back into the script's popup window (GUI mode) or the terminal (no-GUI mode) to give it access to transparently proxy your login.
+You should ignore any browser error message that is shown (e.g., `unable to connect`); the important part is the URL itself.
+This argument is identical to enabling external authorisation mode from the `Authorise account` submenu of the proxy's menu bar icon.
+
+- `--local-server-auth` is similar to `--external-auth`, but instead instructs the proxy to temporarily start an internal web server to receive authentication responses.
 The `--external-auth` option is ignored in this mode.
-Please note also that while authentication links can be processed from anywhere, the final redirection target (i.e., a link starting with your account's `redirect_uri` value) must be accessed from the machine hosting the proxy itself, so that the local server can actually receive the authorisation result.
+To authorise your account, visit the link that is provided, authenticate, and proceed until you are presented with a success webpage from the proxy.
+Please note that while authentication links can actually be visited from anywhere to log in and authorise access, by default the final redirection target (i.e., a link starting with your account's `redirect_uri` value) must be accessed from the machine hosting the proxy itself so that the local server can receive the authorisation result.
+See the [sample configuration file](emailproxy.config) for advanced options to configure this (via `redirect_listen_address`).
 
 - `--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load.
 If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
@@ -97,12 +99,12 @@ Log files are rotated at 32MB and 10 older log files are kept.
 This option overrides the proxy's default behaviour, which varies by platform (see [below](#troubleshooting) for details).
 
 - `--debug` enables debug mode, printing more verbose output to the log as [discussed below](#troubleshooting).
-This argument is identical to enabling debug mode from the menu bar icon.
+This argument is identical to enabling debug mode from the proxy's menu bar icon.
 
 ### Starting the proxy automatically
 In order for the proxy to authenticate background requests from your email client it needs to be kept running constantly.
 The easiest way to do this is to start the script automatically.
-The proxy has basic support for this built-in: click its menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the script, configuring it to run each time you log in.
+In GUI mode the proxy has basic support for this built-in: click its menu bar icon and then select `Start at login`, which will stop the terminal instance and restart the script, configuring it to run each time you log in.
 On macOS, if you are presented with a prompt about file access here, make sure you grant this so that python can run the script in the background.
 For more advanced configurations, you may want to customise the startup behaviour and edit the script's parameters – see the sections below for further information on how to achieve this using macOS, Windows or Linux.
 
@@ -113,7 +115,7 @@ If you edit the plist file manually, make sure you `unload` and then `load` it t
 If the `Start at login` option appears not to be working for you on macOS, see the [known issues](#known-issues) section below for potential solutions.
 
 On Windows the auto-start functionality is achieved via a shortcut in your user account's startup folder.
-Pressing the Windows key and `r` and entering `shell:startup` (and then clicking OK) will open this folder – from here you can either double-click the `ac.robinson.email-oauth2-proxy.cmd` file to relaunch the proxy, edit it to configure, or delete this file (either manually or by deselecting the option in the proxy's menu) to remove the script from your startup items.
+Pressing `⊞ Win` + `r` and entering `shell:startup` (and then clicking OK) will open this folder – from here you can either double-click the `ac.robinson.email-oauth2-proxy.cmd` file to relaunch the proxy, edit it to configure, or delete this file (either manually or by deselecting the option in the proxy's menu) to remove the script from your startup items.
 
 On Linux this feature assumes that your system supports XDG Autostart.
 A Desktop Entry file `ac.robinson.email-oauth2-proxy.desktop` will be created in `~/.config/autostart/`.
@@ -144,9 +146,9 @@ On macOS the setup and installation instructions above should automatically inst
 Any error messages you may encounter (for example, with your `pip` version and `cryptography`, or `pillow` and `imagingft` dependencies, or [macOS SSL failures](https://github.com/simonrob/email-oauth2-proxy/issues/14#issuecomment-1077379254)) normally give clear explanations of the issues and point to instructions for resolving these problems.
 Please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) if you encounter any other problems here.
 
-When first launching on Linux you may encounter errors similar to `Namespace […] not available`, or issues with the task bar icon display.
-This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and login windows.
-See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) and [pystray FAQ](https://pystray.readthedocs.io/en/latest/faq.html) pages and [issue 1](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) in this repository for a summary and suggestions about how to resolve this.
+When first launching on Linux in GUI mode you may encounter errors similar to `Namespace […] not available`, issues with the task bar icon display, or no browser popup when attempting to authorise your accounts.
+This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and authentication windows.
+See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) and [pystray FAQ](https://pystray.readthedocs.io/en/latest/faq.html) pages and [existing](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) [closed issues](https://github.com/simonrob/email-oauth2-proxy/issues/136#issuecomment-1430417456) in this repository for a summary and suggestions about how to resolve this.
 
 A similar issue may occur on Windows with the [pythonnet](https://github.com/pythonnet/pythonnet) package, which is required by [pywebview](https://github.com/r0x0r/pywebview).
 If you are unable to resolve this by following the [pythonnet installation instructions](https://github.com/pythonnet/pythonnet/wiki/Installation), you may find that installing a [prebuilt wheel](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pythonnet) helps fix the issue.
@@ -170,7 +172,9 @@ See [issue 38](https://github.com/simonrob/email-oauth2-proxy/issues/38) for fur
 - With some combinations of operating systems, web engines and virtual environments, keyboard control or input to the proxy's popup authorisation window may not always work.
 On Windows this is normally limited to keyboard shortcuts (i.e., copy/paste), but in some virtual environments on macOS the entire keyboard may not work.
 As a workaround, the proxy will enable pywebview's debug mode when you run the proxy in debug mode, which should allow you to use the right-click context menu to copy/paste to enter text.
-- On more recent macOS versions (10.14 and later), you may find that you need to manually load the proxy's launch agent in order to trigger a file access permission prompt when first running as a service.
+If you are unable to proceed with popup-based authentication even with this workaround, it is worth trying the proxy's `--external-auth` or `--local-server-auth` options.
+
+- On more recent macOS versions (10.14 and later), you may find that when first running the proxy as a service you need to manually load its launch agent in order to trigger a file access permission prompt.
 You will know if intervention is necessary if the proxy exits (rather than restarts) the first time you click `Start at login` from its menu bar icon.
 To resolve this, exit the proxy and then run `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist` from a terminal.
 A permission pop-up should appear requesting file access for python.
