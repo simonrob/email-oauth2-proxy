@@ -1305,6 +1305,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
+        # Connect to the  first available IPv6/IPv4
         server_address_host, server_address_port = self.server_address
         new_socket = None
         for res in socket.getaddrinfo(server_address_host, server_address_port, socket.AF_UNSPEC, socket.SOCK_STREAM):
@@ -1316,11 +1317,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
                 continue
             break
         if new_socket is None:
-            Log.info(self.info_string(),
-                     'Could not open socket')
+            Log.error(self.info_string(),'Could not open socket')
             self.close()
         new_socket.setblocking(False)
-        # self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+
         self.set_socket(new_socket)
         self.connect(self.server_address)
 
@@ -1718,7 +1718,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         Log.info('Starting', self.info_string())
         local_address_host, local_address_port = self.local_address
         socket_type = socket.AF_INET6
-        try:
+        try: # Try IPv6 Address Family
             socket.getaddrinfo(local_address_host, local_address_port, socket_type, socket.SOCK_STREAM)
         except OSError as msg:
             socket_type = socket.AF_INET
@@ -1735,6 +1735,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         else:
             socket_level = socket.IPPROTO_IPV6
         if socket_family == socket.AF_INET6:
+            # Disable IPv6 Only i.e. accept IPv4 connections a well (dual-stack)
             new_socket.setsockopt(socket_level, socket.IPV6_V6ONLY, 0)
         new_socket.setblocking(False)
 
@@ -1748,7 +1749,6 @@ class OAuth2Proxy(asyncore.dispatcher):
             self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
                                                     do_handshake_on_connect=False))
         else:
-            #super().create_socket(socket_family, socket_type)
             self.set_socket(new_socket)
 
     def remove_client(self, client):
