@@ -14,7 +14,7 @@ import plugins.BasePlugin
 
 # note: these patterns operate on byte-strings to avoid having to parse (and potentially cache) message encodings
 IMAP_COMMAND_MATCHER = re.compile(b'^\\* \\d+ FETCH ', flags=re.IGNORECASE)
-IMAP_FETCH_REQUEST_MATCHER = re.compile(b'^\\* \\d+ FETCH \\(BODY\\[(?:TEXT|1(?:\\.1|\\.2)?|2)] {(?P<length>\\d+)}\r\n',
+IMAP_FETCH_REQUEST_MATCHER = re.compile(b'^\\* \\d+ FETCH \\(BODY\\[(?:TEXT|1(?:\\.1|\\.2)*|2)] {(?P<length>\\d+)}\r\n',
                                         flags=re.IGNORECASE)  # https://stackoverflow.com/a/37794152
 QUOPRI_MATCH_PATTERN = b'=(?:[A-F\\d]{2}|\r\n)'  # similar to above, we need to guess quoted-printable encoding
 
@@ -78,7 +78,7 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
             except binascii.Error:
                 original_message_decoded = quopri.decodestring(original_message)
                 is_quopri = math.isclose(len(re.findall(QUOPRI_MATCH_PATTERN, original_message)), len(
-                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded))), rel_tol=0.01)
+                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded))), rel_tol=0.02)
                 if not is_quopri:
                     original_message_decoded = original_message
 
