@@ -1729,8 +1729,13 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
         new_socket = socket.socket(socket_family, socket_type)
+        # Workaround for bug in Windows https://bugs.python.org/issue29515
+        if not hasattr(socket, "IPPROTO_IPV6"):
+            socket_level = 41
+        else:
+            socket_level = socket.IPPROTO_IPV6
         if socket_family == socket.AF_INET6:
-            new_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            new_socket.setsockopt(socket_level, socket.IPV6_V6ONLY, 0)
         new_socket.setblocking(False)
 
         if self.ssl_connection:
