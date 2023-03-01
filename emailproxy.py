@@ -1305,7 +1305,23 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_address_host, server_address_port = self.server_address
+        new_socket = None
+        for res in socket.getaddrinfo(server_address_host, server_address_port, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            af, socktype, proto, canonname, sa = res
+            try:
+                new_socket = socket.socket(af, socktype, proto)
+            except OSError as msg:
+                new_socket = None
+                continue
+            break
+        if new_socket is None:
+            Log.info(self.info_string(),
+                     'Could not open socket')
+            self.close()
+        new_socket.setblocking(False)
+        # self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.set_socket(new_socket)
         self.connect(self.server_address)
 
     def info_string(self):
@@ -1700,16 +1716,24 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def start(self):
         Log.info('Starting', self.info_string())
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        local_address_host, local_address_port = self.local_address
+        socket_type = socket.AF_INET6
+        try:
+            socket.getaddrinfo(local_address_host, local_address_port, socket_type, socket.SOCK_STREAM)
+        except OSError as msg:
+            socket_type = socket.AF_INET
+        self.create_socket(socket_type, socket.SOCK_STREAM)
         self.set_reuse_addr()
         self.bind(self.local_address)
         self.listen(5)
 
     def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
-        if self.ssl_connection:
-            new_socket = socket.socket(socket_family, socket_type)
-            new_socket.setblocking(False)
+        new_socket = socket.socket(socket_family, socket_type)
+        if socket_family == socket.AF_INET6:
+            new_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        new_socket.setblocking(False)
 
+        if self.ssl_connection:
             # noinspection PyTypeChecker
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
@@ -1719,7 +1743,8 @@ class OAuth2Proxy(asyncore.dispatcher):
             self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
                                                     do_handshake_on_connect=False))
         else:
-            super().create_socket(socket_family, socket_type)
+            #super().create_socket(socket_family, socket_type)
+            self.set_socket(new_socket)
 
     def remove_client(self, client):
         if client in self.client_connections:  # remove closed clients
