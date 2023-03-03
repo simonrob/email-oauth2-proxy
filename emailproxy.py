@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-02-16'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-03'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -1305,24 +1305,14 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
-        # Connect to the  first available IPv6/IPv4
-        server_address_host, server_address_port = self.server_address
-        new_socket = None
-        for res in socket.getaddrinfo(server_address_host, server_address_port, socket.AF_UNSPEC, socket.SOCK_STREAM):
-            af, socktype, proto, canonname, sa = res
-            try:
-                new_socket = socket.socket(af, socktype, proto)
-            except OSError as msg:
-                new_socket = None
-                continue
-            break
-        if new_socket is None:
-            Log.error(self.info_string(),'Could not open socket')
-            self.close()
-        new_socket.setblocking(False)
-
-        self.set_socket(new_socket)
+        self.create_socket()
         self.connect(self.server_address)
+
+    def create_socket(self, socket_family=socket.AF_UNSPEC, socket_type=socket.SOCK_STREAM):
+        # connect to whichever resolved IPv4 or IPv6 address is returned first by the system
+        for a in socket.getaddrinfo(self.server_address[0], self.server_address[1], socket_family, socket.SOCK_STREAM):
+            super().create_socket(a[0], socket.SOCK_STREAM)
+            return
 
     def info_string(self):
         debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
@@ -1716,27 +1706,23 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def start(self):
         Log.info('Starting', self.info_string())
-        local_address_host, local_address_port = self.local_address
-        socket_type = socket.AF_INET6
-        try: # Try IPv6 Address Family
-            socket.getaddrinfo(local_address_host, local_address_port, socket_type, socket.SOCK_STREAM)
-        except OSError as msg:
-            socket_type = socket.AF_INET
-        self.create_socket(socket_type, socket.SOCK_STREAM)
+        self.create_socket()
         self.set_reuse_addr()
         self.bind(self.local_address)
         self.listen(5)
 
-    def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
+    def create_socket(self, socket_family=socket.AF_UNSPEC, socket_type=socket.SOCK_STREAM):
+        # listen using both IPv4 and IPv6 where possible (python 3.8 and later)
+        socket_family = socket.AF_INET6 if socket_family == socket.AF_UNSPEC else socket_family
+        if socket_family != socket.AF_INET:
+            try:
+                host, port = self.local_address
+                socket.getaddrinfo(host, port, socket_family, socket.SOCK_STREAM)
+            except OSError:
+                socket_family = socket.AF_INET
         new_socket = socket.socket(socket_family, socket_type)
-        # Workaround for bug in Windows https://bugs.python.org/issue29515
-        if not hasattr(socket, "IPPROTO_IPV6"):
-            socket_level = 41
-        else:
-            socket_level = socket.IPPROTO_IPV6
-        if socket_family == socket.AF_INET6:
-            # Disable IPv6 Only i.e. accept IPv4 connections a well (dual-stack)
-            new_socket.setsockopt(socket_level, socket.IPV6_V6ONLY, 0)
+        if socket_family == socket.AF_INET6 and getattr(socket, 'has_dualstack_ipv6', False):
+            new_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, False)
         new_socket.setblocking(False)
 
         if self.ssl_connection:
