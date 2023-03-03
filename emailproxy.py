@@ -1753,11 +1753,11 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if error_type == socket.gaierror and value.errno in [8, 11001] or \
+        if error_type == socket.gaierror and value.errno in [-2, 8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # gaierror 8 = 'nodename nor servname provided, or not known', gaierror 11001 = 'getaddrinfo failed' (caused
+            # gaierror -2 or 8 = 'nodename nor servname provided, or not known' / 11001 = 'getaddrinfo failed' (caused
             # by getpeername() failing due to no connection); TimeoutError 60 = 'Operation timed out'; ConnectionError
             # 54 = 'Connection reset by peer', 61 = 'Connection refused; OSError 0 = 'Error' (local SSL failure),
             # 22 = 'Invalid argument' (same cause as gaierror 11001), 50 = 'Network is down', 65 = 'No route to host'
