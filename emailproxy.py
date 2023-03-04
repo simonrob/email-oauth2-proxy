@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-02-16'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-03'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -1483,8 +1483,14 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.create_socket()
         self.connect(self.server_address)
+
+    def create_socket(self, socket_family=socket.AF_UNSPEC, socket_type=socket.SOCK_STREAM):
+        # connect to whichever resolved IPv4 or IPv6 address is returned first by the system
+        for a in socket.getaddrinfo(self.server_address[0], self.server_address[1], socket_family, socket.SOCK_STREAM):
+            super().create_socket(a[0], socket.SOCK_STREAM)
+            return
 
     def info_string(self):
         debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
@@ -1878,16 +1884,26 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def start(self):
         Log.info('Starting', self.info_string())
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.create_socket()
         self.set_reuse_addr()
         self.bind(self.local_address)
         self.listen(5)
 
-    def create_socket(self, socket_family=socket.AF_INET, socket_type=socket.SOCK_STREAM):
-        if self.ssl_connection:
-            new_socket = socket.socket(socket_family, socket_type)
-            new_socket.setblocking(False)
+    def create_socket(self, socket_family=socket.AF_UNSPEC, socket_type=socket.SOCK_STREAM):
+        # listen using both IPv4 and IPv6 where possible (python 3.8 and later)
+        socket_family = socket.AF_INET6 if socket_family == socket.AF_UNSPEC else socket_family
+        if socket_family != socket.AF_INET:
+            try:
+                host, port = self.local_address
+                socket.getaddrinfo(host, port, socket_family, socket.SOCK_STREAM)
+            except OSError:
+                socket_family = socket.AF_INET
+        new_socket = socket.socket(socket_family, socket_type)
+        if socket_family == socket.AF_INET6 and getattr(socket, 'has_dualstack_ipv6', False):
+            new_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, False)
+        new_socket.setblocking(False)
 
+        if self.ssl_connection:
             # noinspection PyTypeChecker
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
@@ -1897,7 +1913,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
                                                     do_handshake_on_connect=False))
         else:
-            super().create_socket(socket_family, socket_type)
+            self.set_socket(new_socket)
 
     def remove_client(self, client):
         if client in self.client_connections:  # remove closed clients
@@ -1931,11 +1947,11 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_error(self):
         error_type, value, _traceback = sys.exc_info()
         del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
-        if error_type == socket.gaierror and value.errno in [8, 11001] or \
+        if error_type == socket.gaierror and value.errno in [-2, 8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
-            # gaierror 8 = 'nodename nor servname provided, or not known', gaierror 11001 = 'getaddrinfo failed' (caused
+            # gaierror -2 or 8 = 'nodename nor servname provided, or not known' / 11001 = 'getaddrinfo failed' (caused
             # by getpeername() failing due to no connection); TimeoutError 60 = 'Operation timed out'; ConnectionError
             # 54 = 'Connection reset by peer', 61 = 'Connection refused; OSError 0 = 'Error' (local SSL failure),
             # 22 = 'Invalid argument' (same cause as gaierror 11001), 50 = 'Network is down', 65 = 'No route to host'
