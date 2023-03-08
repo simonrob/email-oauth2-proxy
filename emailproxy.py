@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-03'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-08'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -508,8 +508,11 @@ class AppConfig:
 
             else:
                 # by default we cache to the local configuration file, and rewrite all values each time
-                with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
-                    AppConfig._PARSER.write(config_output)
+                try:
+                    with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
+                        AppConfig._PARSER.write(config_output)
+                except IOError:
+                    Log.error('Error saving state to config file at', CONFIG_FILE_PATH, '- is the file writable?')
 
     @staticmethod
     def _save_cache(cache_store_identifier, output_config_parser):
@@ -519,8 +522,11 @@ class AppConfig:
                                          {account: dict(output_config_parser.items(account)) for account in
                                           output_config_parser.sections()})
                 return
-        with open(cache_store_identifier, mode='w', encoding='utf-8') as config_output:
-            output_config_parser.write(config_output)
+        try:
+            with open(cache_store_identifier, mode='w', encoding='utf-8') as config_output:
+                output_config_parser.write(config_output)
+        except IOError:
+            Log.error('Error saving state to cache store file at', cache_store_identifier, '- is the file writable?')
 
 
 class OAuth2Helper:
