@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-03'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-08'  # ISO 8601 (YYYY-MM-DD)
 
 import argparse
 import base64
@@ -340,8 +340,11 @@ class AppConfig:
     @staticmethod
     def save():
         if AppConfig._LOADED:
-            with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
-                AppConfig._PARSER.write(config_output)
+            try:
+                with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
+                    AppConfig._PARSER.write(config_output)
+            except IOError:
+                Log.error('Error saving state to config file at', CONFIG_FILE_PATH, '- is the file writable?')
 
 
 class OAuth2Helper:
