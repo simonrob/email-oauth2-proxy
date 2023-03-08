@@ -291,15 +291,21 @@ class CacheStore(abc.ABC):
 class AWSSecretsManagerCacheStore(CacheStore):
     # noinspection PyGlobalUndefined,PyPackageRequirements
     @staticmethod
-    def _get_boto3_client():
+    def _get_boto3_client(store_id):
         try:
             global boto3, botocore
             import boto3
             import botocore.exceptions
         except ModuleNotFoundError:
             Log.error('Unable to load AWS SDK - please install the `boto3` module: `python -m pip install boto3`')
+            return None, None
         else:
-            return boto3.client(service_name='secretsmanager')
+            # allow a profile to be chosen by prefixing the store_id - the separator used (`||`) will not be in an ARN
+            # or secret name (see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html)
+            split_id = store_id.split('||', maxsplit=1)
+            if '||' in store_id:
+                return split_id[1], boto3.session.Session(profile_name=split_id[0]).client('secretsmanager')
+            return store_id, boto3.client(service_name='secretsmanager')
 
     @staticmethod
     def _create_secret(aws_client, store_id):
@@ -329,7 +335,7 @@ class AWSSecretsManagerCacheStore(CacheStore):
 
     @staticmethod
     def load(store_id):
-        aws_client = AWSSecretsManagerCacheStore._get_boto3_client()
+        store_id, aws_client = AWSSecretsManagerCacheStore._get_boto3_client(store_id)
         if aws_client:
             try:
                 Log.debug('Requesting credential cache from AWS Secret "%s"' % store_id)
@@ -355,7 +361,7 @@ class AWSSecretsManagerCacheStore(CacheStore):
 
     @staticmethod
     def save(store_id, config_dict, create_secret=True):
-        aws_client = AWSSecretsManagerCacheStore._get_boto3_client()
+        store_id, aws_client = AWSSecretsManagerCacheStore._get_boto3_client(store_id)
         if aws_client:
             try:
                 Log.debug('Saving credential cache to AWS Secret "%s"' % store_id)

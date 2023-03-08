@@ -113,7 +113,7 @@ Currently only [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/) is
 To use this feature, set the [`--cache-store`](#optional-arguments-and-configuration) parameter to either a full ARN or a secret name, prefixing the value with `aws:` to identify its type to the proxy.
 You must also install the AWS SDK for Python: `python -m pip install boto3` and [set up authentication credentials](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/quickstart.html#configuration) (including a region).
 The minimum required permissions for the associated AWS IAM user are `secretsmanager:GetSecretValue` and `secretsmanager:PutSecretValue`.
-If the named AWS Secret does not yet exist, the proxy willl attempt to create it; here, the `secretsmanager:CreateSecret` permission is also required.
+If the named AWS Secret does not yet exist, the proxy will attempt to create it; here, the `secretsmanager:CreateSecret` permission is also required.
 
 If you are using the proxy in a non-GUI environment it is possible to skip installation of dependencies that apply only to the interactive version.
 To do this, install the script's requirements via `python -m pip install -r requirements-no-gui.txt`, and pass the [`--no-gui`](#optional-arguments-and-configuration) argument when starting the proxy.
