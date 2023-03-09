@@ -8,6 +8,7 @@ __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
 __version__ = '2023-03-08'  # ISO 8601 (YYYY-MM-DD)
 
+import abc
 import argparse
 import base64
 import binascii
@@ -123,7 +124,7 @@ CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     script_path = '/'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
-CONFIG_FILE_PATH = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
+CONFIG_FILE_PATH = CACHE_STORE = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
@@ -272,6 +273,118 @@ class Log:
         return getattr(error, 'message', repr(error))
 
 
+class CacheStore(abc.ABC):
+    """Override this class to provide additional cache store options for a dictionary of OAuth 2.0 credentials, then add
+    an entry in AppConfig's `_EXTERNAL_CACHE_STORES` to make them available via the proxy's `--cache-store` parameter"""
+
+    @staticmethod
+    @abc.abstractmethod
+    def load(store_id):
+        return {}
+
+    @staticmethod
+    @abc.abstractmethod
+    def save(store_id, config_dict):
+        pass
+
+
+class AWSSecretsManagerCacheStore(CacheStore):
+    # noinspection PyGlobalUndefined,PyPackageRequirements
+    @staticmethod
+    def _get_boto3_client(store_id):
+        try:
+            global boto3, botocore
+            import boto3
+            import botocore.exceptions
+        except ModuleNotFoundError:
+            Log.error('Unable to load AWS SDK - please install the `boto3` module: `python -m pip install boto3`')
+            return None, None
+        else:
+            # allow a profile to be chosen by prefixing the store_id - the separator used (`||`) will not be in an ARN
+            # or secret name (see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html)
+            split_id = store_id.split('||', maxsplit=1)
+            if '||' in store_id:
+                return split_id[1], boto3.session.Session(profile_name=split_id[0]).client('secretsmanager')
+            return store_id, boto3.client(service_name='secretsmanager')
+
+    @staticmethod
+    def _create_secret(aws_client, store_id):
+        if store_id.startswith('arn:'):
+            Log.info('Creating new AWS Secret "%s" failed - it is not possible to choose specific ARNs for new secrets')
+            return False
+
+        try:
+            aws_client.create_secret(Name=store_id, ForceOverwriteReplicaSecret=False)
+            Log.info('Created new AWS Secret "%s"' % store_id)
+            return True
+
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == 'AccessDeniedException':
+                AWSSecretsManagerCacheStore._log_error(
+                    'Creating new AWS Secret "%s" failed - access denied: does the IAM user have the '
+                    '`secretsmanager:CreateSecret` permission?' % store_id, e)
+            else:
+                AWSSecretsManagerCacheStore._log_error('Creating new AWS Secret "%s" failed with an unexpected error; '
+                                                       'see the proxy\'s debug log' % store_id, e)
+        return False
+
+    @staticmethod
+    def _log_error(error_message, debug_error):
+        Log.debug('AWS %s: %s' % (debug_error.response['Error']['Code'], debug_error.response['Error']['Message']))
+        Log.error(error_message)
+
+    @staticmethod
+    def load(store_id):
+        store_id, aws_client = AWSSecretsManagerCacheStore._get_boto3_client(store_id)
+        if aws_client:
+            try:
+                Log.debug('Requesting credential cache from AWS Secret "%s"' % store_id)
+                retrieved_secrets = json.loads(aws_client.get_secret_value(SecretId=store_id)['SecretString'])
+                Log.info('Fetched', len(retrieved_secrets), 'cached account entries from AWS Secret "%s"' % store_id)
+                return retrieved_secrets
+
+            except botocore.exceptions.ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == 'ResourceNotFoundException':
+                    Log.info('AWS Secret "%s" does not exist - attempting to create it' % store_id)
+                    AWSSecretsManagerCacheStore._create_secret(aws_client, store_id)
+                elif error_code == 'AccessDeniedException':
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Fetching AWS Secret "%s" failed - access denied: does the IAM user have the '
+                        '`secretsmanager:GetSecretValue` permission?' % store_id, e)
+                else:
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Fetching AWS Secret "%s" failed - unexpected error; see the proxy debug log' % store_id, e)
+        else:
+            Log.error('Unable to get AWS SDK client; cannot fetch credentials from AWS Secrets Manager')
+        return {}
+
+    @staticmethod
+    def save(store_id, config_dict, create_secret=True):
+        store_id, aws_client = AWSSecretsManagerCacheStore._get_boto3_client(store_id)
+        if aws_client:
+            try:
+                Log.debug('Saving credential cache to AWS Secret "%s"' % store_id)
+                aws_client.put_secret_value(SecretId=store_id, SecretString=json.dumps(config_dict))
+                Log.info('Cached', len(config_dict), 'account entries to AWS Secret "%s"' % store_id)
+
+            except botocore.exceptions.ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == 'ResourceNotFoundException' and create_secret:
+                    Log.info('AWS Secret "%s" does not exist - attempting to create it' % store_id)
+                    if AWSSecretsManagerCacheStore._create_secret(aws_client, store_id):
+                        AWSSecretsManagerCacheStore.save(store_id, config_dict, create_secret=False)
+                elif error_code == 'AccessDeniedException':
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Caching to AWS Secret "%s" failed - access denied: does the IAM user have the '
+                        '`secretsmanager:PutSecretValue` permission?' % store_id, e)
+                else:
+                    AWSSecretsManagerCacheStore._log_error(
+                        'Caching to AWS Secret "%s" failed - unexpected error; see the proxy debug log' % store_id, e)
+        else:
+            Log.error('Unable to get AWS SDK client; cannot cache credentials to AWS Secrets Manager')
+
+
 class AppConfig:
     """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
 
@@ -281,6 +394,13 @@ class AppConfig:
     _GLOBALS = None
     _SERVERS = []
     _ACCOUNTS = []
+
+    # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
+    _CACHED_OPTION_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token', 'last_activity',
+                           'client_secret_encrypted']
+
+    # additional cache stores may be implemented by extending CacheStore and adding a prefix entry in this dict
+    _EXTERNAL_CACHE_STORES = {'aws:': AWSSecretsManagerCacheStore}
 
     @staticmethod
     def _load():
@@ -293,9 +413,39 @@ class AppConfig:
             AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME]
         else:
             AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
+
+        # cached account credentials can be stored in the configuration file (default) or, via `--cache-store`, a
+        # separate local file or external service (such as a secrets manager) - we combine these sources at load time
+        if CACHE_STORE != CONFIG_FILE_PATH:
+            # it would be cleaner to avoid specific options here, but best to load unexpected sections only when enabled
+            allow_catch_all_accounts = AppConfig._GLOBALS.getboolean('allow_catch_all_accounts', fallback=False)
+
+            cache_file_parser = AppConfig._load_cache(CACHE_STORE)
+            cache_file_accounts = [s for s in cache_file_parser.sections() if '@' in s]
+            for account in cache_file_accounts:
+                if allow_catch_all_accounts and account not in AppConfig._PARSER.sections():  # missing sub-accounts
+                    AppConfig._PARSER.add_section(account)
+                for option in cache_file_parser.options(account):
+                    if option in AppConfig._CACHED_OPTION_KEYS:
+                        AppConfig._PARSER.set(account, option, cache_file_parser.get(account, option))
+
+            if allow_catch_all_accounts:
+                config_sections = AppConfig._PARSER.sections()  # new sections may have been added
+
         AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
         AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
+
         AppConfig._LOADED = True
+
+    @staticmethod
+    def _load_cache(cache_store_identifier):
+        cache_file_parser = configparser.ConfigParser()
+        for prefix, cache_store_handler in AppConfig._EXTERNAL_CACHE_STORES.items():
+            if cache_store_identifier.startswith(prefix):
+                cache_file_parser.read_dict(cache_store_handler.load(cache_store_identifier[len(prefix):]))
+                return cache_file_parser
+        cache_file_parser.read(cache_store_identifier)  # default cache is a local file (does not error if non-existent)
+        return cache_file_parser
 
     @staticmethod
     def get():
@@ -340,11 +490,43 @@ class AppConfig:
     @staticmethod
     def save():
         if AppConfig._LOADED:
-            try:
-                with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
-                    AppConfig._PARSER.write(config_output)
-            except IOError:
-                Log.error('Error saving state to config file at', CONFIG_FILE_PATH, '- is the file writable?')
+            if CACHE_STORE != CONFIG_FILE_PATH:
+                # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc)
+                output_config_parser = configparser.ConfigParser()
+                output_config_parser.read_dict(AppConfig._PARSER)  # a deep copy of the current configuration
+
+                for account in AppConfig._ACCOUNTS:
+                    for option in output_config_parser.options(account):
+                        if option not in AppConfig._CACHED_OPTION_KEYS:
+                            output_config_parser.remove_option(account, option)
+
+                for section in output_config_parser.sections():
+                    if section not in AppConfig._ACCOUNTS or len(output_config_parser.options(section)) <= 0:
+                        output_config_parser.remove_section(section)
+
+                AppConfig._save_cache(CACHE_STORE, output_config_parser)
+
+            else:
+                # by default we cache to the local configuration file, and rewrite all values each time
+                try:
+                    with open(CONFIG_FILE_PATH, mode='w', encoding='utf-8') as config_output:
+                        AppConfig._PARSER.write(config_output)
+                except IOError:
+                    Log.error('Error saving state to config file at', CONFIG_FILE_PATH, '- is the file writable?')
+
+    @staticmethod
+    def _save_cache(cache_store_identifier, output_config_parser):
+        for prefix, cache_store_handler in AppConfig._EXTERNAL_CACHE_STORES.items():
+            if cache_store_identifier.startswith(prefix):
+                cache_store_handler.save(cache_store_identifier[len(prefix):],
+                                         {account: dict(output_config_parser.items(account)) for account in
+                                          output_config_parser.sections()})
+                return
+        try:
+            with open(cache_store_identifier, mode='w', encoding='utf-8') as config_output:
+                output_config_parser.write(config_output)
+        except IOError:
+            Log.error('Error saving state to cache store file at', cache_store_identifier, '- is the file writable?')
 
 
 class OAuth2Helper:
@@ -409,6 +591,11 @@ class OAuth2Helper:
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
+
+        # try reloading remotely cached tokens if possible
+        if not access_token and CACHE_STORE != CONFIG_FILE_PATH and recurse_retries:
+            AppConfig.reload()
+            return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
 
         # we hash locally-stored tokens with the given password
         if not token_salt:
@@ -1917,13 +2104,13 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self):
-        global CONFIG_FILE_PATH
+        global CONFIG_FILE_PATH, CACHE_STORE
         parser = argparse.ArgumentParser(description=APP_NAME)
         parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
                                                                   'account authorisation requests will fail unless a '
                                                                   'pre-authorised configuration file is used, or you '
                                                                   'enable `--external-auth` or `--local-server-auth` '
-                                                                  'and monitor log output)')
+                                                                  'and monitor log/terminal output)')
         parser.add_argument('--external-auth', action='store_true', help='handle authorisation externally: rather than '
                                                                          'intercepting `redirect_uri`, the proxy will '
                                                                          'wait for you to paste the result into either '
@@ -1935,9 +2122,14 @@ class App:
         parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
                                                                 '(optional; default: `%s` in the same directory as the '
                                                                 'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
+        parser.add_argument('--cache-store', default=None, help='the full path to a local file to use for credential'
+                                                                'caching (optional; default: save to `--config-file`); '
+                                                                'alternatively, an external store such as a secrets '
+                                                                'manager can be used - see the proxy\'s readme for '
+                                                                'instructions and requirements')
         parser.add_argument('--log-file', default=None, help='the full path to a file where log output should be sent '
                                                              '(optional; default behaviour varies by platform, but see '
-                                                             'Log.initialise() for details)')
+                                                             'Log.initialise() for details of each implementation)')
         parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
                                                                  'interaction to the system log')
         parser.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__))
@@ -1949,7 +2141,9 @@ class App:
             Log.set_level(logging.DEBUG)
 
         if self.args.config_file:
-            CONFIG_FILE_PATH = self.args.config_file
+            CONFIG_FILE_PATH = CACHE_STORE = self.args.config_file
+        if self.args.cache_store:
+            CACHE_STORE = self.args.cache_store
 
         self.proxies = []
         self.authorisation_requests = []
