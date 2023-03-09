@@ -32,7 +32,7 @@ If instead of the icon you see an error in the terminal, it is likely that your 
 See the [dependencies and setup](#dependencies-and-setup) section below for help resolving this, and also the [advanced configuration](#advanced-configuration) section for additional options (including fully headless deployments and integration with a secrets manager).
 
 Finally, open your email client and configure its server details to match the ones you set in the proxy's configuration file.
-The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, `localhost` on port `1995` for POP and `localhost` on port `1587` for SMTP.
+The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, port `1995` for POP and port `1587` for SMTP.
 The proxy supports multiple accounts simultaneously, and all accounts associated with the same provider can share the same proxy server.
 The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is always secure (implicit SSL/TLS for IMAP and POP; implicit or explicit (STARTTLS) SSL/TLS for SMTP).
 See the [sample configuration file](emailproxy.config) for additional documentation about advanced features, including local encryption, account configuration inheritance and support for running in a container.
@@ -92,10 +92,12 @@ Please note that while authentication links can actually be visited from anywher
 See the [sample configuration file](emailproxy.config) for advanced options to configure this (via `redirect_listen_address`).
 
 - `--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load.
+By default, the proxy also saves its cached OAuth 2.0 tokens back to this file, so it must be writable.
+See the `--cache-store` option, if you would rather store configuration and cached values separately.
 If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
 
 - `--cache-store` is used to specify a separate location in which to cache authorised OAuth 2.0 tokens and associated metadata.
-The value of this argument can either be the full path to a local file, or an identifier for an external store such as a secrets manager (see the [documentation below](#advanced-configuration)).
+The value of this argument can either be the full path to a local file (which must be writable), or an identifier for an external store such as a secrets manager (see the [documentation below](#advanced-configuration)).
 If this argument is not provided, credentials will be cached in the current configuration file.
 
 - `--log-file` allows you to specify the location of a file to send log output to.
@@ -222,6 +224,7 @@ See the documentation and examples in this branch for further details, additiona
 
 ## Related projects and alternatives
 Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
+Thiago Macieira has provided a [makefile and systemd configuration files](https://github.com/thiagomacieira/email-oauth2-proxy/tree/Add_a_Makefile_and_systemd_configuration_files_to_install_system_wide).
 For Docker, interone-ms has provided an [example configuration](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) (though please note that the fork is otherwise outdated, and it is better to use this repository for the proxy script itself).
 
 If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.

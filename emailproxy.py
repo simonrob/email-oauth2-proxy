@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-08'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-09'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
