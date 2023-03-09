@@ -29,10 +29,10 @@ You can remove details from the sample configuration file for services you don't
 
 Next, from a terminal, install the script's requirements: `python -m pip install -r requirements.txt`, and start the proxy: `python emailproxy.py` – a menu bar/taskbar icon should appear.
 If instead of the icon you see an error in the terminal, it is likely that your system is missing dependencies for the `pywebview` or `pystray` packages.
-See the [dependencies and setup](#dependencies-and-setup) section below for help resolving this, and also for additional configuration options (including fully headless deployments).
+See the [dependencies and setup](#dependencies-and-setup) section below for help resolving this, and also the [advanced configuration](#advanced-configuration) section for additional options (including fully headless deployments and integration with a secrets manager).
 
 Finally, open your email client and configure its server details to match the ones you set in the proxy's configuration file.
-The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, `localhost` on port `1995` for POP and `localhost` on port `1587` for SMTP.
+The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, port `1995` for POP and port `1587` for SMTP.
 The proxy supports multiple accounts simultaneously, and all accounts associated with the same provider can share the same proxy server.
 The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is always secure (implicit SSL/TLS for IMAP and POP; implicit or explicit (STARTTLS) SSL/TLS for SMTP).
 See the [sample configuration file](emailproxy.config) for additional documentation about advanced features, including local encryption, account configuration inheritance and support for running in a container.
@@ -92,7 +92,13 @@ Please note that while authentication links can actually be visited from anywher
 See the [sample configuration file](emailproxy.config) for advanced options to configure this (via `redirect_listen_address`).
 
 - `--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load.
+By default, the proxy also saves its cached OAuth 2.0 tokens back to this file, so it must be writable.
+See the `--cache-store` option, if you would rather store configuration and cached values separately.
 If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
+
+- `--cache-store` is used to specify a separate location in which to cache authorised OAuth 2.0 tokens and associated metadata.
+The value of this argument can either be the full path to a local file (which must be writable), or an identifier for an external store such as a secrets manager (see the [documentation below](#advanced-configuration)).
+If this argument is not provided, credentials will be cached in the current configuration file.
 
 - `--log-file` allows you to specify the location of a file to send log output to.
 Log files are rotated at 32MB and 10 older log files are kept.
@@ -100,6 +106,30 @@ This option overrides the proxy's default behaviour, which varies by platform (s
 
 - `--debug` enables debug mode, printing more verbose output to the log as [discussed below](#troubleshooting).
 This argument is identical to enabling debug mode from the proxy's menu bar icon.
+
+### Advanced configuration
+The [example configuration file](emailproxy.config) contains further documentation for various additional features of the proxy, including catch-all (wildcard) accounts, locally-encrypted connections and advanced Office 365 OAuth 2.0 flows.
+
+The proxy caches authenticated OAuth 2.0 tokens and associated metadata back to its own configuration file by default, but can alternatively be configured to use either a separate local file or a secrets manager service for this purpose.
+Currently only [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/) is supported for remote token storage.
+To use this feature, set the [`--cache-store`](#optional-arguments-and-configuration) parameter to either a full ARN or a secret name, prefixing the value with `aws:` to identify its type to the proxy.
+You must also install the AWS SDK for Python: `python -m pip install boto3` and [set up authentication credentials](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/quickstart.html#configuration) (including a region).
+The minimum required permissions for the associated AWS IAM user are `secretsmanager:GetSecretValue` and `secretsmanager:PutSecretValue`.
+If the named AWS Secret does not yet exist, the proxy will attempt to create it; here, the `secretsmanager:CreateSecret` permission is also required.
+
+If you are using the proxy in a non-GUI environment it is possible to skip installation of dependencies that apply only to the interactive version.
+To do this, install the script's requirements via `python -m pip install -r requirements-no-gui.txt`, and pass the [`--no-gui`](#optional-arguments-and-configuration) argument when starting the proxy.
+Please note that the proxy was designed as a GUI-based tool from the outset due to the inherently interactive nature of OAuth 2.0 authorisation, and there are limits to its ability to support fully no-GUI operation.
+See the [optional arguments and configuration](#optional-arguments-and-configuration) section of this file for further details.
+
+If your network requires connections to use an existing proxy, you can instruct the script to use this by setting the [proxy handler](https://docs.python.org/3/library/urllib.request.html#urllib.request.ProxyHandler) environment variable `https_proxy` (and/or `http_proxy`) – for example, `https_proxy=localhost python emailproxy.py`.
+
+After installing its requirements, the proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
+If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
+
+Python 3.6 or later is required to run the proxy.
+The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with python 2.7, but with a limited feature set, and only very occasional maintenance.
+See [issue 38](https://github.com/simonrob/email-oauth2-proxy/issues/38) for further discussion.
 
 ### Starting the proxy automatically
 In order for the proxy to authenticate background requests from your email client it needs to be kept running constantly.
@@ -154,20 +184,6 @@ A similar issue may occur on Windows with the [pythonnet](https://github.com/pyt
 If you are unable to resolve this by following the [pythonnet installation instructions](https://github.com/pythonnet/pythonnet/wiki/Installation), you may find that installing a [prebuilt wheel](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pythonnet) helps fix the issue.
 Note that the public releases of pythonnet can take some time to be compatible with the latest major python release, so it can be worth using a slightly older version of python, or a pre-release version of pythonnet.
 
-If you are using the proxy in a non-GUI environment it is also possible to skip installation of dependencies that apply only to the interactive version.
-To do this, install the script's requirements via `python -m pip install -r requirements-no-gui.txt`, and pass the [`--no-gui`](#optional-arguments-and-configuration) argument when starting the proxy.
-Please note that the proxy was designed as a GUI-based tool from the outset due to the inherently interactive nature of OAuth 2.0 authorisation, and there are limits to its ability to support fully no-GUI operation.
-See the [optional arguments and configuration](#optional-arguments-and-configuration) section of this file for further details.
-
-If your network requires connections to use an existing proxy, you can instruct the script to use this by setting the [proxy handler](https://docs.python.org/3/library/urllib.request.html#urllib.request.ProxyHandler) environment variable `https_proxy` (and/or `http_proxy`) – for example, `https_proxy=localhost python emailproxy.py`.
-
-After installing its requirements, the proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
-If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en` until [this timeago issue](https://github.com/hustcc/timeago/issues/40) is resolved.
-
-Python 3.6 or later is required to run the proxy.
-The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with python 2.7, but with a limited feature set, and only very occasional maintenance.
-See [issue 38](https://github.com/simonrob/email-oauth2-proxy/issues/38) for further discussion.
-
 ### Known issues
 - With some combinations of operating systems, web engines and virtual environments, keyboard control or input to the proxy's popup authorisation window may not always work.
 On Windows this is normally limited to keyboard shortcuts (i.e., copy/paste), but in some virtual environments on macOS the entire keyboard may not work.
@@ -208,6 +224,7 @@ See the documentation and examples in this branch for further details, additiona
 
 ## Related projects and alternatives
 Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
+Thiago Macieira has provided a [makefile and systemd configuration files](https://github.com/thiagomacieira/email-oauth2-proxy/tree/Add_a_Makefile_and_systemd_configuration_files_to_install_system_wide).
 For Docker, interone-ms has provided an [example configuration](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) (though please note that the fork is otherwise outdated, and it is better to use this repository for the proxy script itself).
 
 If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.
