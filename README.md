@@ -23,7 +23,7 @@ For commercial support or feature requests, please also consider [sponsoring thi
 
 
 ## Getting started
-After cloning or [downloading](https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip) (and starring :-) this repository, start by editing the file `emailproxy.config` to add configuration details for each email server and account that you want to use with the proxy.
+After cloning or [downloading](https://github.com/simonrob/email-oauth2-proxy/releases/latest) (and starring :-) this repository, start by editing the file `emailproxy.config` to add configuration details for each email server and account that you want to use with the proxy.
 [Guidance and example account configurations](emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](#oauth-20-client-credentials)).
 You can remove details from the sample configuration file for services you don't use, or add additional ones for any other OAuth 2.0-authenticated IMAP/POP/SMTP servers you would like to use with the proxy.
 
