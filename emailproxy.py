@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-09'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-15'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2105,34 +2105,41 @@ class App:
 
     def __init__(self):
         global CONFIG_FILE_PATH, CACHE_STORE
-        parser = argparse.ArgumentParser(description=APP_NAME)
-        parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
-                                                                  'account authorisation requests will fail unless a '
-                                                                  'pre-authorised configuration file is used, or you '
-                                                                  'enable `--external-auth` or `--local-server-auth` '
-                                                                  'and monitor log/terminal output)')
-        parser.add_argument('--external-auth', action='store_true', help='handle authorisation externally: rather than '
-                                                                         'intercepting `redirect_uri`, the proxy will '
-                                                                         'wait for you to paste the result into either '
-                                                                         'its popup window (GUI-mode) or the terminal '
-                                                                         '(no-GUI mode; requires `prompt_toolkit`)')
-        parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
-                                                                             'URLs to the log and starting a local web '
-                                                                             'server on demand to receive responses')
-        parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
-                                                                '(optional; default: `%s` in the same directory as the '
-                                                                'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
-        parser.add_argument('--cache-store', default=None, help='the full path to a local file to use for credential'
-                                                                'caching (optional; default: save to `--config-file`); '
-                                                                'alternatively, an external store such as a secrets '
-                                                                'manager can be used - see the proxy\'s readme for '
-                                                                'instructions and requirements')
-        parser.add_argument('--log-file', default=None, help='the full path to a file where log output should be sent '
-                                                             '(optional; default behaviour varies by platform, but see '
-                                                             'Log.initialise() for details of each implementation)')
-        parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
-                                                                 'interaction to the system log')
-        parser.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__))
+        parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
+                                                     'applications, scripts or any other email use-cases that don\'t '
+                                                     'support this authentication method.' % APP_NAME, add_help=False,
+                                         epilog='Full readme and guide: https://github.com/simonrob/email-oauth2-proxy')
+        group_gui = parser.add_argument_group(title='appearance')
+        group_gui.add_argument('--no-gui', action='store_true',
+                               help='start the proxy without a menu bar icon (note: account authorisation requests '
+                                    'will fail unless a pre-authorised `--config-file` is used, or you use '
+                                    '`--external-auth` or `--local-server-auth` and monitor log/terminal output)')
+        group_auth = parser.add_argument_group('authentication methods')
+        group_auth.add_argument('--external-auth', action='store_true',
+                                help='handle authorisation externally: rather than intercepting `redirect_uri`, the '
+                                     'proxy will wait for you to paste the result into either its popup window (GUI '
+                                     'mode) or the terminal (no-GUI mode; requires `prompt_toolkit`)')
+        group_auth.add_argument('--local-server-auth', action='store_true',
+                                help='handle authorisation by printing request URLs to the log and starting a local '
+                                     'web server on demand to receive responses')
+        group_config = parser.add_argument_group('server, account and runtime configuration')
+        group_config.add_argument('--config-file', default=None,
+                                  help='the full path to the proxy\'s configuration file (optional; default: `%s` in '
+                                       'the same directory as the proxy script)' % os.path.basename(CONFIG_FILE_PATH))
+        group_config.add_argument('--cache-store', default=None,
+                                  help='the full path to a local file to use for credential caching (optional; '
+                                       'default: save to `--config-file`); alternatively, an external store such as a '
+                                       'secrets manager can be used - see readme for instructions and requirements')
+        group_debug = parser.add_argument_group('logging, debugging and help')
+        group_debug.add_argument('--log-file', default=None,
+                                 help='the full path to a file where log output should be sent (optional; default log '
+                                      'behaviour varies by platform - see readme for details)')
+        group_debug.add_argument('--debug', action='store_true',
+                                 help='enable debug mode, sending all client<->proxy<->server communication to the '
+                                      'proxy\'s log')
+        group_debug.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__),
+                                 help='show the proxy\'s version string and exit')
+        group_debug.add_argument('-h', '--help', action='help', help='show this help message and exit')
 
         self.args = parser.parse_args()
 
