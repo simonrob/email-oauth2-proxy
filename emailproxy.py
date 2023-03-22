@@ -761,7 +761,7 @@ class OAuth2Helper:
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
                 start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
-                token_request['response_url'] = token_request['redirect_uri'].rstrip('/') + environ.get(
+                token_request['response_url'] = '/'.join(token_request['redirect_uri'].split('/')[0:3]) + environ.get(
                     'PATH_INFO') + '?' + environ.get('QUERY_STRING')
                 return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
                          '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
