@@ -2461,10 +2461,13 @@ class App:
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
                                                                      'Navigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
-        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
-                webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
-        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
-                ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
+        try:
+            setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
+                    webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
+            setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
+                    ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
+        except TypeError:
+            pass
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
