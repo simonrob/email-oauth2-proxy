@@ -67,7 +67,8 @@ no_gui_parser.add_argument('--no-gui', action='store_true')
 no_gui_parser.add_argument('--external-auth', action='store_true')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if not no_gui_args.no_gui:
-    import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
+    # noinspection PyDeprecation
+    import pkg_resources  # from setuptools - to be changed to importlib.metadata and packaging.version once 3.8 is min.
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
@@ -2295,6 +2296,7 @@ class App:
         font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
+        # noinspection PyDeprecation
         if pkg_resources.parse_version(
                 pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
             font_width, font_height = font.getsize(text)
@@ -2439,6 +2441,7 @@ class App:
         setattr(authorisation_window, 'get_title', lambda window: window.title)  # add missing get_title method
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
+        # noinspection PyDeprecation
         if pkg_resources.parse_version(
                 pkg_resources.get_distribution('pywebview').version) < pkg_resources.parse_version('3.6'):
             authorisation_window.loaded += self.authorisation_window_loaded
