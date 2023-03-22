@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-15'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-22'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -603,8 +603,12 @@ class OAuth2Helper:
             token_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
 
         # generate encrypter/decrypter based on password and random salt
-        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
-                                             salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000,
+        try:
+            decoded_salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
+        except binascii.Error:
+            return (False, '%s: Invalid `token_salt` value found in config file entry for account %s - this value is '
+                           'not intended to be manually created; please remove and retry' % (APP_NAME, username))
+        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=decoded_salt, iterations=100000,
                                              backend=default_backend())
         fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
 
