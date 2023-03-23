@@ -78,7 +78,7 @@ class IMAPCleanO365ATPLinks(plugins.BasePlugin.BasePlugin):
             except binascii.Error:
                 original_message_decoded = quopri.decodestring(original_message)
                 is_quopri = math.isclose(len(re.findall(QUOPRI_MATCH_PATTERN, original_message)), len(
-                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded))), rel_tol=0.02)
+                    re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_message_decoded))), rel_tol=0.05)
                 if not is_quopri:
                     original_message_decoded = original_message
 
