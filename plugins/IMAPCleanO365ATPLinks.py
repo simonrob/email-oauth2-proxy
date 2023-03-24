@@ -22,7 +22,7 @@ QUOPRI_MATCH_PATTERN = b'=(?:[A-F\\d]{2}|\r\n)'  # similar to above, we need to 
 O365_GEO_LOCATIONS = '|'.join(['APC', 'AUS', 'BRA', 'CAN', 'EUR', 'FRA', 'DEU', 'IND', 'JPN', 'KOR', 'NAM', 'NOR',
                                'QAT', 'ZAF', 'SWE', 'CHE', 'ARE', 'GBR']).lower().encode('utf-8')
 # noinspection RegExpUnnecessaryNonCapturingGroup
-O365_ATP_MATCHER = re.compile(b'(?P<atp>https://(?:%s)\\d{2}\\.safelinks\\.protection\\.outlook\\.com/'
+O365_ATP_MATCHER = re.compile(b'(?P<atp>https://(?:%s)\\d{2}\\.safelinks\\.protection\\.outlook\\.com/.*?'
                               b'\\?url=.+?reserved=0)' % O365_GEO_LOCATIONS, flags=re.IGNORECASE)
 
 
