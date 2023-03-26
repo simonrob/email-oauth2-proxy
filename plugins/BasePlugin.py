@@ -96,4 +96,4 @@ class BasePlugin:
 class IMAP:
     """Parsing IMAP messages almost always requires matching tags – this regular expression pattern matches the formal
     tag syntax and saves having to reimplement or copy/paste in every new plugin"""
-    TAG_PATTERN = b"^(?P<tag>[!#$&',-\\[\\]-z|}~]+)"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
+    TAG_PATTERN = br'(?P<tag>[!#$&\',-\[\]-z|}~]+)'  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax

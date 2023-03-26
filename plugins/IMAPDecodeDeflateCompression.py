@@ -11,8 +11,8 @@ import zlib
 import plugins.BasePlugin
 
 IMAP_TAG_PATTERN = plugins.BasePlugin.IMAP.TAG_PATTERN
-IMAP_COMPRESS_START_MATCHER = re.compile(b'%s COMPRESS DEFLATE\r\n' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
-IMAP_COMPRESS_RESPONSE_MATCHER = re.compile(b'%s OK.+\r\n' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_COMPRESS_START_MATCHER = re.compile(b'^%s COMPRESS DEFLATE\r\n' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_COMPRESS_RESPONSE_MATCHER = re.compile(b'^%s OK.+\r\n' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 
 
 class IMAPDecodeDeflateCompression(plugins.BasePlugin.BasePlugin):

@@ -6,7 +6,7 @@ import re
 import plugins.BasePlugin
 
 # note: these patterns operate on byte-strings to avoid having to parse (and potentially cache) message encodings
-IMAP_O365_SEARCH_MATCHER = re.compile(b'(?P<prefix>%s SEARCH(?: .+)? (?:BODY|TEXT) )'
+IMAP_O365_SEARCH_MATCHER = re.compile(b'^(?P<prefix>%s SEARCH(?: .+)? (?:BODY|TEXT) )'
                                       br'(?:{(?P<length>\d+)(?P<continuation>\+?)}|"(?P<query>.*)"(?P<suffix>(?: .+)?))'
                                       b'\r\n' % plugins.BasePlugin.IMAP.TAG_PATTERN,
                                       flags=re.IGNORECASE)

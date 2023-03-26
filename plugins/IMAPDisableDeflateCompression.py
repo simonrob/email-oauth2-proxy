@@ -8,7 +8,7 @@ import re
 
 import plugins.BasePlugin
 
-IMAP_COMPRESS_MATCHER = re.compile(b'%s COMPRESS DEFLATE\r\n' % plugins.BasePlugin.IMAP.TAG_PATTERN,
+IMAP_COMPRESS_MATCHER = re.compile(b'^%s COMPRESS DEFLATE\r\n' % plugins.BasePlugin.IMAP.TAG_PATTERN,
                                    flags=re.IGNORECASE)
 
 

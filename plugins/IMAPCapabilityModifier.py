@@ -7,7 +7,7 @@ import plugins.BasePlugin
 
 # note that we can't use the same capability matcher as in the main proxy because we need to be able to handle multiline
 # messages, whereas the proxy only needs this pre-authentication (where all messages are single line)
-IMAP_CAPABILITY_MATCHER = re.compile(b'(?:\\* |\\* OK \\[)CAPABILITY .*', flags=re.IGNORECASE)  # '* ' *and* '* OK ['
+IMAP_CAPABILITY_MATCHER = re.compile(br'\* (?:OK \[)?CAPABILITY .*', flags=re.IGNORECASE)  # '* ' *and* '* OK ['
 
 
 class IMAPCapabilityModifier(plugins.BasePlugin.BasePlugin):
