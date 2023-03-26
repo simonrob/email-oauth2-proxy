@@ -125,7 +125,7 @@ See the [optional arguments and configuration](#optional-arguments-and-configura
 If your network requires connections to use an existing proxy, you can instruct the script to use this by setting the [proxy handler](https://docs.python.org/3/library/urllib.request.html#urllib.request.ProxyHandler) environment variable `https_proxy` (and/or `http_proxy`) – for example, `https_proxy=localhost python emailproxy.py`.
 
 After installing its requirements, the proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
-If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
+If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en_short` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
 
 Python 3.6 or later is required to run the proxy.
 The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with python 2.7, but with a limited feature set, and only very occasional maintenance.
