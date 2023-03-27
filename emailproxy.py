@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-22'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-27'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -148,11 +148,11 @@ TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
 LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
 
-IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
-IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
-    r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_TAG_PATTERN = r'[!#$&\',-\[\]-z|}~]+'  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
+IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile('^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) '
+                                                 '(?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
-IMAP_CAPABILITY_MATCHER = re.compile(r'^(?:\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
+IMAP_CAPABILITY_MATCHER = re.compile(r'^\* (?:OK \[)?CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' *and* '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
@@ -945,7 +945,7 @@ class OAuth2Helper:
     def strip_quotes(text):
         """Remove double quotes (i.e., " characters) around a string - used for IMAP LOGIN command"""
         if text.startswith('"') and text.endswith('"'):
-            return text[1:-1].replace('\\"', '"')  # also need to fix any escaped quotes within the string
+            return text[1:-1].replace(r'\"', '"')  # also need to fix any escaped quotes within the string
         return text
 
     @staticmethod
@@ -1151,11 +1151,12 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                 else:
                     # IMAP LOGIN command with inline username/password, POP PASS and IMAP/POP/SMTP AUTH(ENTICATE)
                     tag_pattern = IMAP_TAG_PATTERN.encode('utf-8')
-                    log_data = re.sub(b'(%s) (LOGIN) (.*)\r\n' % tag_pattern, b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE,
-                                      line, flags=re.IGNORECASE)
-                    log_data = re.sub(b'(PASS) (.*)\r\n', b'\\1 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
-                    log_data = re.sub(b'(%s)?( ?)(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
-                                      b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(%s) (LOGIN) (.*)\r\n' % tag_pattern,
+                                      br'\1 \2 ' + CENSOR_MESSAGE + b'\r\n', line, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(PASS) (.*)\r\n',
+                                      br'\1 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(%s)?( )?(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
+                                      br'\1\2\3\4 \5 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
 
                 Log.debug(self.info_string(), '-->', log_data)
                 try:
@@ -1641,16 +1642,16 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
-            capability = r"[!#$&'+-\[^-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
-            updated_response = re.sub(r'( AUTH=' + capability + r')+', ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
-            if not re.search(r' AUTH=PLAIN', updated_response, re.IGNORECASE):
+            capability = r'[!#$&\'+-\[^-z|}~]+'  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
+            updated_response = re.sub('( AUTH=%s)+' % capability, ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
+            if not re.search(' AUTH=PLAIN', updated_response, re.IGNORECASE):
                 # cannot just replace e.g., one 'CAPABILITY ' match because IMAP4 must be first if present (RFC 1730)
-                updated_response = re.sub(r'(CAPABILITY)( IMAP' + capability + r')?', r'\g<1>\g<2> AUTH=PLAIN',
-                                          updated_response, count=1, flags=re.IGNORECASE)
+                updated_response = re.sub('(CAPABILITY)( IMAP%s)?' % capability, r'\1\2 AUTH=PLAIN', updated_response,
+                                          count=1, flags=re.IGNORECASE)
             updated_response = updated_response.replace(' AUTH=PLAIN', '', updated_response.count(' AUTH=PLAIN') - 1)
-            if not re.search(r' SASL-IR', updated_response, re.IGNORECASE):
+            if not re.search(' SASL-IR', updated_response, re.IGNORECASE):
                 updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
-            updated_response = re.sub(r' LOGINDISABLED', '', updated_response, count=1, flags=re.IGNORECASE)
+            updated_response = re.sub(' LOGINDISABLED', '', updated_response, count=1, flags=re.IGNORECASE)
             byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
 
         super().process_data(byte_data)
@@ -1768,7 +1769,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             # intercept EHLO response AUTH capabilities and replace with what we can actually do - note that we assume
             # an AUTH line will be included in the response; if there are any servers for which this is not the case, we
             # could cache and re-stream as in POP. Formal syntax: https://tools.ietf.org/html/rfc4954#section-8
-            updated_response = re.sub(r'250([ -])AUTH( [!-*,-<>-~]+)+', '250\\1AUTH PLAIN LOGIN', str_data,
+            updated_response = re.sub('250([ -])AUTH( [!-*,-<>-~]+)+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = b'%s\r\n' % updated_response.encode('utf-8')
             if self.starttls_state is self.STARTTLS.COMPLETE:
@@ -2619,7 +2620,7 @@ class App:
         if self.args.external_auth:
             script_command.append('--external-auth')
 
-        return ['"%s"' % arg.replace('"', '\\"') if quote_args and ' ' in arg else arg for arg in script_command]
+        return ['"%s"' % arg.replace('"', r'\"') if quote_args and ' ' in arg else arg for arg in script_command]
 
     def linux_restart(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
@@ -2680,7 +2681,7 @@ class App:
                     notification_centre.setDelegate_(self.macos_user_notification_centre_delegate)
                     notification_centre.deliverNotification_(user_notification)
                 except Exception:
-                    for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
+                    for replacement in (('\\', r'\\'), ('"', r'\"')):  # osascript approach requires sanitisation
                         text = text.replace(*replacement)
                         title = title.replace(*replacement)
                     subprocess.call(['osascript', '-e', 'display notification "%s" with title "%s"' % (text, title)])
