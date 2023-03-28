@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# -*- coding: UTF-8 -*-
+# vim: ts=4 sw=4 et ai si
 
 """A simple IMAP/POP/SMTP proxy that intercepts authenticate and login commands, transparently replacing them with OAuth
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
