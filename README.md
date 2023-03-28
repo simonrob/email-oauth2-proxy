@@ -100,7 +100,7 @@ If this argument is not provided, the proxy will look for `emailproxy.config` in
 The value of this argument can either be the full path to a local file (which must be writable), or an identifier for an external store such as a secrets manager (see the [documentation below](#advanced-configuration)).
 If this argument is not provided, credentials will be cached in the current configuration file.
 
-- `--log-file` allows you to specify the location of a file to send log output to.
+- `--log-file` allows you to specify the location of a file to send log output to (full path required).
 Log files are rotated at 32MB and 10 older log files are kept.
 This option overrides the proxy's default behaviour, which varies by platform (see [below](#troubleshooting) for details).
 

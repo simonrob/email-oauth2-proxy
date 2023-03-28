@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-27'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-03-28'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -212,7 +212,8 @@ class Log:
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME),
+                log_file or '%s/%s.log' % (os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
+                                                           os.path.realpath(__file__)), APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
@@ -2313,10 +2314,8 @@ class App:
     def create_config_menu(self):
         items = []
         if len(self.proxies) <= 0:
-            # note that we don't actually allow no servers when loading config, but just in case that behaviour changes
-            items.append(pystray.MenuItem('Servers:', None, enabled=False))
-            items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
-            items.append(pystray.Menu.SEPARATOR)
+            # note that we don't actually allow no servers when loading the config, so no need to generate a menu
+            return items  # (avoids creating and then immediately regenerating the menu when servers are loaded)
         else:
             for server_type in ['IMAP', 'POP', 'SMTP']:
                 items.extend(App.get_config_menu_servers(self.proxies, server_type))
