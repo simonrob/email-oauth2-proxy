@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-28'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-04-03'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -1063,7 +1063,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout or socket misconfiguration
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
-                          APP_PACKAGE]
+                          'UNSUPPORTED_PROTOCOL', APP_PACKAGE]
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any(i in value.args[1] for i in ssl_errors):
                 Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
