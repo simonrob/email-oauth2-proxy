@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2022 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-04-03'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-04-04'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -273,6 +273,12 @@ class Log:
     @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
+
+    @staticmethod
+    def get_last_error():
+        error_type, value, _traceback = sys.exc_info()
+        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        return error_type, value  # note that if no exception has currently been raised, this will return `None, None`
 
 
 class CacheStore(abc.ABC):
@@ -1008,7 +1014,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         except ssl.SSLWantWriteError:
             select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
         except self.ssl_handshake_errors:  # also includes SSLWant[Read/Write]Error, but already handled above
-            self.handle_close()
+            self.close()
         else:
             if not self.ssl_handshake_completed:  # only notify once (we may need to repeat the handshake later)
                 Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
@@ -1056,14 +1062,13 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         return 0
 
     def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if self.ssl_connection:
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout or socket misconfiguration
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
                           'UNSUPPORTED_PROTOCOL', APP_PACKAGE]
+            error_type, value = Log.get_last_error()
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any(i in value.args[1] for i in ssl_errors):
                 Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
@@ -1078,7 +1083,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                                   'self-signed certificates, but these may still need an exception in your client')
                 Log.error('If you encounter this error repeatedly, please check that you have correctly configured',
                           'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
-                self.handle_close()
+                self.close()
             else:
                 super().handle_error()
         else:
@@ -1185,7 +1190,9 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             Log.info(self.info_string(), 'Caught asyncore info message (client) -', message_type, ':', message)
 
     def handle_close(self):
-        Log.debug(self.info_string(), '--> [ Client disconnected ]')
+        error_type, value = Log.get_last_error()
+        if error_type and value:
+            Log.info(self.info_string(), 'Caught connection error (client) -', error_type.__name__, ':', value)
         self.close()
 
     def close(self):
@@ -1196,6 +1203,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             self.server_connection = None
         self.proxy_parent.remove_client(self)
         with contextlib.suppress(OSError):
+            Log.debug(self.info_string(), '<-- [ Server disconnected ]')
             super().close()
 
 
@@ -1586,8 +1594,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         return super().send(byte_data)
 
     def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        error_type, value = Log.get_last_error()
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
@@ -1595,7 +1602,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
-            self.handle_close()
+            self.close()
         else:
             super().handle_error()
 
@@ -1605,7 +1612,13 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             Log.info(self.info_string(), 'Caught asyncore info message (server) -', message_type, ':', message)
 
     def handle_close(self):
-        Log.debug(self.info_string(), '<-- [ Server disconnected ]')
+        error_type, value = Log.get_last_error()
+        if error_type and value:
+            message = 'Caught connection error (server)'
+            if error_type == OSError and value.errno in [errno.ENOTCONN, 10057]:
+                # OSError 57 or 10057 = 'Socket is not connected'
+                message = '%s [ Client attempted to send command without waiting for server greeting ]' % message
+            Log.info(self.info_string(), message, '-', error_type.__name__, ':', value)
         self.close()
 
     def close(self):
@@ -1615,6 +1628,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
                 self.client_connection.close()
             self.client_connection = None
         with contextlib.suppress(OSError):
+            Log.debug(self.info_string(), '--> [ Client disconnected ]')
             super().close()
 
 
@@ -1880,7 +1894,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             except Exception:
                 connection.close()
                 if new_server_connection:
-                    new_server_connection.handle_close()
+                    new_server_connection.close()
                 raise
         else:
             error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
@@ -1897,7 +1911,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.debug(client.info_string(), '[ Connection closed ]')
+                    Log.debug(client.info_string(), '[ Connection failed ]')
                 else:
                     Log.info(client.info_string(), 'Caught asyncore exception in thread loop:', Log.error_string(e))
 
@@ -1964,8 +1978,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.start()
 
     def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        error_type, value = Log.get_last_error()
         if error_type == socket.gaierror and value.errno in [-2, 8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
@@ -1986,6 +1999,9 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def handle_close(self):
         # if we encounter an unhandled exception in asyncore, handle_close() is called; restart this server
+        error_type, value = Log.get_last_error()
+        if error_type and value:
+            Log.info(self.info_string(), 'Caught connection error -', error_type.__name__, ':', value)
         Log.info('Unexpected close of proxy connection - restarting', self.info_string())
         try:
             self.restart()
