@@ -1137,7 +1137,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                 for plugin in self.custom_configuration['plugins']:
                     byte_data = plugin.receive_from_client(byte_data)
                     if not byte_data:
-                        plugin.log_debug('--> [ message consumed by plugin ]')
+                        plugin.log_debug('--> [ Message consumed by plugin ]')
                         break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
                     else:
                         plugin.log_debug('-->', byte_data)  # message transformed by plugin
@@ -1561,7 +1561,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
                     current_plugin = self.custom_configuration['plugins'][-i]
                     byte_data = current_plugin.receive_from_server(byte_data)
                     if not byte_data:
-                        current_plugin.log_debug('<-- [ message consumed by plugin ]')
+                        current_plugin.log_debug('<-- [ Message consumed by plugin ]')
                         break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
                     else:
                         current_plugin.log_debug('<--', byte_data)  # transformed by plugin
