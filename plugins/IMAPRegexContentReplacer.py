@@ -33,6 +33,8 @@ class IMAPRegexContentReplacer(plugins.IMAPMessageEditor.IMAPMessageEditor):
 
         def decode_string(original):
             # we need the original string as entered, not the backslash-escaped version
+            if not original:
+                return b''
             return original.encode('latin-1', 'backslashreplace').decode('unicode-escape').encode('utf-8')
 
         replacements = {}
