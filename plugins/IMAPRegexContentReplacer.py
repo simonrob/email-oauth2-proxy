@@ -5,12 +5,14 @@ confuse/break it you will likely succeed.
 Sample Email OAuth 2.0 Proxy server configuration:
 plugins = {'IMAPRegexContentReplacer': {'replacements_file': '/path/to/IMAPRegexContentReplacer.config'}}
 
-Sample IMAPRegexContentReplacer.config plugin configuration file (note: searches are case-insensitive, dot matches all
-characters, and spaces at the start/end of searches/replacements are ignored):
+Sample IMAPRegexContentReplacer.config plugin configuration file. Note that the normal delimiters `:` and `=` have been
+replaced by the string `{=rcr=}` to help with regex-based replacements. In addition, it is important to be aware that
+searches are not case-sensitive, dot matches all characters (i.e., including newlines), and spaces at the start/end of
+searches/replacements are ignored):
 [IMAPRegexContentReplacer]
-Dear = ¿Qué tal?
-\r\n\r\n = \r\n
-(\d{2})/(\d{2})/(\d{4}) = \g<3>/\g<1>/\g<2>
+Dear {=rcr=} ¿Qué tal?
+\r\n\r\n {=rcr=} \r\n
+(\d{2})/(\d{2})/(\d{4}) {=rcr=} \g<3>/\g<1>/\g<2>
 """
 
 import configparser
@@ -26,7 +28,7 @@ class IMAPRegexContentReplacer(plugins.IMAPMessageEditor.IMAPMessageEditor):
 
     @staticmethod
     def parse_replacements(replacements_file=None):
-        config_parser = configparser.ConfigParser()
+        config_parser = configparser.ConfigParser(delimiters=('{=rcr=}',), interpolation=None, allow_no_value=True)
         config_parser.read(replacements_file)
 
         def decode_string(original):

@@ -12,7 +12,8 @@ import plugins.BasePlugin
 
 # note: these patterns operate on byte-strings to avoid having to parse (and potentially cache) message encodings
 IMAP_COMMAND_MATCHER = re.compile(br'^\* \d+ FETCH ', flags=re.IGNORECASE)
-IMAP_FETCH_REQUEST_MATCHER = re.compile(br'^\* \d+ FETCH \(BODY\[(?:TEXT|1(?:\.1|\.2)*|2)] {(?P<length>\d+)}'
+IMAP_FETCH_REQUEST_MATCHER = re.compile(br'^\* \d+ FETCH \((?:UID \d+ )?'
+                                        br'BODY\[(?:TEXT|1(?:\.1|\.2)*|2)] {(?P<length>\d+)}'
                                         b'\r\n', flags=re.IGNORECASE)  # https://stackoverflow.com/a/37794152
 QUOPRI_MATCH_PATTERN = br'=(?:[A-F\d]{2}|%s)' % b'\r\n'  # similar to above, we need to guess quoted-printable encoding
 
