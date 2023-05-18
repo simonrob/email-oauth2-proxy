@@ -23,7 +23,7 @@ For commercial support or feature requests, please also consider [sponsoring thi
 
 
 ## Getting started
-After cloning or [downloading](https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip) (and starring :-) this repository, start by editing the file `emailproxy.config` to add configuration details for each email server and account that you want to use with the proxy.
+After cloning or [downloading](https://github.com/simonrob/email-oauth2-proxy/releases/latest) (and starring :-) this repository, start by editing the file `emailproxy.config` to add configuration details for each email server and account that you want to use with the proxy.
 [Guidance and example account configurations](emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](#oauth-20-client-credentials)).
 You can remove details from the sample configuration file for services you don't use, or add additional ones for any other OAuth 2.0-authenticated IMAP/POP/SMTP servers you would like to use with the proxy.
 
@@ -100,7 +100,7 @@ If this argument is not provided, the proxy will look for `emailproxy.config` in
 The value of this argument can either be the full path to a local file (which must be writable), or an identifier for an external store such as a secrets manager (see the [documentation below](#advanced-configuration)).
 If this argument is not provided, credentials will be cached in the current configuration file.
 
-- `--log-file` allows you to specify the location of a file to send log output to.
+- `--log-file` allows you to specify the location of a file to send log output to (full path required).
 Log files are rotated at 32MB and 10 older log files are kept.
 This option overrides the proxy's default behaviour, which varies by platform (see [below](#troubleshooting) for details).
 
@@ -125,7 +125,7 @@ See the [optional arguments and configuration](#optional-arguments-and-configura
 If your network requires connections to use an existing proxy, you can instruct the script to use this by setting the [proxy handler](https://docs.python.org/3/library/urllib.request.html#urllib.request.ProxyHandler) environment variable `https_proxy` (and/or `http_proxy`) – for example, `https_proxy=localhost python emailproxy.py`.
 
 After installing its requirements, the proxy can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
-If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
+If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en_short` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
 
 Python 3.6 or later is required to run the proxy.
 The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with python 2.7, but with a limited feature set, and only very occasional maintenance.
