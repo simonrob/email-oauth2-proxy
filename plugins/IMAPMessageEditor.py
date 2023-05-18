@@ -13,15 +13,18 @@ import re
 import plugins.BasePlugin
 
 # note: these patterns operate on byte-strings to avoid having to parse (and potentially cache) message part encodings
-IMAP_COMMAND_MATCHER = re.compile(br'^\* \d+ FETCH ', flags=re.IGNORECASE)
+IMAP_RESPONSE_MATCHER = re.compile(br'^\* \d+ FETCH ', flags=re.IGNORECASE)
 
 # handle both full message requests and single (text) parts - note: the 1-part regex intentionally matches full messages
-IMAP_PART_PATTERN = br'(?:TEXT|1(?:\.1|\.2)*|2)?'
-IMAP_FETCH_PATTERN = br'^\* \d+ FETCH \((?:UID \d+ )?BODY\[%s] {(?P<length>\d+)}\r\n'  # stackoverflow.com/a/37794152
+# note also that the part pattern is a trade-off between detecting all text parts (when we don't have the full message
+# header) and unintentionally replacing the content of text attachments
+IMAP_PART_PATTERN = br'(?:TEXT|1(?:\.1|\.2)*|2)?'  # see https://stackoverflow.com/a/37794152
+IMAP_FETCH_PATTERN = br'^\* \d+ FETCH \((?:UID \d+ )?BODY\[%s] {(?P<length>\d+)}\r\n'
 IMAP_FETCH_PART_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % IMAP_PART_PATTERN, flags=re.IGNORECASE)  # single part
 IMAP_FETCH_ALL_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % br'', flags=re.IGNORECASE)  # full message
 
 QUOPRI_MATCH_PATTERN = br'=(?:[A-F\d]{2}|%s)' % b'\r\n'  # similar to above, we need to guess quoted-printable encoding
+EMAIL_POLICY = email.policy.default.clone(max_line_length=None, refold_source='none', linesep='\r\n')
 
 
 class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
@@ -47,7 +50,7 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
         """Internal only - handle message detection and editing. If your extension to this plugin requires using this
         method, be sure to call `super().receive_from_server()`. For full documentation see the parent method."""
         if not self.fetching:
-            if IMAP_COMMAND_MATCHER.match(byte_data):  # simplistic initial match to avoid parsing all messages
+            if IMAP_RESPONSE_MATCHER.match(byte_data):  # simplistic initial match to avoid parsing all messages
                 part_match = IMAP_FETCH_PART_REQUEST_MATCHER.match(byte_data)
                 if part_match:
                     if IMAP_FETCH_ALL_REQUEST_MATCHER.match(byte_data):
@@ -73,24 +76,27 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
             message_edited = False
             new_message = original_message
             if self.fetch_full_message:
-                # we use the built-in email parser to extract multipart sections as close to original form as possible
+                # we use the built-in email parser to extract multipart sections as close to original form as possible,
+                # skipping anything that is not described as text, and ignoring attachment files (via `get_filename()`)
                 # note: there seems to be a minor python bug where `as_bytes()` for headers with linebreaks adds a space
                 # (': ' rather than just ':') , but this doesn't matter here as we correct message length if editing
-                email_policy = email.policy.default.clone(max_line_length=None, linesep='\r\n')  # replicate IMAP
-                parsed_message = email.message_from_bytes(original_message, policy=email_policy)
-                parsed_message_bytes = parsed_message.as_bytes()
-                for part in parsed_message.walk():
-                    if part.get_content_type().startswith('text/'):
-                        part_header, original_part_body = part.as_bytes().split(b'\r\n\r\n', maxsplit=1)
-                        encoding = part['Content-Transfer-Encoding'] if 'Content-Transfer-Encoding' in part else None
-                        part_body_edited, new_part_body = self._decode_and_edit_message_part(original_part_body,
-                                                                                             encoding=encoding)
-                        if part_body_edited:
-                            # string replacement seems to be the only way to achieve parsed message part editing
-                            message_edited = True
-                            parsed_message_bytes = parsed_message_bytes.replace(original_part_body, new_part_body)
-                if message_edited:
-                    new_message = parsed_message_bytes
+                try:
+                    parsed_message = email.message_from_bytes(original_message, policy=EMAIL_POLICY)
+                    parsed_message_bytes = parsed_message.as_bytes()
+                    for part in parsed_message.walk():
+                        if part.get_content_type().startswith('text/') and part.get_filename() is None:
+                            part_header, original_part_body = part.as_bytes().split(b'\r\n\r\n', maxsplit=1)
+                            cte = part['content-transfer-encoding'] if 'content-transfer-encoding' in part else None
+                            part_body_edited, new_part_body = self._decode_and_edit_message_part(original_part_body,
+                                                                                                 encoding=cte)
+                            if part_body_edited:
+                                # string replacement seems to be the only way to achieve parsed message part editing
+                                message_edited = True
+                                parsed_message_bytes = parsed_message_bytes.replace(original_part_body, new_part_body)
+                    if message_edited:
+                        new_message = parsed_message_bytes
+                except UnicodeError:
+                    pass  # as_bytes() can fail - see, e.g., https://github.com/python/cpython/issues/90096
             else:
                 message_edited, new_message = self._decode_and_edit_message_part(original_message)
 
@@ -111,8 +117,8 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
         """Internal only - handle message part decoding/editing. Do not override this method; see `edit_message()`."""
 
         # see w3.org/Protocols/rfc1341/5_Content-Transfer-Encoding.html and summary at stackoverflow.com/a/28531705
-        is_base64 = encoding and encoding.lower() == 'base64'
-        is_quopri = encoding and encoding.lower() == 'quoted-printable'
+        is_base64 = encoding is not None and encoding.lower() == 'base64'
+        is_quopri = encoding is not None and encoding.lower() == 'quoted-printable'
         if encoding:
             original_part_decoded = byte_part
             if is_base64:
@@ -125,16 +131,28 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
                 # from the original IMAP-formatted string to enable comparison with \n-only base64-encoded data)
                 original_part_decoded = base64.decodebytes(byte_part)
                 is_base64 = base64.encodebytes(original_part_decoded) == byte_part.replace(b'\r\n', b'\n')
-                if not is_base64:
+                if is_base64:
+                    # very likely to be an attachment - ignore (note: we cannot always detect text attachments...)
+                    if b'BODY[2]' in self.fetch_command or b'\x00\x00' in original_part_decoded:
+                        return False, byte_part
+                else:
                     raise binascii.Error  # raise rather than if/else because base64 enc/dec can also raise this error
             except binascii.Error:
-                # similar for quoted-printable - detect by comparing re-encoded character count against the original
-                # note: due to the way python quopri works, this does not handle mixed linebreaks well (e.g., '=0A=\r\n'
-                # will get decoded as '\n' and subsequently not detected; see cpython issue linked below)
+                # similar for quoted-printable - detect by comparing the re-encoded character count against the original
                 original_part_decoded = quopri.decodestring(byte_part)
-                encoded_count = len(re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(
-                    original_part_decoded.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))))
-                is_quopri = math.isclose(len(re.findall(QUOPRI_MATCH_PATTERN, byte_part)), encoded_count, rel_tol=0.05)
+                dec_count = len(re.findall(QUOPRI_MATCH_PATTERN, byte_part))
+                enc_count = len(re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(original_part_decoded)))
+                is_quopri = dec_count > 0 and enc_count > 0 and math.isclose(dec_count, enc_count, rel_tol=0.05)
+
+                if not is_quopri:
+                    # note: due to the way python's quopri works, we need an extra step for some messages because mixed
+                    # linebreaks cause issues (e.g., '=0A=\r\n' will get decoded as '\n' and subsequently not detected)
+                    replaced_byte_part = byte_part.replace(b'=\r\n', b'=0A').replace(b'=0A', b'\n')
+                    replaced_part_decoded = quopri.decodestring(replaced_byte_part)
+                    dec_count = len(re.findall(QUOPRI_MATCH_PATTERN, replaced_byte_part))
+                    enc_count = len(re.findall(QUOPRI_MATCH_PATTERN, quopri.encodestring(replaced_part_decoded)))
+                    is_quopri = dec_count > 0 and enc_count > 0 and math.isclose(dec_count, enc_count, rel_tol=0.3)
+
                 if not is_quopri:
                     original_part_decoded = byte_part
         self.log_debug('Decoded message part:', original_part_decoded)
