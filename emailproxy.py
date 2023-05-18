@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2022 Simon Robinson'
+__copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-04-04'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-05-18'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
