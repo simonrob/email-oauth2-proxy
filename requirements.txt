@@ -8,9 +8,10 @@ timeago  # for displaying the last authenticated activity hint
 # force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)
 pystray>=0.19.4
 
-# force pywebview 4.0.2+ on Windows to fix PyInstaller/pythonw issue (https://github.com/r0x0r/pywebview/issues/1044)
-pywebview; sys_platform != 'win32'  # (specify platform to avoid double requirement error with older pip versions)
-pywebview>=4.0.2; sys_platform == 'win32'
+# force pywebview 4.1+ to fix Windows issue with PyInstaller/pythonw (https://github.com/r0x0r/pywebview/issues/1086)
+# and macOS pre-Mojave crash when opening browser windows (https://github.com/r0x0r/pywebview/pull/1047) - we could do,
+# e.g., platform_release < '18' to allow Linux and other macOS versions more flexibility, but that seems over-the-top
+pywebview>=4.1
 
 # macOS: improve menu bar interaction, provide native notifications and handle system events
 pyobjc-framework-Cocoa; sys_platform == 'darwin'

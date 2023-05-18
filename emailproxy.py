@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2022 Simon Robinson'
+__copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-03-09'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-05-18'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -67,7 +67,8 @@ no_gui_parser.add_argument('--no-gui', action='store_true')
 no_gui_parser.add_argument('--external-auth', action='store_true')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if not no_gui_args.no_gui:
-    import pkg_resources  # from setuptools - used to check package versions and choose compatible methods
+    # noinspection PyDeprecation
+    import pkg_resources  # from setuptools - to be changed to importlib.metadata and packaging.version once 3.8 is min.
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
@@ -147,11 +148,11 @@ TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
 LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
 
-IMAP_TAG_PATTERN = r"[!#$&',-\[\]-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
-IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile(
-    r'^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) (?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
+IMAP_TAG_PATTERN = r'[!#$&\',-\[\]-z|}~]+'  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
+IMAP_AUTHENTICATION_REQUEST_MATCHER = re.compile('^(?P<tag>%s) (?P<command>(LOGIN|AUTHENTICATE)) '
+                                                 '(?P<flags>.*)$' % IMAP_TAG_PATTERN, flags=re.IGNORECASE)
 IMAP_LITERAL_MATCHER = re.compile(r'^{(?P<length>\d+)(?P<continuation>\+?)}$')
-IMAP_CAPABILITY_MATCHER = re.compile(r'^(?:\* |\* OK \[)CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' and '* OK ['
+IMAP_CAPABILITY_MATCHER = re.compile(r'^\* (?:OK \[)?CAPABILITY .*$', flags=re.IGNORECASE)  # note: '* ' *and* '* OK ['
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
@@ -211,7 +212,8 @@ class Log:
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(os.path.realpath(__file__)), APP_SHORT_NAME),
+                log_file or '%s/%s.log' % (os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
+                                                           os.path.realpath(__file__)), APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
         elif sys.platform == 'darwin':
@@ -271,6 +273,12 @@ class Log:
     @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
+
+    @staticmethod
+    def get_last_error():
+        error_type, value, _traceback = sys.exc_info()
+        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        return error_type, value  # note that if no exception has currently been raised, this will return `None, None`
 
 
 class CacheStore(abc.ABC):
@@ -602,8 +610,12 @@ class OAuth2Helper:
             token_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
 
         # generate encrypter/decrypter based on password and random salt
-        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
-                                             salt=base64.b64decode(token_salt.encode('utf-8')), iterations=100000,
+        try:
+            decoded_salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
+        except binascii.Error:
+            return (False, '%s: Invalid `token_salt` value found in config file entry for account %s - this value is '
+                           'not intended to be manually created; please remove and retry' % (APP_NAME, username))
+        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=decoded_salt, iterations=100000,
                                              backend=default_backend())
         fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
 
@@ -756,7 +768,7 @@ class OAuth2Helper:
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
                 start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
-                token_request['response_url'] = token_request['redirect_uri'].rstrip('/') + environ.get(
+                token_request['response_url'] = '/'.join(token_request['redirect_uri'].split('/')[0:3]) + environ.get(
                     'PATH_INFO') + '?' + environ.get('QUERY_STRING')
                 return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
                          '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
@@ -940,7 +952,7 @@ class OAuth2Helper:
     def strip_quotes(text):
         """Remove double quotes (i.e., " characters) around a string - used for IMAP LOGIN command"""
         if text.startswith('"') and text.endswith('"'):
-            return text[1:-1].replace('\\"', '"')  # also need to fix any escaped quotes within the string
+            return text[1:-1].replace(r'\"', '"')  # also need to fix any escaped quotes within the string
         return text
 
     @staticmethod
@@ -1002,7 +1014,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         except ssl.SSLWantWriteError:
             select.select([], [self.socket], [], 0.01)  # wait for the socket to be writable (10ms timeout)
         except self.ssl_handshake_errors:  # also includes SSLWant[Read/Write]Error, but already handled above
-            self.handle_close()
+            self.close()
         else:
             if not self.ssl_handshake_completed:  # only notify once (we may need to repeat the handshake later)
                 Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
@@ -1050,14 +1062,13 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         return 0
 
     def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
         if self.ssl_connection:
             # OSError 0 ('Error') and SSL errors here are caused by connection handshake failures or timeouts
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout or socket misconfiguration
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
-                          APP_PACKAGE]
+                          'UNSUPPORTED_PROTOCOL', APP_PACKAGE]
+            error_type, value = Log.get_last_error()
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any(i in value.args[1] for i in ssl_errors):
                 Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
@@ -1072,7 +1083,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                                   'self-signed certificates, but these may still need an exception in your client')
                 Log.error('If you encounter this error repeatedly, please check that you have correctly configured',
                           'python root certificates; see: https://github.com/simonrob/email-oauth2-proxy/issues/14')
-                self.handle_close()
+                self.close()
             else:
                 super().handle_error()
         else:
@@ -1146,11 +1157,12 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                 else:
                     # IMAP LOGIN command with inline username/password, POP PASS and IMAP/POP/SMTP AUTH(ENTICATE)
                     tag_pattern = IMAP_TAG_PATTERN.encode('utf-8')
-                    log_data = re.sub(b'(%s) (LOGIN) (.*)\r\n' % tag_pattern, b'\\1 \\2 %s\r\n' % CENSOR_MESSAGE,
-                                      line, flags=re.IGNORECASE)
-                    log_data = re.sub(b'(PASS) (.*)\r\n', b'\\1 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
-                    log_data = re.sub(b'(%s)?( ?)(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
-                                      b'\\1\\2\\3\\4 \\5 %s\r\n' % CENSOR_MESSAGE, log_data, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(%s) (LOGIN) (.*)\r\n' % tag_pattern,
+                                      br'\1 \2 ' + CENSOR_MESSAGE + b'\r\n', line, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(PASS) (.*)\r\n',
+                                      br'\1 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
+                    log_data = re.sub(b'(%s)?( )?(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
+                                      br'\1\2\3\4 \5 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
 
                 Log.debug(self.info_string(), '-->', log_data)
                 try:
@@ -1178,7 +1190,9 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             Log.info(self.info_string(), 'Caught asyncore info message (client) -', message_type, ':', message)
 
     def handle_close(self):
-        Log.debug(self.info_string(), '--> [ Client disconnected ]')
+        error_type, value = Log.get_last_error()
+        if error_type and value:
+            Log.info(self.info_string(), 'Caught connection error (client) -', error_type.__name__, ':', value)
         self.close()
 
     def close(self):
@@ -1189,6 +1203,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             self.server_connection = None
         self.proxy_parent.remove_client(self)
         with contextlib.suppress(OSError):
+            Log.debug(self.info_string(), '<-- [ Server disconnected ]')
             super().close()
 
 
@@ -1579,8 +1594,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         return super().send(byte_data)
 
     def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        error_type, value = Log.get_last_error()
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
@@ -1588,7 +1602,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
-            self.handle_close()
+            self.close()
         else:
             super().handle_error()
 
@@ -1598,7 +1612,13 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             Log.info(self.info_string(), 'Caught asyncore info message (server) -', message_type, ':', message)
 
     def handle_close(self):
-        Log.debug(self.info_string(), '<-- [ Server disconnected ]')
+        error_type, value = Log.get_last_error()
+        if error_type and value:
+            message = 'Caught connection error (server)'
+            if error_type == OSError and value.errno in [errno.ENOTCONN, 10057]:
+                # OSError 57 or 10057 = 'Socket is not connected'
+                message = '%s [ Client attempted to send command without waiting for server greeting ]' % message
+            Log.info(self.info_string(), message, '-', error_type.__name__, ':', value)
         self.close()
 
     def close(self):
@@ -1608,6 +1628,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
                 self.client_connection.close()
             self.client_connection = None
         with contextlib.suppress(OSError):
+            Log.debug(self.info_string(), '--> [ Client disconnected ]')
             super().close()
 
 
@@ -1636,16 +1657,16 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
-            capability = r"[!#$&'+-\[^-z|}~]+"  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
-            updated_response = re.sub(r'( AUTH=' + capability + r')+', ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
-            if not re.search(r' AUTH=PLAIN', updated_response, re.IGNORECASE):
+            capability = r'[!#$&\'+-\[^-z|}~]+'  # https://ietf.org/rfc/rfc9051.html#name-formal-syntax
+            updated_response = re.sub('( AUTH=%s)+' % capability, ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
+            if not re.search(' AUTH=PLAIN', updated_response, re.IGNORECASE):
                 # cannot just replace e.g., one 'CAPABILITY ' match because IMAP4 must be first if present (RFC 1730)
-                updated_response = re.sub(r'(CAPABILITY)( IMAP' + capability + r')?', r'\g<1>\g<2> AUTH=PLAIN',
-                                          updated_response, count=1, flags=re.IGNORECASE)
+                updated_response = re.sub('(CAPABILITY)( IMAP%s)?' % capability, r'\1\2 AUTH=PLAIN', updated_response,
+                                          count=1, flags=re.IGNORECASE)
             updated_response = updated_response.replace(' AUTH=PLAIN', '', updated_response.count(' AUTH=PLAIN') - 1)
-            if not re.search(r' SASL-IR', updated_response, re.IGNORECASE):
+            if not re.search(' SASL-IR', updated_response, re.IGNORECASE):
                 updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
-            updated_response = re.sub(r' LOGINDISABLED', '', updated_response, count=1, flags=re.IGNORECASE)
+            updated_response = re.sub(' LOGINDISABLED', '', updated_response, count=1, flags=re.IGNORECASE)
             byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
 
         super().process_data(byte_data)
@@ -1763,7 +1784,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             # intercept EHLO response AUTH capabilities and replace with what we can actually do - note that we assume
             # an AUTH line will be included in the response; if there are any servers for which this is not the case, we
             # could cache and re-stream as in POP. Formal syntax: https://tools.ietf.org/html/rfc4954#section-8
-            updated_response = re.sub(r'250([ -])AUTH( [!-*,-<>-~]+)+', '250\\1AUTH PLAIN LOGIN', str_data,
+            updated_response = re.sub('250([ -])AUTH( [!-*,-<>-~]+)+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = b'%s\r\n' % updated_response.encode('utf-8')
             if self.starttls_state is self.STARTTLS.COMPLETE:
@@ -1873,7 +1894,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             except Exception:
                 connection.close()
                 if new_server_connection:
-                    new_server_connection.handle_close()
+                    new_server_connection.close()
                 raise
         else:
             error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
@@ -1890,7 +1911,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             if not EXITING:
                 # OSError 9 = 'Bad file descriptor', thrown when closing connections after network interruption
                 if isinstance(e, OSError) and e.errno == errno.EBADF:
-                    Log.debug(client.info_string(), '[ Connection closed ]')
+                    Log.debug(client.info_string(), '[ Connection failed ]')
                 else:
                     Log.info(client.info_string(), 'Caught asyncore exception in thread loop:', Log.error_string(e))
 
@@ -1957,8 +1978,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.start()
 
     def handle_error(self):
-        error_type, value, _traceback = sys.exc_info()
-        del _traceback  # used to be required in python 2; may no-longer be needed, but best to be safe
+        error_type, value = Log.get_last_error()
         if error_type == socket.gaierror and value.errno in [-2, 8, 11001] or \
                 error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
@@ -1979,6 +1999,9 @@ class OAuth2Proxy(asyncore.dispatcher):
 
     def handle_close(self):
         # if we encounter an unhandled exception in asyncore, handle_close() is called; restart this server
+        error_type, value = Log.get_last_error()
+        if error_type and value:
+            Log.info(self.info_string(), 'Caught connection error -', error_type.__name__, ':', value)
         Log.info('Unexpected close of proxy connection - restarting', self.info_string())
         try:
             self.restart()
@@ -2105,34 +2128,41 @@ class App:
 
     def __init__(self):
         global CONFIG_FILE_PATH, CACHE_STORE
-        parser = argparse.ArgumentParser(description=APP_NAME)
-        parser.add_argument('--no-gui', action='store_true', help='start the proxy without a menu bar icon (note: '
-                                                                  'account authorisation requests will fail unless a '
-                                                                  'pre-authorised configuration file is used, or you '
-                                                                  'enable `--external-auth` or `--local-server-auth` '
-                                                                  'and monitor log/terminal output)')
-        parser.add_argument('--external-auth', action='store_true', help='handle authorisation externally: rather than '
-                                                                         'intercepting `redirect_uri`, the proxy will '
-                                                                         'wait for you to paste the result into either '
-                                                                         'its popup window (GUI-mode) or the terminal '
-                                                                         '(no-GUI mode; requires `prompt_toolkit`)')
-        parser.add_argument('--local-server-auth', action='store_true', help='handle authorisation by printing request '
-                                                                             'URLs to the log and starting a local web '
-                                                                             'server on demand to receive responses')
-        parser.add_argument('--config-file', default=None, help='the full path to the proxy\'s configuration file '
-                                                                '(optional; default: `%s` in the same directory as the '
-                                                                'proxy script)' % os.path.basename(CONFIG_FILE_PATH))
-        parser.add_argument('--cache-store', default=None, help='the full path to a local file to use for credential'
-                                                                'caching (optional; default: save to `--config-file`); '
-                                                                'alternatively, an external store such as a secrets '
-                                                                'manager can be used - see the proxy\'s readme for '
-                                                                'instructions and requirements')
-        parser.add_argument('--log-file', default=None, help='the full path to a file where log output should be sent '
-                                                             '(optional; default behaviour varies by platform, but see '
-                                                             'Log.initialise() for details of each implementation)')
-        parser.add_argument('--debug', action='store_true', help='enable debug mode, printing client<->proxy<->server '
-                                                                 'interaction to the system log')
-        parser.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__))
+        parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
+                                                     'applications, scripts or any other email use-cases that don\'t '
+                                                     'support this authentication method.' % APP_NAME, add_help=False,
+                                         epilog='Full readme and guide: https://github.com/simonrob/email-oauth2-proxy')
+        group_gui = parser.add_argument_group(title='appearance')
+        group_gui.add_argument('--no-gui', action='store_true',
+                               help='start the proxy without a menu bar icon (note: account authorisation requests '
+                                    'will fail unless a pre-authorised `--config-file` is used, or you use '
+                                    '`--external-auth` or `--local-server-auth` and monitor log/terminal output)')
+        group_auth = parser.add_argument_group('authentication methods')
+        group_auth.add_argument('--external-auth', action='store_true',
+                                help='handle authorisation externally: rather than intercepting `redirect_uri`, the '
+                                     'proxy will wait for you to paste the result into either its popup window (GUI '
+                                     'mode) or the terminal (no-GUI mode; requires `prompt_toolkit`)')
+        group_auth.add_argument('--local-server-auth', action='store_true',
+                                help='handle authorisation by printing request URLs to the log and starting a local '
+                                     'web server on demand to receive responses')
+        group_config = parser.add_argument_group('server, account and runtime configuration')
+        group_config.add_argument('--config-file', default=None,
+                                  help='the full path to the proxy\'s configuration file (optional; default: `%s` in '
+                                       'the same directory as the proxy script)' % os.path.basename(CONFIG_FILE_PATH))
+        group_config.add_argument('--cache-store', default=None,
+                                  help='the full path to a local file to use for credential caching (optional; '
+                                       'default: save to `--config-file`); alternatively, an external store such as a '
+                                       'secrets manager can be used - see readme for instructions and requirements')
+        group_debug = parser.add_argument_group('logging, debugging and help')
+        group_debug.add_argument('--log-file', default=None,
+                                 help='the full path to a file where log output should be sent (optional; default log '
+                                      'behaviour varies by platform - see readme for details)')
+        group_debug.add_argument('--debug', action='store_true',
+                                 help='enable debug mode, sending all client<->proxy<->server communication to the '
+                                      'proxy\'s log')
+        group_debug.add_argument('--version', action='version', version='%s %s' % (APP_NAME, __version__),
+                                 help='show the proxy\'s version string and exit')
+        group_debug.add_argument('-h', '--help', action='help', help='show this help message and exit')
 
         self.args = parser.parse_args()
 
@@ -2288,6 +2318,7 @@ class App:
         font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
+        # noinspection PyDeprecation
         if pkg_resources.parse_version(
                 pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
             font_width, font_height = font.getsize(text)
@@ -2299,10 +2330,8 @@ class App:
     def create_config_menu(self):
         items = []
         if len(self.proxies) <= 0:
-            # note that we don't actually allow no servers when loading config, but just in case that behaviour changes
-            items.append(pystray.MenuItem('Servers:', None, enabled=False))
-            items.append(pystray.MenuItem('    No servers configured', None, enabled=False))
-            items.append(pystray.Menu.SEPARATOR)
+            # note that we don't actually allow no servers when loading the config, so no need to generate a menu
+            return items  # (avoids creating and then immediately regenerating the menu when servers are loaded)
         else:
             for server_type in ['IMAP', 'POP', 'SMTP']:
                 items.extend(App.get_config_menu_servers(self.proxies, server_type))
@@ -2432,6 +2461,7 @@ class App:
         setattr(authorisation_window, 'get_title', lambda window: window.title)  # add missing get_title method
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
+        # noinspection PyDeprecation
         if pkg_resources.parse_version(
                 pkg_resources.get_distribution('pywebview').version) < pkg_resources.parse_version('3.6'):
             authorisation_window.loaded += self.authorisation_window_loaded
@@ -2451,10 +2481,13 @@ class App:
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
                                                                      'Navigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
-        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
-                webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
-        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
-                ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
+        try:
+            setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
+                    webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
+            setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
+                    ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
+        except TypeError:
+            pass
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
@@ -2602,7 +2635,7 @@ class App:
         if self.args.external_auth:
             script_command.append('--external-auth')
 
-        return ['"%s"' % arg.replace('"', '\\"') if quote_args and ' ' in arg else arg for arg in script_command]
+        return ['"%s"' % arg.replace('"', r'\"') if quote_args and ' ' in arg else arg for arg in script_command]
 
     def linux_restart(self, icon):
         # Linux restarting is separate because it is used for reloading the configuration file as well as start at login
@@ -2663,7 +2696,7 @@ class App:
                     notification_centre.setDelegate_(self.macos_user_notification_centre_delegate)
                     notification_centre.deliverNotification_(user_notification)
                 except Exception:
-                    for replacement in (('\\', '\\\\'), ('"', '\\"')):  # osascript approach requires sanitisation
+                    for replacement in (('\\', r'\\'), ('"', r'\"')):  # osascript approach requires sanitisation
                         text = text.replace(*replacement)
                         title = title.replace(*replacement)
                     subprocess.call(['osascript', '-e', 'display notification "%s" with title "%s"' % (text, title)])
