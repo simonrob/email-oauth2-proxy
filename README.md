@@ -171,6 +171,10 @@ This can be achieved using `telnet`, [PuTTY](https://www.chiark.greenend.org.uk/
 For example, to test the Office 365 IMAP server from the [example configuration](emailproxy.config), first open a connection using `telnet localhost 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant).
 If you have already authorised your account with the proxy you should see a response starting with `a1 OK`; if not, this command should trigger a notification from the proxy about authorising your account.
 
+If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` that you are using.
+The proxy defaults to `localhost` for this parameter, but this may resolve to different values depending on your environment (see the sample configuration file for further details).
+Please try to connect to both IPv4 (i.e., `127.0.0.1`) and IPv6 (i.e., `::1`) loopback addresses before reporting any connection issues with the proxy.
+
 ### Dependencies and setup
 On macOS the setup and installation instructions above should automatically install all required dependencies.
 Any error messages you may encounter (for example, with your `pip` version and `cryptography`, or `pillow` and `imagingft` dependencies, or [macOS SSL failures](https://github.com/simonrob/email-oauth2-proxy/issues/14#issuecomment-1077379254)) normally give clear explanations of the issues and point to instructions for resolving these problems.
