@@ -168,6 +168,9 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
                 # replace original line endings (base64 is \n; we need \r\n for IMAP)
                 new_part_encoded = base64.encodebytes(new_part).replace(b'\n', b'\r\n')
             elif is_quopri:
+                # re-encoding alters the layout of the message, and can lead to losing the required trailing linebreak
+                if not new_part.endswith(b'\r\n'):
+                    new_part += b'\r\n'
                 # see: https://github.com/python/cpython/issues/64320 - quopri guesses at \r\n; replace consistently
                 new_part_encoded = quopri.encodestring(
                     new_part.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
