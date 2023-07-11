@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-05-18'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-07-11'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -18,6 +18,7 @@ import datetime
 import enum
 import errno
 import io
+import ipaddress
 import json
 import logging
 import logging.handlers
@@ -1927,8 +1928,7 @@ class OAuth2Proxy(asyncore.dispatcher):
         socket_family = socket.AF_INET6 if socket_family == socket.AF_UNSPEC else socket_family
         if socket_family != socket.AF_INET:
             try:
-                host, port = self.local_address
-                socket.getaddrinfo(host, port, socket_family, socket.SOCK_STREAM)
+                socket.getaddrinfo(self.local_address[0], self.local_address[1], socket_family, socket.SOCK_STREAM)
             except OSError:
                 socket_family = socket.AF_INET
         new_socket = socket.socket(socket_family, socket_type)
@@ -2373,10 +2373,13 @@ class App:
             if not heading_appended:
                 items.append(pystray.MenuItem('%s servers:' % server_type, None, enabled=False))
                 heading_appended = True
+            formatted_host = proxy.local_address[0]
+            with contextlib.suppress(ValueError):
+                ip = ipaddress.ip_address(formatted_host)
+                formatted_host = '[%s]' % formatted_host if type(ip) is ipaddress.IPv6Address else formatted_host
             items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
-                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
-                proxy.local_address[0], proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]),
-                                          None, enabled=False))
+                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '', formatted_host,
+                proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]), None, enabled=False))
         if heading_appended:
             items.append(pystray.Menu.SEPARATOR)
         return items
@@ -2740,7 +2743,7 @@ class App:
             match = CONFIG_SERVER_MATCHER.match(section)
             server_type = match.group('type')
 
-            local_address = config.get(section, 'local_address', fallback='localhost')
+            local_address = config.get(section, 'local_address', fallback='::')
             str_local_port = match.group('port')
             local_port = -1
             try:

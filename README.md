@@ -172,7 +172,8 @@ For example, to test the Office 365 IMAP server from the [example configuration]
 If you have already authorised your account with the proxy you should see a response starting with `a1 OK`; if not, this command should trigger a notification from the proxy about authorising your account.
 
 If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` that you are using.
-The proxy defaults to `localhost` for this parameter, but this may resolve to different values depending on your environment (see the sample configuration file for further details).
+The proxy defaults to `::` for this parameter, which in most cases resolves to `localhost` for both IPv4 and IPv6 configurations, but it is possible that this differs depending on your environment.
+If you are unable to connect to the proxy from your client, it is worth setting this value explicitly – see the [sample configuration file](emailproxy.config) for further details about how to do this.
 Please try to connect to both IPv4 (i.e., `127.0.0.1`) and IPv6 (i.e., `::1`) loopback addresses before reporting any connection issues with the proxy.
 
 ### Dependencies and setup
