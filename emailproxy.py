@@ -2464,6 +2464,7 @@ class App:
         # noinspection PyDeprecation
         if pkg_resources.parse_version(
                 pkg_resources.get_distribution('pywebview').version) < pkg_resources.parse_version('3.6'):
+            # noinspection PyUnresolvedReferences
             authorisation_window.loaded += self.authorisation_window_loaded
         else:
             authorisation_window.events.loaded += self.authorisation_window_loaded
@@ -2505,6 +2506,7 @@ class App:
                 continue  # skip dummy window
 
             url = window.get_current_url()
+            # noinspection PyUnresolvedReferences
             username = window.get_title(window).split(' ')[-1]  # see note above: title *must* match this format
             if not url or not username:
                 continue  # skip any invalid windows
@@ -2587,7 +2589,7 @@ class App:
                     cmd_file.write(windows_start_command)
 
                 # on Windows we don't have a service to run, but it is still useful to exit the terminal instance
-                if sys.stdin.isatty() and not recreate_login_file:
+                if sys.stdin and sys.stdin.isatty() and not recreate_login_file:
                     self.exit(icon, restart_callback=lambda: subprocess.call(windows_start_command, shell=True))
             else:
                 os.remove(CMD_FILE_PATH)
@@ -2609,7 +2611,7 @@ class App:
                         desktop_file.write('%s=%s\n' % (key, value))
 
                 # like on Windows we don't have a service to run, but it is still useful to exit the terminal instance
-                if sys.stdin.isatty() and not recreate_login_file:
+                if sys.stdin and sys.stdin.isatty() and not recreate_login_file:
                     AppConfig.save()  # because linux_restart needs to unload to prevent saving on exit
                     self.linux_restart(icon)
             else:
@@ -2879,7 +2881,7 @@ class App:
                     data['local_server_auth'] = True
                     RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
                 elif self.args.external_auth and self.args.no_gui:
-                    if sys.stdin.isatty():
+                    if sys.stdin and sys.stdin.isatty():
                         self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
                                               '%s' % data['username'])
                         self.terminal_external_auth_prompt(data)
