@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-07-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-07-12'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -274,6 +274,14 @@ class Log:
     @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
+
+    @staticmethod
+    def format_host_port(address):
+        host, port, *_ = address
+        with contextlib.suppress(ValueError):
+            ip = ipaddress.ip_address(host)
+            host = '[%s]' % host if type(ip) is ipaddress.IPv6Address else host
+        return '%s:%d' % (host, port)
 
     @staticmethod
     def get_last_error():
@@ -758,13 +766,13 @@ class OAuth2Helper:
         redirect_listen_type = 'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri'
         parsed_uri = urllib.parse.urlparse(token_request[redirect_listen_type])
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
-        Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
-            parsed_uri.hostname, parsed_port))
+        Log.debug('Local server auth mode (%s): starting server to listen for authentication response' %
+                  Log.format_host_port((parsed_uri.hostname, parsed_port)))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
             def log_message(self, _format_string, *args):
-                Log.debug('Local server auth mode (%s:%d): received authentication response' % (
-                    parsed_uri.hostname, parsed_port), *args)
+                Log.debug('Local server auth mode (%s): received authentication response' % Log.format_host_port(
+                    (parsed_uri.hostname, parsed_port)), *args)
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
@@ -790,20 +798,22 @@ class OAuth2Helper:
                 redirection_server.server_close()
 
             if 'response_url' in token_request:
-                Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
-                    parsed_uri.hostname, parsed_port), token_request['response_url'])
+                Log.debug('Local server auth mode (%s): closing local server and returning response' %
+                          Log.format_host_port((parsed_uri.hostname, parsed_port)), token_request['response_url'])
             else:
                 # failed, likely because of an incorrect address (e.g., https vs http), but can also be due to timeout
-                Log.info('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'request failed - if',
-                         'this error reoccurs, please check `%s` for' % redirect_listen_type, token_request['username'],
-                         'is not specified as `https` mistakenly. See the sample configuration file for documentation')
+                Log.info('Local server auth mode (%s):' % Log.format_host_port((parsed_uri.hostname, parsed_port)),
+                         'request failed - if this error reoccurs, please check `%s` for' % redirect_listen_type,
+                         token_request['username'], 'is not specified as `https` mistakenly. See the sample '
+                                                    'configuration file for documentation')
                 token_request['expired'] = True
 
         except socket.error as e:
-            Log.error('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'unable to start local',
-                      'server. Please check that `%s` for %s is unique across accounts, specifies a port number, and '
-                      'is not already in use. See the documentation in the proxy\'s sample configuration file.' % (
-                          redirect_listen_type, token_request['username']), Log.error_string(e))
+            Log.error('Local server auth mode (%s):' % Log.format_host_port((parsed_uri.hostname, parsed_port)),
+                      'unable to start local server. Please check that `%s` for %s is unique across accounts, '
+                      'specifies a port number, and is not already in use. See the documentation in the proxy\'s '
+                      'sample configuration file.' % (redirect_listen_type, token_request['username']),
+                      Log.error_string(e))
             token_request['expired'] = True
 
         del token_request['local_server_auth']
@@ -1114,11 +1124,11 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             bool(custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']))
 
     def info_string(self):
-        debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
-                                           self.server_address[1]) if Log.get_level() == logging.DEBUG else ''
+        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
+            self.server_address)) if Log.get_level() == logging.DEBUG else ''
         account = '; %s' % self.server_connection.authenticated_username if \
             self.server_connection and self.server_connection.authenticated_username else ''
-        return '%s (%s:%d%s%s)' % (self.proxy_type, self.local_address[0], self.local_address[1], debug_string, account)
+        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1521,10 +1531,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             return
 
     def info_string(self):
-        debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
-                                           self.server_address[1]) if Log.get_level() == logging.DEBUG else ''
+        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
+            self.server_address)) if Log.get_level() == logging.DEBUG else ''
         account = '; %s' % self.authenticated_username if self.authenticated_username else ''
-        return '%s (%s:%d%s%s)' % (self.proxy_type, self.local_address[0], self.local_address[1], debug_string, account)
+        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
 
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
@@ -1861,9 +1871,9 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.client_connections = []
 
     def info_string(self):
-        return '%s server at %s:%d (%s) proxying %s:%d (%s)' % (
-            self.proxy_type, self.local_address[0], self.local_address[1],
-            'TLS' if self.ssl_connection else 'unsecured', self.server_address[0], self.server_address[1],
+        return '%s server at %s (%s) proxying %s (%s)' % (
+            self.proxy_type, Log.format_host_port(self.local_address),
+            'TLS' if self.ssl_connection else 'unsecured', Log.format_host_port(self.server_address),
             'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS')
 
     def handle_accept(self):
@@ -2373,13 +2383,10 @@ class App:
             if not heading_appended:
                 items.append(pystray.MenuItem('%s servers:' % server_type, None, enabled=False))
                 heading_appended = True
-            formatted_host = proxy.local_address[0]
-            with contextlib.suppress(ValueError):
-                ip = ipaddress.ip_address(formatted_host)
-                formatted_host = '[%s]' % formatted_host if type(ip) is ipaddress.IPv6Address else formatted_host
-            items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
-                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '', formatted_host,
-                proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]), None, enabled=False))
+            items.append(pystray.MenuItem('%s    %s ➝ %s' % (
+                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
+                Log.format_host_port(proxy.local_address), Log.format_host_port(proxy.server_address)),
+                                          None, enabled=False))
         if heading_appended:
             items.append(pystray.Menu.SEPARATOR)
         return items
