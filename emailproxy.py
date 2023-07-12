@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-07-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-07-12'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -625,8 +625,8 @@ class OAuth2Helper:
             if client_secret_encrypted and not client_secret:
                 client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
 
-            if access_token:
-                if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # refresh if expiring soon (if possible)
+            if access_token or refresh_token:  # if possible, refresh the existing token(s)
+                if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
                                                                             OAuth2Helper.decrypt(fernet, refresh_token))
@@ -698,22 +698,34 @@ class OAuth2Helper:
             return True, oauth2_string
 
         except InvalidToken as e:
+            # we always remove the access token - we can easily request another using the refresh token
+            has_access_token = True if config.get(username, 'access_token', fallback=None) else False
+            config.remove_option(username, 'access_token')
+            config.remove_option(username, 'access_token_expiry')
+            if has_access_token:
+                AppConfig.save()
+
             # if invalid details are the reason for failure we remove our cached version and re-authenticate - this can
             # be disabled by a configuration setting, but note that we always remove credentials on 400 Bad Request
             if e.args == (400, APP_PACKAGE) or AppConfig.globals().getboolean('delete_account_token_on_password_error',
                                                                               fallback=True):
-                config.remove_option(username, 'token_salt')
-                config.remove_option(username, 'access_token')
-                config.remove_option(username, 'access_token_expiry')
-                config.remove_option(username, 'refresh_token')
-                AppConfig.save()
+                # try authentication again with no cached details - note that if we have just removed an invalid access
+                # token this will trigger an unnecessary reload from the cache store, but it is worth doing this to
+                # avoid an unnecessary re-authentication request
+                recurse_retries = True
+
+                # if this is already a second attempt, remove the refresh token as well, and force re-authentication
+                if not has_access_token:
+                    config.remove_option(username, 'token_salt')
+                    config.remove_option(username, 'refresh_token')
+                    AppConfig.save()
             else:
-                recurse_retries = False  # no need to recurse if we are just trying the same credentials again
+                recurse_retries = has_access_token  # no need to recurse if we are trying the same credentials again
 
             if recurse_retries:
                 Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials for %s:' % username,
                          Log.error_string(e))
-                return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
+                return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=has_access_token)
 
             Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
             return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
