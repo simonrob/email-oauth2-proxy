@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-07-12'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-07-14'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -159,6 +159,7 @@ REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
 WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
+MENU_UPDATE = object()  # object to send to trigger a force-refresh of the GUI menu (new catch-all account added)
 
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
@@ -681,6 +682,7 @@ class OAuth2Helper:
                 access_token = response['access_token']
                 if not config.has_section(username):
                     AppConfig.add_account(username)  # in wildcard mode the section may not yet exist
+                    REQUEST_QUEUE.put(MENU_UPDATE)  # make sure the menu shows the newly-added account
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
@@ -2880,6 +2882,10 @@ class App:
         while True:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
+                break
+            if data is MENU_UPDATE:
+                if icon:
+                    icon.update_menu()
                 break
             if not data['expired']:
                 Log.info('Authorisation request received for', data['username'],
