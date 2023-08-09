@@ -24,6 +24,7 @@ IMAP_FETCH_PART_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % IMAP_PART_PATT
 IMAP_FETCH_ALL_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % br'', flags=re.IGNORECASE)  # full message
 
 QUOPRI_MATCH_PATTERN = br'=(?:[A-F\d]{2}|%s)' % b'\r\n'  # similar to above, we need to guess quoted-printable encoding
+HTML_MATCH_PATTERN = br'(</?\s*[a-z-][^>]*\s*>|&(?:[\w\d]+|#\d+|#x[a-f\d]+);)'  # used to guess if a message is html
 EMAIL_POLICY = email.policy.default.clone(max_line_length=None, refold_source='none', linesep='\r\n')
 
 
@@ -134,7 +135,12 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
                 if is_base64:
                     # very likely to be an attachment - ignore (note: we cannot always detect text attachments...)
                     if b'BODY[2]' in self.fetch_command or b'\x00\x00' in original_part_decoded:
-                        return False, byte_part
+                        # as a backup, guess at HTML and permit if detected content is 40% or more of the message length
+                        # (note: this will also operate on matching HTML *attachments*, but that is hopefully rare...)
+                        is_html = re.findall(HTML_MATCH_PATTERN, original_part_decoded)
+                        if len(''.join(map(str, is_html))) / len(original_part_decoded) < 0.4:
+                            self.log_debug('Ignoring message part that is likely an attachment:', original_part_decoded)
+                            return False, byte_part
                 else:
                     raise binascii.Error  # raise rather than if/else because base64 enc/dec can also raise this error
             except binascii.Error:
