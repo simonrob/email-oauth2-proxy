@@ -1205,7 +1205,10 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     def handle_close(self):
         error_type, value = Log.get_last_error()
         if error_type and value:
-            Log.info(self.info_string(), 'Caught connection error (client) -', error_type.__name__, ':', value)
+            message = 'Caught connection error (client)'
+            if error_type == ConnectionResetError:
+                message = '%s [ Are you attempting an encrypted connection to a non-encrypted server? ]' % message
+            Log.info(self.info_string(), message, '-', error_type.__name__, ':', value)
         self.close()
 
     def close(self):

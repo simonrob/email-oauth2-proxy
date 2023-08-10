@@ -171,6 +171,9 @@ This can be achieved using `telnet`, [PuTTY](https://www.chiark.greenend.org.uk/
 For example, to test the Office 365 IMAP server from the [example configuration](emailproxy.config), first open a connection using `telnet localhost 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant).
 If you have already authorised your account with the proxy you should see a response starting with `a1 OK`; if not, this command should trigger a notification from the proxy about authorising your account.
 
+If you are using a [secure local connection](emailproxy.config) the interaction with the remote email server is the same as above, but you will need to use a local debugging tool that supports encryption.
+The easiest approach here is to use [OpenSSL](https://www.openssl.org/): `openssl s_client -crlf -connect localhost:1993`.
+
 If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` that you are using.
 The proxy defaults to `::` for this parameter, which in most cases resolves to `localhost` for both IPv4 and IPv6 configurations, but it is possible that this differs depending on your environment.
 If you are unable to connect to the proxy from your client, it is worth setting this value explicitly – see the [sample configuration file](emailproxy.config) for further details about how to do this.
