@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-07-14'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-08-10'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -1610,9 +1610,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value = Log.get_last_error()
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
-                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
+                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTDOWN, errno.EHOSTUNREACH]:
             # TimeoutError 60 = 'Operation timed out'; ConnectionError 54 = 'Connection reset by peer', 61 = 'Connection
-            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 65 = 'No route to host'
+            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 64 = 'Host is down';
+            # 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.close()

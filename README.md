@@ -73,7 +73,7 @@ See the [sample configuration file](emailproxy.config) for further details.
 ## Optional arguments and configuration
 When starting the proxy there are several optional arguments that can be set to customise its behaviour.
 
-- `--no-gui` will launch the proxy without an icon, which allows it to be run as a `systemctl` service as demonstrated in [this example](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677), or fully headless as demonstrated in [various](https://github.com/michaelstepner/email-oauth2-proxy-aws) [other](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) subprojects.
+- `--no-gui` will launch the proxy without an icon, which allows it to be run as a `systemctl` service as demonstrated in [this example](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677), or fully headless as demonstrated in [various](https://github.com/michaelstepner/email-oauth2-proxy-aws) [other](https://github.com/blacktirion/email-oauth2-proxy-docker) subprojects.
 Please note that on its own this mode is only of use if you have already authorised your accounts through the proxy in GUI mode, or are importing a pre-authorised proxy configuration file from elsewhere.
 Unless this option is used in conjunction with `--external-auth` or `--local-server-auth`, accounts that have not yet been authorised (or for whatever reason require re-authorisation) will time out when authenticating, and an error will be printed to the log.
 
@@ -230,7 +230,7 @@ See the documentation and examples in this branch for further details, additiona
 ## Related projects and alternatives
 Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
 Thiago Macieira has provided a [makefile and systemd configuration files](https://github.com/thiagomacieira/email-oauth2-proxy/tree/Add_a_Makefile_and_systemd_configuration_files_to_install_system_wide).
-For Docker, interone-ms has provided an [example configuration](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) (though please note that the fork is otherwise outdated, and it is better to use this repository for the proxy script itself).
+For Docker, blacktirion has an [example configuration](https://github.com/blacktirion/email-oauth2-proxy-docker).
 
 If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.
 Similarly, if you use an application that is able to handle OAuth 2.0 tokens but just cannot retrieve them itself, then [pizauth](https://github.com/ltratt/pizauth), [mailctl](https://github.com/pdobsan/mailctl) or [oauth-helper-office-365](https://github.com/ahrex/oauth-helper-office-365) may be more appropriate.
