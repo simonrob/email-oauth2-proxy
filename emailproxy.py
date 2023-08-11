@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-08-10'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-08-11'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -68,8 +68,10 @@ no_gui_parser.add_argument('--no-gui', action='store_true')
 no_gui_parser.add_argument('--external-auth', action='store_true')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if not no_gui_args.no_gui:
-    # noinspection PyDeprecation
-    import pkg_resources  # from setuptools - to be changed to importlib.metadata and packaging.version once 3.8 is min.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        # noinspection PyDeprecation
+        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
@@ -2286,6 +2288,7 @@ class App:
             self.exit(self.icon)
 
     def create_icon(self):
+        Image.ANTIALIAS = Image.LANCZOS  # temporary fix for pystray incompatibility with PIL >= 10.0.0
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
