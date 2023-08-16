@@ -2290,7 +2290,10 @@ class App:
     def create_icon(self):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', DeprecationWarning)
-            Image.ANTIALIAS = Image.LANCZOS  # temporary fix for pystray <= 0.19.4 incompatibility with PIL >= 10.0.0
+            # noinspection PyDeprecation
+            if pkg_resources.parse_version(
+                    pkg_resources.get_distribution('pillow').version) >= pkg_resources.parse_version('10.0.0'):
+                Image.ANTIALIAS = Image.LANCZOS  # temporary fix for pystray <= 0.19.4 incompatibility with PIL 10.0.0+
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
