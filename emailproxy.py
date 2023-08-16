@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-08-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-08-16'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2288,7 +2288,9 @@ class App:
             self.exit(self.icon)
 
     def create_icon(self):
-        Image.ANTIALIAS = Image.LANCZOS  # temporary fix for pystray incompatibility with PIL >= 10.0.0
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            Image.ANTIALIAS = Image.LANCZOS  # temporary fix for pystray <= 0.19.4 incompatibility with PIL >= 10.0.0
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
@@ -2302,11 +2304,22 @@ class App:
     @staticmethod
     def get_image():
         # we use an icon font for better multiplatform compatibility and icon size flexibility
-        icon_colour = 'white'  # note: value is irrelevant on macOS - we set as a template to get the platform's colours
+        icon_colour = 'white'  # see below: colour is handled differently per-platform
         icon_character = 'e'
         icon_background_width = 44
         icon_background_height = 44
         icon_width = 40  # to allow for padding between icon and background image size
+
+        # the colour value is irrelevant on macOS - we configure the menu bar icon as a template to get the platform's
+        # colours - but on Windows (and in future potentially Linux) we need to set based on the current theme type
+        if sys.platform == 'win32':
+            import winreg
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                     r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
+                icon_colour = 'white' if winreg.QueryValueEx(key, 'AppsUseLightTheme')[0] == 0 else 'black'
+            except FileNotFoundError:
+                pass
 
         # find the largest font size that will let us draw the icon within the available width
         minimum_font_size = 1
