@@ -16,9 +16,9 @@ import plugins.BasePlugin
 IMAP_RESPONSE_MATCHER = re.compile(br'^\* \d+ FETCH ', flags=re.IGNORECASE)
 
 # handle both full message requests and single (text) parts - note: the 1-part regex intentionally matches full messages
-# note also that the part pattern is a trade-off between detecting all text parts (when we don't have the full message
-# header) and unintentionally replacing the content of text attachments
-IMAP_PART_PATTERN = br'(?:TEXT|1(?:\.1|\.2)*|2)?'  # see https://stackoverflow.com/a/37794152
+# note also that the part pattern is a trade-off between detecting all text parts (when we don't have the full header)
+# and unintentionally replacing the content of text attachments - it is based on observed real-world message parts
+IMAP_PART_PATTERN = br'(?:TEXT|1(?:\.[12])*|2(?:\.1)*)?'  # see https://stackoverflow.com/a/37794152
 IMAP_FETCH_PATTERN = br'^\* \d+ FETCH \((?:UID \d+ )?BODY\[%s] {(?P<length>\d+)}\r\n'
 IMAP_FETCH_PART_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % IMAP_PART_PATTERN, flags=re.IGNORECASE)  # single part
 IMAP_FETCH_ALL_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % br'', flags=re.IGNORECASE)  # full message
