@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-08-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-08-24'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -1957,8 +1957,11 @@ class OAuth2Proxy(asyncore.dispatcher):
         if self.ssl_connection:
             # noinspection PyTypeChecker
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
-                                        keyfile=self.custom_configuration['local_key_path'])
+            try:
+                ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
+                                            keyfile=self.custom_configuration['local_key_path'])
+            except FileNotFoundError as e:
+                raise FileNotFoundError('Unable to open `local_certificate_path` and/or `local_key_path`') from e
 
             # suppress_ragged_eofs=True: see test_ssl.py documentation in https://github.com/python/cpython/pull/5266
             self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
