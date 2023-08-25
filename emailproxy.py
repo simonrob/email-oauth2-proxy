@@ -453,6 +453,10 @@ class ConcurrentConfigParser:
         with self.lock:
             self.config.write(file)
 
+    def items(self):
+        with self.lock:
+            return self.config.items()  # used in read_dict when saving to cache store
+
 
 class AppConfig:
     """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
@@ -538,9 +542,8 @@ class AppConfig:
             if CACHE_STORE != CONFIG_FILE_PATH:
                 # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc)
                 output_config_parser = configparser.ConfigParser()
-                with AppConfig._PARSER.lock:
-                    output_config_parser.read_dict(AppConfig._PARSER)  # a deep copy of the current configuration
-                    config_accounts = AppConfig.accounts()
+                output_config_parser.read_dict(AppConfig._PARSER)  # a deep copy of the current configuration
+                config_accounts = [s for s in output_config_parser.sections() if '@' in s]
 
                 for account in config_accounts:
                     for option in output_config_parser.options(account):
