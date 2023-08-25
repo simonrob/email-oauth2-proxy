@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-08-24'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-08-25'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2896,7 +2896,7 @@ class App:
             if data is MENU_UPDATE:
                 if icon:
                     icon.update_menu()
-                break
+                continue
             if not data['expired']:
                 Log.info('Authorisation request received for', data['username'],
                          '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
