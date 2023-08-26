@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-08-16'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-08-26'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -462,7 +462,7 @@ class AppConfig:
     """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
 
     _PARSER = None
-    _LOADED = False
+    _PARSER_LOCK = threading.Lock()
 
     # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
     _CACHED_OPTION_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token', 'last_activity',
@@ -473,27 +473,26 @@ class AppConfig:
 
     @staticmethod
     def _load():
-        AppConfig.unload()
-        AppConfig._PARSER = ConcurrentConfigParser()
-        AppConfig._PARSER.read(CONFIG_FILE_PATH)
+        config_parser = ConcurrentConfigParser()
+        config_parser.read(CONFIG_FILE_PATH)
 
         # cached account credentials can be stored in the configuration file (default) or, via `--cache-store`, a
         # separate local file or external service (such as a secrets manager) - we combine these sources at load time
         if CACHE_STORE != CONFIG_FILE_PATH:
             # it would be cleaner to avoid specific options here, but best to load unexpected sections only when enabled
-            allow_catch_all_accounts = AppConfig._PARSER.getboolean(APP_SHORT_NAME, 'allow_catch_all_accounts',
-                                                                    fallback=False)
+            allow_catch_all_accounts = config_parser.getboolean(APP_SHORT_NAME, 'allow_catch_all_accounts',
+                                                                fallback=False)
 
             cache_file_parser = AppConfig._load_cache(CACHE_STORE)
             cache_file_accounts = [s for s in cache_file_parser.sections() if '@' in s]
             for account in cache_file_accounts:
-                if allow_catch_all_accounts and account not in AppConfig._PARSER.sections():  # missing sub-accounts
-                    AppConfig._PARSER.add_section(account)
+                if allow_catch_all_accounts and account not in config_parser.sections():  # missing sub-accounts
+                    config_parser.add_section(account)
                 for option in cache_file_parser.options(account):
                     if option in AppConfig._CACHED_OPTION_KEYS:
-                        AppConfig._PARSER.set(account, option, cache_file_parser.get(account, option))
+                        config_parser.set(account, option, cache_file_parser.get(account, option))
 
-        AppConfig._LOADED = True
+        return config_parser
 
     @staticmethod
     def _load_cache(cache_store_identifier):
@@ -507,38 +506,34 @@ class AppConfig:
 
     @staticmethod
     def get():
-        if not AppConfig._LOADED:
-            AppConfig._load()
-        return AppConfig._PARSER
+        with AppConfig._PARSER_LOCK:
+            if AppConfig._PARSER is None:
+                AppConfig._PARSER = AppConfig._load()
+            return AppConfig._PARSER
 
     @staticmethod
     def unload():
-        AppConfig._PARSER = None
-        AppConfig._LOADED = False
-
-    @staticmethod
-    def reload():
-        AppConfig.unload()
-        return AppConfig.get()
+        with AppConfig._PARSER_LOCK:
+            AppConfig._PARSER = None
 
     @staticmethod
     def get_global(name, fallback):
-        AppConfig.get()  # make sure config is loaded
-        return AppConfig._PARSER.getboolean(APP_SHORT_NAME, name, fallback)
+        return AppConfig.get().getboolean(APP_SHORT_NAME, name, fallback)
 
     @staticmethod
     def servers():
-        AppConfig.get()  # make sure config is loaded
-        return [s for s in AppConfig._PARSER.sections() if CONFIG_SERVER_MATCHER.match(s)]
+        return [s for s in AppConfig.get().sections() if CONFIG_SERVER_MATCHER.match(s)]
 
     @staticmethod
     def accounts():
-        AppConfig.get()  # make sure config is loaded
-        return [s for s in AppConfig._PARSER.sections() if '@' in s]
+        return [s for s in AppConfig.get().sections() if '@' in s]
 
     @staticmethod
     def save():
-        if AppConfig._LOADED:
+        with AppConfig._PARSER_LOCK:
+            if AppConfig._PARSER is None:  # intentionally using _PARSER not get() so we don't (re)load if unloaded
+                return
+
             if CACHE_STORE != CONFIG_FILE_PATH:
                 # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc)
                 output_config_parser = configparser.ConfigParser()
@@ -554,8 +549,7 @@ class AppConfig:
                     if section not in config_accounts or len(output_config_parser.options(section)) <= 0:
                         output_config_parser.remove_section(section)
 
-                with AppConfig._PARSER.lock:
-                    AppConfig._save_cache(CACHE_STORE, output_config_parser)
+                AppConfig._save_cache(CACHE_STORE, output_config_parser)
 
             else:
                 # by default we cache to the local configuration file, and rewrite all values each time
@@ -646,7 +640,7 @@ class OAuth2Helper:
 
         # try reloading remotely cached tokens if possible
         if not access_token and CACHE_STORE != CONFIG_FILE_PATH and recurse_retries:
-            AppConfig.reload()
+            AppConfig.unload()
             return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
 
         # we hash locally-stored tokens with the given password
@@ -2782,7 +2776,9 @@ class App:
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
         Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
-        config = AppConfig.reload() if reload else AppConfig.get()
+        if reload:
+            AppConfig.unload()
+        config = AppConfig.get()
 
         # load server types and configurations
         server_load_error = False
