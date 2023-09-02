@@ -2323,7 +2323,7 @@ class App:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                                      r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
-                icon_colour = 'white' if winreg.QueryValueEx(key, 'AppsUseLightTheme')[0] == 0 else 'black'
+                icon_colour = 'black' if winreg.QueryValueEx(key, 'SystemUsesLightTheme')[0] == 0 else 'white'
             except FileNotFoundError:
                 pass
 
