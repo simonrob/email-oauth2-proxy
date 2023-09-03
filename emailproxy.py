@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-08-28'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-09-03'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2323,7 +2323,7 @@ class App:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                                      r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
-                icon_colour = 'black' if winreg.QueryValueEx(key, 'SystemUsesLightTheme')[0] == 0 else 'white'
+                icon_colour = 'black' if winreg.QueryValueEx(key, 'SystemUsesLightTheme')[0] else 'white'
             except FileNotFoundError:
                 pass
 
