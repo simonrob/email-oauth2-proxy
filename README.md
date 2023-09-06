@@ -73,7 +73,7 @@ See the [sample configuration file](emailproxy.config) for further details.
 ## Optional arguments and configuration
 When starting the proxy there are several optional arguments that can be set to customise its behaviour.
 
-- `--no-gui` will launch the proxy without an icon, which allows it to be run as a `systemctl` service as demonstrated in [this example](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677), or fully headless as demonstrated in [various](https://github.com/michaelstepner/email-oauth2-proxy-aws) [other](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) subprojects.
+- `--no-gui` will launch the proxy without an icon, which allows it to be run as a `systemctl` service as demonstrated in [this example](https://github.com/simonrob/email-oauth2-proxy/issues/2#issuecomment-839713677), or fully headless as demonstrated in [various](https://github.com/michaelstepner/email-oauth2-proxy-aws) [other](https://github.com/blacktirion/email-oauth2-proxy-docker) subprojects.
 Please note that on its own this mode is only of use if you have already authorised your accounts through the proxy in GUI mode, or are importing a pre-authorised proxy configuration file from elsewhere.
 Unless this option is used in conjunction with `--external-auth` or `--local-server-auth`, accounts that have not yet been authorised (or for whatever reason require re-authorisation) will time out when authenticating, and an error will be printed to the log.
 
@@ -171,6 +171,9 @@ This can be achieved using `telnet`, [PuTTY](https://www.chiark.greenend.org.uk/
 For example, to test the Office 365 IMAP server from the [example configuration](emailproxy.config), first open a connection using `telnet localhost 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant).
 If you have already authorised your account with the proxy you should see a response starting with `a1 OK`; if not, this command should trigger a notification from the proxy about authorising your account.
 
+If you are using a [secure local connection](emailproxy.config) the interaction with the remote email server is the same as above, but you will need to use a local debugging tool that supports encryption.
+The easiest approach here is to use [OpenSSL](https://www.openssl.org/): `openssl s_client -crlf -connect localhost:1993`.
+
 If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` that you are using.
 The proxy defaults to `::` for this parameter, which in most cases resolves to `localhost` for both IPv4 and IPv6 configurations, but it is possible that this differs depending on your environment.
 If you are unable to connect to the proxy from your client, it is worth setting this value explicitly – see the [sample configuration file](emailproxy.config) for further details about how to do this.
@@ -230,7 +233,7 @@ See the documentation and examples in this branch for further details, additiona
 ## Related projects and alternatives
 Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
 Thiago Macieira has provided a [makefile and systemd configuration files](https://github.com/thiagomacieira/email-oauth2-proxy/tree/Add_a_Makefile_and_systemd_configuration_files_to_install_system_wide).
-For Docker, interone-ms has provided an [example configuration](https://github.com/interone-ms/email-oauth2-proxy/commits/feature/docker-build) (though please note that the fork is otherwise outdated, and it is better to use this repository for the proxy script itself).
+For Docker, blacktirion has an [example configuration](https://github.com/blacktirion/email-oauth2-proxy-docker).
 
 If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.
 Similarly, if you use an application that is able to handle OAuth 2.0 tokens but just cannot retrieve them itself, then [pizauth](https://github.com/ltratt/pizauth), [mailctl](https://github.com/pdobsan/mailctl) or [oauth-helper-office-365](https://github.com/ahrex/oauth-helper-office-365) may be more appropriate.

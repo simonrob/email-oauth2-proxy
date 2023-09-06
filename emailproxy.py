@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-07-13'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-09-06'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -68,8 +68,10 @@ no_gui_parser.add_argument('--no-gui', action='store_true')
 no_gui_parser.add_argument('--external-auth', action='store_true')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if not no_gui_args.no_gui:
-    # noinspection PyDeprecation
-    import pkg_resources  # from setuptools - to be changed to importlib.metadata and packaging.version once 3.8 is min.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', DeprecationWarning)
+        # noinspection PyDeprecation
+        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
     import pystray  # the menu bar/taskbar GUI
     import timeago  # the last authenticated activity hint
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
@@ -159,6 +161,7 @@ REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
 WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
+MENU_UPDATE = object()  # object to send to trigger a force-refresh of the GUI menu (new catch-all account added)
 
 PLIST_FILE_PATH = pathlib.Path('~/Library/LaunchAgents/%s.plist' % APP_PACKAGE).expanduser()  # launchctl file location
 CMD_FILE_PATH = pathlib.Path('~/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/%s.cmd' %
@@ -274,6 +277,14 @@ class Log:
     @staticmethod
     def error_string(error):
         return getattr(error, 'message', repr(error))
+
+    @staticmethod
+    def format_host_port(address):
+        host, port, *_ = address
+        with contextlib.suppress(ValueError):
+            ip = ipaddress.ip_address(host)
+            host = '[%s]' % host if type(ip) is ipaddress.IPv6Address else host
+        return '%s:%d' % (host, port)
 
     @staticmethod
     def get_last_error():
@@ -394,15 +405,59 @@ class AWSSecretsManagerCacheStore(CacheStore):
             Log.error('Unable to get AWS SDK client; cannot cache credentials to AWS Secrets Manager')
 
 
+class ConcurrentConfigParser:
+    """Helper wrapper to add locking to a ConfigParser object (note: only wraps the methods used in this script)"""
+
+    def __init__(self):
+        self.config = configparser.ConfigParser()
+        self.lock = threading.Lock()
+
+    def read(self, filename):
+        with self.lock:
+            self.config.read(filename)
+
+    def sections(self):
+        with self.lock:
+            return self.config.sections()
+
+    def add_section(self, section):
+        with self.lock:
+            self.config.add_section(section)
+
+    def get(self, section, option, fallback=None):
+        with self.lock:
+            return self.config.get(section, option, fallback=fallback)
+
+    def getint(self, section, option, fallback=None):
+        with self.lock:
+            return self.config.getint(section, option, fallback=fallback)
+
+    def getboolean(self, section, option, fallback=None):
+        with self.lock:
+            return self.config.getboolean(section, option, fallback=fallback)
+
+    def set(self, section, option, value):
+        with self.lock:
+            self.config.set(section, option, value)
+
+    def remove_option(self, section, option):
+        with self.lock:
+            self.config.remove_option(section, option)
+
+    def write(self, file):
+        with self.lock:
+            self.config.write(file)
+
+    def items(self):
+        with self.lock:
+            return self.config.items()  # used in read_dict when saving to cache store
+
+
 class AppConfig:
     """Helper wrapper around ConfigParser to cache servers/accounts, and avoid writing to the file until necessary"""
 
     _PARSER = None
-    _LOADED = False
-
-    _GLOBALS = None
-    _SERVERS = []
-    _ACCOUNTS = []
+    _PARSER_LOCK = threading.Lock()
 
     # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
     _CACHED_OPTION_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token', 'last_activity',
@@ -413,38 +468,26 @@ class AppConfig:
 
     @staticmethod
     def _load():
-        AppConfig.unload()
-        AppConfig._PARSER = configparser.ConfigParser()
-        AppConfig._PARSER.read(CONFIG_FILE_PATH)
-
-        config_sections = AppConfig._PARSER.sections()
-        if APP_SHORT_NAME in config_sections:
-            AppConfig._GLOBALS = AppConfig._PARSER[APP_SHORT_NAME]
-        else:
-            AppConfig._GLOBALS = configparser.SectionProxy(AppConfig._PARSER, APP_SHORT_NAME)
+        config_parser = ConcurrentConfigParser()
+        config_parser.read(CONFIG_FILE_PATH)
 
         # cached account credentials can be stored in the configuration file (default) or, via `--cache-store`, a
         # separate local file or external service (such as a secrets manager) - we combine these sources at load time
         if CACHE_STORE != CONFIG_FILE_PATH:
             # it would be cleaner to avoid specific options here, but best to load unexpected sections only when enabled
-            allow_catch_all_accounts = AppConfig._GLOBALS.getboolean('allow_catch_all_accounts', fallback=False)
+            allow_catch_all_accounts = config_parser.getboolean(APP_SHORT_NAME, 'allow_catch_all_accounts',
+                                                                fallback=False)
 
             cache_file_parser = AppConfig._load_cache(CACHE_STORE)
             cache_file_accounts = [s for s in cache_file_parser.sections() if '@' in s]
             for account in cache_file_accounts:
-                if allow_catch_all_accounts and account not in AppConfig._PARSER.sections():  # missing sub-accounts
-                    AppConfig._PARSER.add_section(account)
+                if allow_catch_all_accounts and account not in config_parser.sections():  # missing sub-accounts
+                    config_parser.add_section(account)
                 for option in cache_file_parser.options(account):
                     if option in AppConfig._CACHED_OPTION_KEYS:
-                        AppConfig._PARSER.set(account, option, cache_file_parser.get(account, option))
+                        config_parser.set(account, option, cache_file_parser.get(account, option))
 
-            if allow_catch_all_accounts:
-                config_sections = AppConfig._PARSER.sections()  # new sections may have been added
-
-        AppConfig._SERVERS = [s for s in config_sections if CONFIG_SERVER_MATCHER.match(s)]
-        AppConfig._ACCOUNTS = [s for s in config_sections if '@' in s]
-
-        AppConfig._LOADED = True
+        return config_parser
 
     @staticmethod
     def _load_cache(cache_store_identifier):
@@ -458,59 +501,47 @@ class AppConfig:
 
     @staticmethod
     def get():
-        if not AppConfig._LOADED:
-            AppConfig._load()
-        return AppConfig._PARSER
+        with AppConfig._PARSER_LOCK:
+            if AppConfig._PARSER is None:
+                AppConfig._PARSER = AppConfig._load()
+            return AppConfig._PARSER
 
     @staticmethod
     def unload():
-        AppConfig._PARSER = None
-        AppConfig._LOADED = False
-
-        AppConfig._GLOBALS = None
-        AppConfig._SERVERS = []
-        AppConfig._ACCOUNTS = []
+        with AppConfig._PARSER_LOCK:
+            AppConfig._PARSER = None
 
     @staticmethod
-    def reload():
-        AppConfig.unload()
-        return AppConfig.get()
-
-    @staticmethod
-    def globals():
-        AppConfig.get()  # make sure config is loaded
-        return AppConfig._GLOBALS
+    def get_global(name, fallback):
+        return AppConfig.get().getboolean(APP_SHORT_NAME, name, fallback)
 
     @staticmethod
     def servers():
-        AppConfig.get()  # make sure config is loaded
-        return AppConfig._SERVERS
+        return [s for s in AppConfig.get().sections() if CONFIG_SERVER_MATCHER.match(s)]
 
     @staticmethod
     def accounts():
-        AppConfig.get()  # make sure config is loaded
-        return AppConfig._ACCOUNTS
-
-    @staticmethod
-    def add_account(username):
-        AppConfig._PARSER.add_section(username)
-        AppConfig._ACCOUNTS = [s for s in AppConfig._PARSER.sections() if '@' in s]
+        return [s for s in AppConfig.get().sections() if '@' in s]
 
     @staticmethod
     def save():
-        if AppConfig._LOADED:
+        with AppConfig._PARSER_LOCK:
+            if AppConfig._PARSER is None:  # intentionally using _PARSER not get() so we don't (re-)load if unloaded
+                return
+
             if CACHE_STORE != CONFIG_FILE_PATH:
                 # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc)
                 output_config_parser = configparser.ConfigParser()
                 output_config_parser.read_dict(AppConfig._PARSER)  # a deep copy of the current configuration
+                config_accounts = [s for s in output_config_parser.sections() if '@' in s]
 
-                for account in AppConfig._ACCOUNTS:
+                for account in config_accounts:
                     for option in output_config_parser.options(account):
                         if option not in AppConfig._CACHED_OPTION_KEYS:
                             output_config_parser.remove_option(account, option)
 
                 for section in output_config_parser.sections():
-                    if section not in AppConfig._ACCOUNTS or len(output_config_parser.options(section)) <= 0:
+                    if section not in config_accounts or len(output_config_parser.options(section)) <= 0:
                         output_config_parser.remove_section(section)
 
                 AppConfig._save_cache(CACHE_STORE, output_config_parser)
@@ -549,10 +580,11 @@ class OAuth2Helper:
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
 
         # we support broader catch-all account names (e.g., `@domain.com` / `@`) if enabled
-        valid_accounts = [username in AppConfig.accounts()]
-        if AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False):
+        config_accounts = AppConfig.accounts()
+        valid_accounts = [username in config_accounts]
+        if AppConfig.get_global('allow_catch_all_accounts', fallback=False):
             user_domain = '@%s' % username.split('@')[-1]
-            valid_accounts.extend([account in AppConfig.accounts() for account in [user_domain, '@']])
+            valid_accounts.extend([account in config_accounts for account in [user_domain, '@']])
 
         if not any(valid_accounts):
             Log.error('Proxy config file entry missing for account', username, '- aborting login')
@@ -564,7 +596,7 @@ class OAuth2Helper:
 
         def get_account_with_catch_all_fallback(option):
             fallback = None
-            if AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False):
+            if AppConfig.get_global('allow_catch_all_accounts', fallback=False):
                 fallback = config.get(user_domain, option, fallback=config.get('@', option, fallback=None))
             return config.get(username, option, fallback=fallback)
 
@@ -606,7 +638,7 @@ class OAuth2Helper:
 
         # try reloading remotely cached tokens if possible
         if not access_token and CACHE_STORE != CONFIG_FILE_PATH and reload_remote_accounts:
-            AppConfig.reload()
+            AppConfig.unload()
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
         # we hash locally-stored tokens with the given password
@@ -674,8 +706,9 @@ class OAuth2Helper:
                                                                         oauth2_flow, username, password)
 
                 access_token = response['access_token']
-                if not config.has_section(username):
-                    AppConfig.add_account(username)  # in wildcard mode the section may not yet exist
+                if username not in config.sections():
+                    config.add_section(username)  # in catch-all mode the section may not yet exist
+                    REQUEST_QUEUE.put(MENU_UPDATE)  # make sure the menu shows the newly-added account
                 config.set(username, 'token_salt', token_salt)
                 config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
@@ -686,7 +719,7 @@ class OAuth2Helper:
                     Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
                              'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
 
-                if AppConfig.globals().getboolean('encrypt_client_secret_on_first_use', fallback=False):
+                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
                         # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when using
                         # incompatible `encrypt_client_secret_on_first_use` and `allow_catch_all_accounts` options
@@ -718,7 +751,7 @@ class OAuth2Helper:
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
         except InvalidToken as e:
-            if AppConfig.globals().getboolean('delete_account_token_on_password_error', fallback=True):
+            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True):
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
                 config.remove_option(username, 'token_salt')
@@ -772,13 +805,13 @@ class OAuth2Helper:
         redirect_listen_type = 'redirect_listen_address' if token_request['redirect_listen_address'] else 'redirect_uri'
         parsed_uri = urllib.parse.urlparse(token_request[redirect_listen_type])
         parsed_port = 80 if parsed_uri.port is None else parsed_uri.port
-        Log.debug('Local server auth mode (%s:%d): starting server to listen for authentication response' % (
-            parsed_uri.hostname, parsed_port))
+        Log.debug('Local server auth mode (%s): starting server to listen for authentication response' %
+                  Log.format_host_port((parsed_uri.hostname, parsed_port)))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
             def log_message(self, _format_string, *args):
-                Log.debug('Local server auth mode (%s:%d): received authentication response' % (
-                    parsed_uri.hostname, parsed_port), *args)
+                Log.debug('Local server auth mode (%s): received authentication response' % Log.format_host_port(
+                    (parsed_uri.hostname, parsed_port)), *args)
 
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
@@ -804,20 +837,22 @@ class OAuth2Helper:
                 redirection_server.server_close()
 
             if 'response_url' in token_request:
-                Log.debug('Local server auth mode (%s:%d): closing local server and returning response' % (
-                    parsed_uri.hostname, parsed_port), token_request['response_url'])
+                Log.debug('Local server auth mode (%s): closing local server and returning response' %
+                          Log.format_host_port((parsed_uri.hostname, parsed_port)), token_request['response_url'])
             else:
                 # failed, likely because of an incorrect address (e.g., https vs http), but can also be due to timeout
-                Log.info('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'request failed - if',
-                         'this error reoccurs, please check `%s` for' % redirect_listen_type, token_request['username'],
-                         'is not specified as `https` mistakenly. See the sample configuration file for documentation')
+                Log.info('Local server auth mode (%s):' % Log.format_host_port((parsed_uri.hostname, parsed_port)),
+                         'request failed - if this error reoccurs, please check `%s` for' % redirect_listen_type,
+                         token_request['username'], 'is not specified as `https` mistakenly. See the sample '
+                                                    'configuration file for documentation')
                 token_request['expired'] = True
 
         except socket.error as e:
-            Log.error('Local server auth mode (%s:%d):' % (parsed_uri.hostname, parsed_port), 'unable to start local',
-                      'server. Please check that `%s` for %s is unique across accounts, specifies a port number, and '
-                      'is not already in use. See the documentation in the proxy\'s sample configuration file.' % (
-                          redirect_listen_type, token_request['username']), Log.error_string(e))
+            Log.error('Local server auth mode (%s):' % Log.format_host_port((parsed_uri.hostname, parsed_port)),
+                      'unable to start local server. Please check that `%s` for %s is unique across accounts, '
+                      'specifies a port number, and is not already in use. See the documentation in the proxy\'s '
+                      'sample configuration file.' % (redirect_listen_type, token_request['username']),
+                      Log.error_string(e))
             token_request['expired'] = True
 
         del token_request['local_server_auth']
@@ -1128,11 +1163,11 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             bool(custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']))
 
     def info_string(self):
-        debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
-                                           self.server_address[1]) if Log.get_level() == logging.DEBUG else ''
+        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
+            self.server_address)) if Log.get_level() == logging.DEBUG else ''
         account = '; %s' % self.server_connection.authenticated_username if \
             self.server_connection and self.server_connection.authenticated_username else ''
-        return '%s (%s:%d%s%s)' % (self.proxy_type, self.local_address[0], self.local_address[1], debug_string, account)
+        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1207,7 +1242,10 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     def handle_close(self):
         error_type, value = Log.get_last_error()
         if error_type and value:
-            Log.info(self.info_string(), 'Caught connection error (client) -', error_type.__name__, ':', value)
+            message = 'Caught connection error (client)'
+            if error_type == ConnectionResetError:
+                message = '%s [ Are you attempting an encrypted connection to a non-encrypted server? ]' % message
+            Log.info(self.info_string(), message, '-', error_type.__name__, ':', value)
         self.close()
 
     def close(self):
@@ -1535,10 +1573,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             return
 
     def info_string(self):
-        debug_string = '; %s:%d->%s:%d' % (self.connection_info[0], self.connection_info[1], self.server_address[0],
-                                           self.server_address[1]) if Log.get_level() == logging.DEBUG else ''
+        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
+            self.server_address)) if Log.get_level() == logging.DEBUG else ''
         account = '; %s' % self.authenticated_username if self.authenticated_username else ''
-        return '%s (%s:%d%s%s)' % (self.proxy_type, self.local_address[0], self.local_address[1], debug_string, account)
+        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
 
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
@@ -1612,9 +1650,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value = Log.get_last_error()
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
-                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTUNREACH]:
+                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTDOWN, errno.EHOSTUNREACH]:
             # TimeoutError 60 = 'Operation timed out'; ConnectionError 54 = 'Connection reset by peer', 61 = 'Connection
-            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 65 = 'No route to host'
+            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 64 = 'Host is down';
+            # 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.close()
@@ -1875,9 +1914,9 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.client_connections = []
 
     def info_string(self):
-        return '%s server at %s:%d (%s) proxying %s:%d (%s)' % (
-            self.proxy_type, self.local_address[0], self.local_address[1],
-            'TLS' if self.ssl_connection else 'unsecured', self.server_address[0], self.server_address[1],
+        return '%s server at %s (%s) proxying %s (%s)' % (
+            self.proxy_type, Log.format_host_port(self.local_address),
+            'TLS' if self.ssl_connection else 'unsecured', Log.format_host_port(self.server_address),
             'STARTTLS' if self.custom_configuration['starttls'] else 'SSL/TLS')
 
     def handle_accept(self):
@@ -1953,8 +1992,11 @@ class OAuth2Proxy(asyncore.dispatcher):
         if self.ssl_connection:
             # noinspection PyTypeChecker
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
-                                        keyfile=self.custom_configuration['local_key_path'])
+            try:
+                ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
+                                            keyfile=self.custom_configuration['local_key_path'])
+            except FileNotFoundError as e:
+                raise FileNotFoundError('Unable to open `local_certificate_path` and/or `local_key_path`') from e
 
             # suppress_ragged_eofs=True: see test_ssl.py documentation in https://github.com/python/cpython/pull/5266
             self.set_socket(ssl_context.wrap_socket(new_socket, server_side=True, suppress_ragged_eofs=True,
@@ -2283,7 +2325,16 @@ class App:
             Log.info('Received power off notification; exiting', APP_NAME)
             self.exit(self.icon)
 
+    # noinspection PyDeprecation
     def create_icon(self):
+        # temporary fix for pystray <= 0.19.4 incompatibility with PIL 10.0.0+; fixed once pystray PR #147 is released
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            pystray_version = pkg_resources.get_distribution('pystray').version
+            pillow_version = pkg_resources.get_distribution('pillow').version
+            if pkg_resources.parse_version(pystray_version) <= pkg_resources.parse_version('0.19.4') and \
+                    pkg_resources.parse_version(pillow_version) >= pkg_resources.parse_version('10.0.0'):
+                Image.ANTIALIAS = Image.LANCZOS
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
@@ -2297,11 +2348,22 @@ class App:
     @staticmethod
     def get_image():
         # we use an icon font for better multiplatform compatibility and icon size flexibility
-        icon_colour = 'white'  # note: value is irrelevant on macOS - we set as a template to get the platform's colours
+        icon_colour = 'white'  # see below: colour is handled differently per-platform
         icon_character = 'e'
         icon_background_width = 44
         icon_background_height = 44
         icon_width = 40  # to allow for padding between icon and background image size
+
+        # the colour value is irrelevant on macOS - we configure the menu bar icon as a template to get the platform's
+        # colours - but on Windows (and in future potentially Linux) we need to set based on the current theme type
+        if sys.platform == 'win32':
+            import winreg
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                     r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize')
+                icon_colour = 'black' if winreg.QueryValueEx(key, 'SystemUsesLightTheme')[0] else 'white'
+            except FileNotFoundError:
+                pass
 
         # find the largest font size that will let us draw the icon within the available width
         minimum_font_size = 1
@@ -2355,7 +2417,7 @@ class App:
         if len(config_accounts) <= 0:
             items.append(pystray.MenuItem('    No accounts configured', None, enabled=False))
         else:
-            catch_all_enabled = AppConfig.globals().getboolean('allow_catch_all_accounts', fallback=False)
+            catch_all_enabled = AppConfig.get_global('allow_catch_all_accounts', fallback=False)
             catch_all_accounts = []
             for account in config_accounts:
                 if account.startswith('@') and catch_all_enabled:
@@ -2387,13 +2449,10 @@ class App:
             if not heading_appended:
                 items.append(pystray.MenuItem('%s servers:' % server_type, None, enabled=False))
                 heading_appended = True
-            formatted_host = proxy.local_address[0]
-            with contextlib.suppress(ValueError):
-                ip = ipaddress.ip_address(formatted_host)
-                formatted_host = '[%s]' % formatted_host if type(ip) is ipaddress.IPv6Address else formatted_host
-            items.append(pystray.MenuItem('%s    %s:%d ➝ %s:%d' % (
-                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '', formatted_host,
-                proxy.local_address[1], proxy.server_address[0], proxy.server_address[1]), None, enabled=False))
+            items.append(pystray.MenuItem('%s    %s ➝ %s' % (
+                ('Y_SSL' if proxy.ssl_connection else 'N_SSL') if sys.platform == 'darwin' else '',
+                Log.format_host_port(proxy.local_address), Log.format_host_port(proxy.server_address)),
+                                          None, enabled=False))
         if heading_appended:
             items.append(pystray.Menu.SEPARATOR)
         return items
@@ -2748,7 +2807,9 @@ class App:
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
         Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
-        config = AppConfig.reload() if reload else AppConfig.get()
+        if reload:
+            AppConfig.unload()
+        config = AppConfig.get()
 
         # load server types and configurations
         server_load_error = False
@@ -2888,6 +2949,10 @@ class App:
             data = REQUEST_QUEUE.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
+            if data is MENU_UPDATE:
+                if icon:
+                    icon.update_menu()
+                continue
             if not data['expired']:
                 Log.info('Authorisation request received for', data['username'],
                          '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
