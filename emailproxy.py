@@ -579,8 +579,11 @@ class AppConfig:
 
 
 class OAuth2Helper:
+    class TokenRefreshError(Exception):
+        pass
+
     @staticmethod
-    def get_oauth2_credentials(username, password, recurse_retries=True):
+    def get_oauth2_credentials(username, password, reload_remote_accounts=True):
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
@@ -643,9 +646,9 @@ class OAuth2Helper:
         refresh_token = config.get(username, 'refresh_token', fallback=None)
 
         # try reloading remotely cached tokens if possible
-        if not access_token and CACHE_STORE != CONFIG_FILE_PATH and recurse_retries:
+        if not access_token and CACHE_STORE != CONFIG_FILE_PATH and reload_remote_accounts:
             AppConfig.unload()
-            return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
+            return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
         # we hash locally-stored tokens with the given password
         if not token_salt:
@@ -666,8 +669,8 @@ class OAuth2Helper:
             if client_secret_encrypted and not client_secret:
                 client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
 
-            if access_token:
-                if access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:  # refresh if expiring soon (if possible)
+            if access_token or refresh_token:  # if possible, refresh the existing token(s)
+                if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
                                                                             OAuth2Helper.decrypt(fernet, refresh_token))
@@ -739,23 +742,34 @@ class OAuth2Helper:
             oauth2_string = OAuth2Helper.construct_oauth2_string(username, access_token)
             return True, oauth2_string
 
-        except InvalidToken as e:
-            # if invalid details are the reason for failure we remove our cached version and re-authenticate - this can
-            # be disabled by a configuration setting, but note that we always remove credentials on 400 Bad Request
-            if e.args == (400, APP_PACKAGE) or AppConfig.get_global('delete_account_token_on_password_error',
-                                                                    fallback=True):
+        except OAuth2Helper.TokenRefreshError as e:
+            # always clear access tokens - can easily request another via the refresh token (with no user interaction)
+            has_access_token = True if config.get(username, 'access_token', fallback=None) else False
+            config.remove_option(username, 'access_token')
+            config.remove_option(username, 'access_token_expiry')
+
+            if not has_access_token:
+                # if this is already a second failure, remove the refresh token as well, and force re-authentication
                 config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'refresh_token')
+
+            AppConfig.save()
+
+            Log.info('Retrying login due to exception while refreshing OAuth 2.0 tokens for', username,
+                     '(attempt %d):' % (1 if has_access_token else 2), Log.error_string(e))
+            return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
+
+        except InvalidToken as e:
+            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True):
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
+                config.remove_option(username, 'token_salt')
                 config.remove_option(username, 'refresh_token')
                 AppConfig.save()
-            else:
-                recurse_retries = False  # no need to recurse if we are just trying the same credentials again
 
-            if recurse_retries:
-                Log.info('Retrying login due to exception while requesting OAuth 2.0 credentials for %s:' % username,
-                         Log.error_string(e))
-                return OAuth2Helper.get_oauth2_credentials(username, password, recurse_retries=False)
+                Log.info('Retrying login due to exception while decrypting OAuth 2.0 credentials for', username,
+                         '(invalid password):', Log.error_string(e))
+                return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
             Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
             return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
@@ -962,8 +976,8 @@ class OAuth2Helper:
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
             Log.debug('Error refreshing access token - received invalid response:', e.message)
-            if e.code == 400:  # 400 Bad Request typically means re-authentication is required (refresh token expired)
-                raise InvalidToken(e.code, APP_PACKAGE) from e
+            if e.code == 400:  # 400 Bad Request typically means re-authentication is required (token expired)
+                raise OAuth2Helper.TokenRefreshError from e
             raise e
 
     @staticmethod
