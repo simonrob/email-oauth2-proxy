@@ -42,7 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install wheel
           python -m pip install -r requirements.txt pyinstaller
-          python -m PyInstaller --clean --noconsole --onefile --hidden-import timeago.locales.en_short emailproxy.py
+          python -m PyInstaller --clean --noconsole --onefile --hidden-import timeago.locales.en_short --icon icon.png emailproxy.py
       
       # add license, documentation, configuration file sample and disclaimer
       # - note: `move [...] alias move=mv [...]` is to support using the same commands on all platforms
