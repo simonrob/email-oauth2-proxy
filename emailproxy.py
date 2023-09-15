@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-09-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-09-15'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -123,6 +123,7 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
     J6Sp0urC5fCken5STr0KDoUlyhjVd4nxSUvq3tCftEn8r2ro+mxUDIaCMQmQrGZGHmi53tAT3rPGH1e3qF0p9w7LtcohwuyvnRxWZ8sZUej6WvlhXSk1
     7k+POJ1iR73N/+w2xN0f4+GJcHtfqoWzgfi6cuZscC54lSq3SbN1tmzC4MXtcwN/zOC78r9BIfNc3M='''  # TTF ('e') -> zlib -> base64
 
+CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
@@ -1214,7 +1215,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                     log_data = re.sub(b'(%s)?( )?(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
                                       br'\1\2\3\4 \5 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
 
-                Log.debug(self.info_string(), '-->', log_data)
+                Log.debug(self.info_string(), '-->', log_data if CENSOR_CREDENTIALS else line)
                 try:
                     self.process_data(line)
                 except AttributeError:  # AttributeError("'NoneType' object has no attribute 'username'"), etc
@@ -1643,7 +1644,8 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
-            Log.debug(self.info_string(), '    -->', b'%s\r\n' % CENSOR_MESSAGE if censor_log else byte_data)
+            Log.debug(self.info_string(), '    -->',
+                      b'%s\r\n' % CENSOR_MESSAGE if CENSOR_CREDENTIALS and censor_log else byte_data)
         return super().send(byte_data)
 
     def handle_error(self):
