@@ -174,10 +174,11 @@ If you have already authorised your account with the proxy you should see a resp
 If you are using a [secure local connection](emailproxy.config) the interaction with the remote email server is the same as above, but you will need to use a local debugging tool that supports encryption.
 The easiest approach here is to use [OpenSSL](https://www.openssl.org/): `openssl s_client -crlf -connect localhost:1993`.
 
-If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` that you are using.
-The proxy defaults to `::` for this parameter, which in most cases resolves to `localhost` for both IPv4 and IPv6 configurations, but it is possible that this differs depending on your environment.
-If you are unable to connect to the proxy from your client, it is worth setting this value explicitly – see the [sample configuration file](emailproxy.config) for further details about how to do this.
-Please try to connect to both IPv4 (i.e., `127.0.0.1`) and IPv6 (i.e., `::1`) loopback addresses before reporting any connection issues with the proxy.
+If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` values that you are using.
+The [sample configuration file](emailproxy.config) sets this parameter to `127.0.0.1` for all servers.
+If you remove this value and do not provide your own, the proxy defaults to `::` – in most cases this resolves to `localhost` for both IPv4 and IPv6 configurations, but it is possible that this differs depending on your environment.
+If you are unable to connect to the proxy from your client, it is always worth first specifying this value explicitly – see the [sample configuration file](emailproxy.config) for further details about how to do this.
+Please try setting and connecting to both IPv4 (i.e., `127.0.0.1`) and IPv6 (i.e., `::1`) loopback addresses before reporting any connection issues with the proxy.
 
 ### Dependencies and setup
 On macOS the setup and installation instructions above should automatically install all required dependencies.
