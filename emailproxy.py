@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-09-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-05'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2225,8 +2225,7 @@ class App:
         self.args = parser.parse_args()
 
         Log.initialise(self.args.log_file)
-        if self.args.debug:
-            Log.set_level(logging.DEBUG)
+        self.toggle_debug(self.args.debug, log_message=False)
 
         if self.args.config_file:
             CONFIG_FILE_PATH = CACHE_STORE = self.args.config_file
@@ -2300,6 +2299,7 @@ class App:
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda _signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda _signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGHUP, lambda _signum: self.load_and_start_servers(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGUSR1, lambda _: self.toggle_debug(Log.get_level() == logging.INFO))
 
         else:
             # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
@@ -2311,6 +2311,10 @@ class App:
                 # allow config file reloading without having to stop/start - e.g.: pkill -SIGHUP -f emailproxy.py
                 # (we don't use linux_restart() here as it exits then uses nohup to restart, which may not be desirable)
                 signal.signal(signal.SIGHUP, lambda _signum, _frame: self.load_and_start_servers(self.icon))
+            if hasattr(signal, 'SIGUSR1'):
+                # use SIGUSR1 as a toggle for debug mode (e.g.: pkill -USR1 -f emailproxy.py) - please note that the
+                # proxy's handling of this signal may change in future if other actions are seen as more suitable
+                signal.signal(signal.SIGHUP, lambda _signum, _frame: self.toggle_debug(Log.get_level() == logging.INFO))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2343,7 +2347,8 @@ class App:
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Start at login', self.toggle_start_at_login, checked=self.started_at_login),
-            pystray.MenuItem('Debug mode', self.toggle_debug, checked=lambda _: Log.get_level() == logging.DEBUG),
+            pystray.MenuItem('Debug mode', lambda _, item: self.toggle_debug(not item.checked),
+                             checked=lambda _: Log.get_level() == logging.DEBUG),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
 
@@ -2758,9 +2763,12 @@ class App:
 
         return False
 
-    @staticmethod
-    def toggle_debug(_, item):
-        Log.set_level(logging.INFO if item.checked else logging.DEBUG)
+    def toggle_debug(self, enable_debug_mode, log_message=True):
+        Log.set_level(logging.DEBUG if enable_debug_mode else logging.INFO)
+        if log_message:
+            Log.info('Setting debug mode:', Log.get_level() == logging.DEBUG)
+        if hasattr(self, 'icon') and self.icon:
+            self.icon.update_menu()
 
     # noinspection PyUnresolvedReferences
     def notify(self, title, text):
@@ -2808,7 +2816,9 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
+        Log.info('Initialising', APP_NAME,
+                 '(version %s)%s' % (__version__, ' in debug mode' if Log.get_level() == logging.DEBUG else ''),
+                 'from config file', CONFIG_FILE_PATH)
         if reload:
             AppConfig.unload()
         config = AppConfig.get()
