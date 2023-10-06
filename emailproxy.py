@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-05'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-06'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2314,7 +2314,7 @@ class App:
             if hasattr(signal, 'SIGUSR1'):
                 # use SIGUSR1 as a toggle for debug mode (e.g.: pkill -USR1 -f emailproxy.py) - please note that the
                 # proxy's handling of this signal may change in future if other actions are seen as more suitable
-                signal.signal(signal.SIGHUP, lambda _signum, _frame: self.toggle_debug(Log.get_level() == logging.INFO))
+                signal.signal(signal.SIGUSR1, lambda _signum, _fr: self.toggle_debug(Log.get_level() == logging.INFO))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
