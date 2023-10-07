@@ -575,6 +575,31 @@ class OAuth2Helper:
         pass
 
     @staticmethod
+    def get_encryption_info(config, username, password):
+        """Returns a tuple of the fernet encrypter/decrypter and the random salt used in base64. This fernet is used to
+        store sensitive information for this account, including any stored tokens."""
+        token_salt = config.get(username, 'token_salt', fallback=None)
+        decoded_salt = None
+
+        # try to base64 decode the existing salt
+        if token_salt:
+            try:
+                decoded_salt = base64.b64decode(token_salt.encode('ascii'))  # catch incorrect third-party proxy guide
+            except (binascii.Error, UnicodeError):
+                Log.info('%s: Invalid `token_salt` value found in config file entry for account %s - this value is not '
+                         'intended to be manually created; generating new `token_salt`' % (APP_NAME, username))
+
+        # generate a new salt if the salt cannot be decoded or this is the initial run
+        if not decoded_salt:
+            decoded_salt = os.urandom(16)
+            token_salt = base64.b64encode(decoded_salt).decode('ascii')
+
+        # generate encrypter/decrypter based on password and random salt
+        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=decoded_salt, iterations=100000,
+                                             backend=default_backend())
+        return (Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8')))), token_salt)
+
+    @staticmethod
     def get_oauth2_credentials(username, password, reload_remote_accounts=True):
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
@@ -632,7 +657,6 @@ class OAuth2Helper:
                          'otherwise, if authentication fails, please double-check this value is correct')
 
         current_time = int(time.time())
-        token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
@@ -642,19 +666,7 @@ class OAuth2Helper:
             AppConfig.unload()
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
-        # we hash locally-stored tokens with the given password
-        if not token_salt:
-            token_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
-
-        # generate encrypter/decrypter based on password and random salt
-        try:
-            decoded_salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
-        except binascii.Error:
-            return (False, '%s: Invalid `token_salt` value found in config file entry for account %s - this value is '
-                           'not intended to be manually created; please remove and retry' % (APP_NAME, username))
-        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=decoded_salt, iterations=100000,
-                                             backend=default_backend())
-        fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
+        fernet, token_salt = OAuth2Helper.get_encryption_info(config, username, password)
 
         try:
             # if both secret values are present we use the unencrypted version (as it may have been user-edited)
