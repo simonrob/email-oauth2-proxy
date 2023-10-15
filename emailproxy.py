@@ -6,7 +6,8 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-15'  # ISO 8601 (YYYY-MM-DD)
+__package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
 import argparse
@@ -67,7 +68,7 @@ no_gui_parser = argparse.ArgumentParser(add_help=False)
 no_gui_parser.add_argument('--no-gui', action='store_true')
 no_gui_parser.add_argument('--external-auth', action='store_true')
 no_gui_args = no_gui_parser.parse_known_args()[0]
-if not no_gui_args.no_gui:
+if not no_gui_args.no_gui and 'setuptools.config.pyprojecttoml' not in sys.modules:  # don't import when building wheel
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', DeprecationWarning)
         # noinspection PyDeprecation

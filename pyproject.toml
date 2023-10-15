@@ -1,71 +1,56 @@
 [build-system]
-requires = ["setuptools>=60"]
+requires = ["setuptools>=61.0", "pyasyncore", "cryptography", "pyoslog"] # core requirements are needed for version detection, which requires importing the script
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "emailproxy"
 authors = [
-    {name = "Simon Robinson", email = "simon@robinson.ac"},
+    { name = "Simon Robinson", email = "simon@robinson.ac" }
 ]
-description = """
-Transparently add OAuth 2.0 support to IMAP/POP/SMTP clients that don't \
-support this authentication method.\
-"""
-readme = "README.md"
-license = {file = "LICENSE"}
+description = "Transparently add OAuth 2.0 support to IMAP/POP/SMTP clients that don't support this authentication method."
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { file = "LICENSE" }
+requires-python = ">=3.6"
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Communications :: Email",
+    "Topic :: Communications :: Email :: Mail Transport Agents",
     "Topic :: Communications :: Email :: Post-Office",
     "Topic :: Communications :: Email :: Post-Office :: IMAP",
     "Topic :: Communications :: Email :: Post-Office :: POP3",
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-    "cryptography",
-
-    # provide the previously standard library module `asyncore`, removed in
-    # Python 3.12 (https://peps.python.org/pep-0594/)
-    "pyasyncore; python_version >= '3.12'",
-
-    # macOS only: output to unified logging
-    "pyoslog>=0.3.0; sys_platform == 'darwin'",
+    "cryptography", # for encrypting cached account tokens
+    "pyasyncore; python_version >= '3.12'", # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
+    "pyoslog>=0.3.0; sys_platform == 'darwin'", # macOS only: output to unified logging
+    "prompt_toolkit" # required only if using the --external-auth option in --no-gui mode
 ]
 dynamic = ["version"]
 
 [project.optional-dependencies]
-external-auth = ["prompt_toolkit"]
 gui = [
-    "pillow",  # to create the menu bar icon image from a TTF icon
-    "setuptools",  # for pkg_resources (checking dependency versions)
-    "timeago",  # for displaying the last authenticated activity hint
+    "pillow", # to create the menu bar icon image from a TTF icon
+    "setuptools", # for pkg_resources (checking dependency versions)
+    "timeago", # for displaying the last authenticated activity hint
+    "pystray>=0.19.4", # force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)
 
-    # force pystray version with dummy GUI fix for headless deployments
-    # (https://github.com/moses-palmer/pystray/issues/118)
-    "pystray>=0.19.4",
+    # force pywebview 4.2.1+ to fix Windows issue with PyInstaller/pythonw (https://github.com/r0x0r/pywebview/issues/1086)
+    # and a macOS pre-Mojave crash when opening browser windows (https://github.com/r0x0r/pywebview/pull/1047),
+    # plus a missing macOS dependency issue introduced in 4.1 (https://github.com/r0x0r/pywebview/pull/1154)
+    "pywebview>=4.2.1", # - note that we could do, e.g., platform_release < "18" to allow Linux platforms more flexibility, but that seems over-the-top
 
-    # force pywebview 4.2.1+ to fix Windows issue with PyInstaller/pythonw
-    # (https://github.com/r0x0r/pywebview/issues/1086)
-    # and a macOS pre-Mojave crash when opening browser windows
-    # (https://github.com/r0x0r/pywebview/pull/1047),
-    # plus a missing macOS dependency issue introduced in 4.1
-    # (https://github.com/r0x0r/pywebview/pull/1154)
-    #
-    # - note that we could do, e.g., platform_release < '18' to allow Linux
-    # platforms more flexibility, but that seems over-the-top
-    "pywebview>=4.2.1",
-
-    # macOS: improve menu bar interaction, provide native notifications and
-    # handle system events
+    # macOS: improve menu bar interaction, provide native notifications and handle system events
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
-    "pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'",
+    "pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'"
 ]
 
 [project.scripts]
 emailproxy = "emailproxy:App"
 
 [project.urls]
-Homepage = "https://github.com/simonrob/email-oauth2-proxy"
+"Homepage" = "https://github.com/simonrob/email-oauth2-proxy"
 "Bug Tracker" = "https://github.com/simonrob/email-oauth2-proxy/issues"
 
-[tool.setuptools_scm]
+[tool.setuptools.dynamic]
+version = { attr = "emailproxy.__package_version__" }
