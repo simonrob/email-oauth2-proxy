@@ -50,7 +50,7 @@ with warnings.catch_warnings():
     import asyncore
 
 # for encrypting/decrypting the locally-stored credentials
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -461,8 +461,8 @@ class AppConfig:
     _PARSER_LOCK = threading.Lock()
 
     # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
-    _CACHED_OPTION_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token', 'last_activity',
-                           'client_secret_encrypted']
+    _CACHED_OPTION_KEYS = ['access_token', 'access_token_expiry', 'client_secret_encrypted', 'last_activity',
+                           'refresh_token', 'token_salt', 'token_iterations']
 
     # additional cache stores may be implemented by extending CacheStore and adding a prefix entry in this dict
     _EXTERNAL_CACHE_STORES = {'aws:': AWSSecretsManagerCacheStore}
@@ -570,34 +570,82 @@ class AppConfig:
             Log.error('Error saving state to cache store file at', cache_store_identifier, '- is the file writable?')
 
 
-class OAuth2Helper:
-    class TokenRefreshError(Exception):
-        pass
+class Cryptographer:
+    ITERATIONS = 870000  # taken from cryptography's suggestion of using Django's defaults
+    LEGACY_ITERATIONS = 100000
 
-    @staticmethod
-    def get_encryption_info(config, username, password):
-        """Returns a tuple of the fernet encrypter/decrypter and the random salt used in base64. This fernet is used to
-        store sensitive information for this account, including any stored tokens."""
-        token_salt = config.get(username, 'token_salt', fallback=None)
-        decoded_salt = None
+    def __init__(self, config, username, password):
+        """Creates a cryptographer which allows encrypting and decrypting sensitive information for this account,
+        including any stored tokens."""
+        self._salt = None
 
         # try to base64 decode the existing salt
+        token_salt = config.get(username, 'token_salt', fallback=None)
         if token_salt:
             try:
-                decoded_salt = base64.b64decode(token_salt.encode('ascii'))  # catch incorrect third-party proxy guide
+                self._salt = base64.b64decode(token_salt.encode('ascii'))  # catch incorrect third-party proxy guide
             except (binascii.Error, UnicodeError):
                 Log.info('%s: Invalid `token_salt` value found in config file entry for account %s - this value is not '
                          'intended to be manually created; generating new `token_salt`' % (APP_NAME, username))
 
         # generate a new salt if the salt cannot be decoded or this is the initial run
-        if not decoded_salt:
-            decoded_salt = os.urandom(16)
-            token_salt = base64.b64encode(decoded_salt).decode('ascii')
+        if not self._salt:
+            self._salt = os.urandom(16)
 
-        # generate encrypter/decrypter based on password and random salt
-        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=decoded_salt, iterations=100000,
-                                             backend=default_backend())
-        return (Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8')))), token_salt)
+        # try to read the user configured token iterations
+        try:
+            iterations = int(config.get(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS))
+        except ValueError:
+            iterations = self.LEGACY_ITERATIONS
+
+        # the first fernet is the primary fernet so sort the iterations count descending
+        self._iterations_options = sorted({self.ITERATIONS, iterations, self.LEGACY_ITERATIONS}, reverse=True)
+
+        # generate encrypter/decrypter based on the password and a random salt
+        password_bytes = password.encode('utf-8')
+        self._fernets = [
+            Fernet(base64.urlsafe_b64encode(
+                PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self._salt, iterations=iterations,
+                           backend=default_backend()).derive(password_bytes)))
+            for iterations in self._iterations_options
+        ]
+        self.fernet = MultiFernet(self._fernets)
+
+    @property
+    def salt(self):
+        return base64.b64encode(self._salt).decode('ascii')
+
+    @property
+    def iterations(self):
+        return self._iterations_options[0]
+
+    def encrypt(self, value):
+        return self.fernet.encrypt(value.encode('utf-8')).decode('utf-8')
+
+    def decrypt(self, value):
+        return self.fernet.decrypt(value.encode('utf-8')).decode('utf-8')
+
+    def requires_rotation(self, value):
+        try:
+            # if the first fernet works, everything is up to date
+            self._fernets[0].decrypt(value.encode('utf-8'))
+            return False
+        except InvalidToken:
+            try:
+                # check to see if any fernet can decrypt the value
+                self.decrypt(value)
+            except InvalidToken:
+                return False
+
+            return True
+
+    def rotate(self, value):
+        return self.fernet.rotate(value.encode('utf-8')).decode('utf-8')
+
+
+class OAuth2Helper:
+    class TokenRefreshError(Exception):
+        pass
 
     @staticmethod
     def get_oauth2_credentials(username, password, reload_remote_accounts=True):
@@ -666,25 +714,37 @@ class OAuth2Helper:
             AppConfig.unload()
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
-        fernet, token_salt = OAuth2Helper.get_encryption_info(config, username, password)
+        cryptographer = Cryptographer(config, username, password)
+        rotatable_values = {
+            'access_token': access_token,
+            'client_secret_encrypted': client_secret_encrypted,
+            'refresh_token': refresh_token,
+        }
+        if any(value and cryptographer.requires_rotation(value) for value in rotatable_values.values()):
+            Log.info('Rotating stored secrets with new cryptographic parameters.')
+            for key, value in rotatable_values.items():
+                if value:
+                    config.set(username, key, cryptographer.rotate(value))
+
+            config.set(username, 'token_iterations', str(cryptographer.iterations))
+            AppConfig.save()
 
         try:
             # if both secret values are present we use the unencrypted version (as it may have been user-edited)
             if client_secret_encrypted and not client_secret:
-                client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
+                client_secret = cryptographer.decrypt(client_secret_encrypted)
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
-                                                                            OAuth2Helper.decrypt(fernet, refresh_token))
+                                                                            cryptographer.decrypt(refresh_token))
 
                         access_token = response['access_token']
-                        config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
+                        config.set(username, 'access_token', cryptographer.encrypt(access_token))
                         config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
                         if 'refresh_token' in response:
-                            config.set(username, 'refresh_token',
-                                       OAuth2Helper.encrypt(fernet, response['refresh_token']))
+                            config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                         AppConfig.save()
 
                     else:
@@ -695,7 +755,7 @@ class OAuth2Helper:
                         # very infrequently, we don't add the extra complexity for just 10 extra minutes of token life)
                         access_token = None  # avoid trying invalid (or soon to be) tokens
                 else:
-                    access_token = OAuth2Helper.decrypt(fernet, access_token)
+                    access_token = cryptographer.decrypt(access_token)
 
             if not access_token:
                 auth_result = None
@@ -722,12 +782,13 @@ class OAuth2Helper:
                 if username not in config.sections():
                     config.add_section(username)  # in catch-all mode the section may not yet exist
                     REQUEST_QUEUE.put(MENU_UPDATE)  # make sure the menu shows the newly-added account
-                config.set(username, 'token_salt', token_salt)
-                config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
+                config.set(username, 'token_salt', cryptographer.salt)
+                config.set(username, 'token_iterations', str(cryptographer.iterations))
+                config.set(username, 'access_token', cryptographer.encrypt(access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
 
                 if 'refresh_token' in response:
-                    config.set(username, 'refresh_token', OAuth2Helper.encrypt(fernet, response['refresh_token']))
+                    config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                 elif permission_url:  # ignore this situation with client credentials flow - it is expected
                     Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
                              'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
@@ -736,7 +797,7 @@ class OAuth2Helper:
                     if client_secret:
                         # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when using
                         # incompatible `encrypt_client_secret_on_first_use` and `allow_catch_all_accounts` options
-                        config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
+                        config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
                         config.remove_option(username, 'client_secret')
 
                 AppConfig.save()
@@ -787,14 +848,6 @@ class OAuth2Helper:
             Log.info('Caught exception while requesting OAuth 2.0 credentials for %s:' % username, Log.error_string(e))
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
-
-    @staticmethod
-    def encrypt(cryptographer, byte_input):
-        return cryptographer.encrypt(byte_input.encode('utf-8')).decode('utf-8')
-
-    @staticmethod
-    def decrypt(cryptographer, byte_input):
-        return cryptographer.decrypt(byte_input.encode('utf-8')).decode('utf-8')
 
     @staticmethod
     def oauth2_url_escape(text):
