@@ -55,60 +55,71 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# for macOS-specific unified logging
-if sys.platform == 'darwin':
-    # pyoslog *is* present; see youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
-    # noinspection PyPackageRequirements
-    import pyoslog
-
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-no_gui_parser = argparse.ArgumentParser(add_help=False)
-no_gui_parser.add_argument('--no-gui', action='store_true')
-no_gui_parser.add_argument('--external-auth', action='store_true')
-no_gui_args = no_gui_parser.parse_known_args()[0]
-if not no_gui_args.no_gui:
+has_gui_requirements = True
+
+try:
+    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+except ImportError:
+    has_gui_requirements = False
+
+try:
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', DeprecationWarning)
         # noinspection PyDeprecation
         import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
+except ImportError:
+    has_gui_requirements = False
+
+try:
     import pystray  # the menu bar/taskbar GUI
-    import timeago  # the last authenticated activity hint
-    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+except ImportError:
+    has_gui_requirements = False
 
-    # noinspection PyPackageRequirements
-    import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
 
-    # for macOS-specific functionality
-    if sys.platform == 'darwin':
-        # noinspection PyPackageRequirements
-        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
-        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
-        import SystemConfiguration  # network availability monitoring
-
-else:
-    # dummy implementations to allow use regardless of whether pystray or AppKit are available
-    # noinspection PyPep8Naming
+    # dummy implementation allows initialization to complete
     class pystray:
         class Icon:
             pass
 
+try:
+    import timeago  # the last authenticated activity hint
+except ImportError:
+    has_gui_requirements = False
 
-    class AppKit:
-        class NSObject:
-            pass
+try:
+    # noinspection PyPackageRequirements
+    import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
+except ImportError:
+    has_gui_requirements = False
+
+# for macOS-specific functionality
+if sys.platform == 'darwin':
+    try:
+        # noinspection PyPackageRequirements
+        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
+    except ImportError:
+        has_gui_requirements = False
 
 
-    if no_gui_args.external_auth:
-        try:
-            # prompt_toolkit is a recent dependency addition that is only required in no-GUI external authorisation
-            # mode, but may not be present if only the proxy script itself has been updated
-            import prompt_toolkit
-        except ModuleNotFoundError:
-            sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in `--no-gui` '
-                     'mode. Please run `python -m pip install -r requirements-no-gui.txt`')
-del no_gui_parser
-del no_gui_args
+        # dummy implementation allows initialization to complete
+        class AppKit:
+            class NSObject:
+                pass
+
+
+    try:
+        # noinspection PyPackageRequirements
+        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+    except ImportError:
+        has_gui_requirements = False
+
+    try:
+        # noinspection PyPackageRequirements
+        import SystemConfiguration  # network availability monitoring
+    except ImportError:
+        has_gui_requirements = False
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -209,8 +220,8 @@ class Log:
     _LOGGER = None
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
+    _MACOS_USE_SYSLOG = False
     _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
-    _MACOS_USE_SYSLOG = not pyoslog.is_supported() if sys.platform == 'darwin' else False
 
     @staticmethod
     def initialise(log_file=None):
@@ -221,7 +232,15 @@ class Log:
                                                            os.path.realpath(__file__)), APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
+        # for macOS-specific unified logging
         elif sys.platform == 'darwin':
+            # pyoslog *is* present;
+            # see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
+            # noinspection PyPackageRequirements
+            import pyoslog
+
+            Log._MACOS_USE_SYSLOG = not pyoslog.is_supported()
+
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
                 handler = logging.handlers.SysLogHandler(address='/var/run/syslog')
                 handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
@@ -2184,14 +2203,14 @@ if sys.platform == 'darwin':
 class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
-    def __init__(self):
+    def __init__(self, args=None):
         global CONFIG_FILE_PATH, CACHE_STORE
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
                                                      'applications, scripts or any other email use-cases that don\'t '
                                                      'support this authentication method.' % APP_NAME, add_help=False,
                                          epilog='Full readme and guide: https://github.com/simonrob/email-oauth2-proxy')
         group_gui = parser.add_argument_group(title='appearance')
-        group_gui.add_argument('--no-gui', action='store_true',
+        group_gui.add_argument('--no-gui', action='store_false', dest='gui', default=True,
                                help='start the proxy without a menu bar icon (note: account authorisation requests '
                                     'will fail unless a pre-authorised `--config-file` is used, or you use '
                                     '`--external-auth` or `--local-server-auth` and monitor log/terminal output)')
@@ -2222,7 +2241,20 @@ class App:
                                  help='show the proxy\'s version string and exit')
         group_debug.add_argument('-h', '--help', action='help', help='show this help message and exit')
 
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(args)
+
+        if self.args.external_auth:
+            try:
+                # prompt_toolkit is a recent dependency addition that is only required in no-GUI external authorisation
+                # mode, but may not be present if only the proxy script itself has been updated
+                import prompt_toolkit
+            except ImportError:
+                sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in '
+                         '`--no-gui` mode. Please run `python -m pip install -r requirements-no-gui.txt`')
+
+        if self.args.gui and not has_gui_requirements:
+            sys.exit('GUI requirements are missing - did you mean to run in --no-gui mode? Otherwise, please run '
+                     '`python -m pip install -r requirements.txt`')
 
         Log.initialise(self.args.log_file)
         self.toggle_debug(self.args.debug, log_message=False)
@@ -2239,10 +2271,7 @@ class App:
 
         self.init_platforms()
 
-        if self.args.no_gui:
-            self.icon = None
-            self.post_create(None)
-        else:
+        if self.args.gui:
             self.icon = self.create_icon()
             try:
                 self.icon.run(self.post_create)
@@ -2251,11 +2280,14 @@ class App:
                 self.exit(None)
                 # noinspection PyProtectedMember
                 self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
+        else:
+            self.icon = None
+            self.post_create(None)
 
     # PyAttributeOutsideInit inspection suppressed because init_platforms() is itself called from __init__()
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
-        if sys.platform == 'darwin' and not self.args.no_gui:
+        if sys.platform == 'darwin' and self.args.gui:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -2974,7 +3006,7 @@ class App:
                                 data['username'])
                     data['local_server_auth'] = True
                     RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
-                elif self.args.external_auth and self.args.no_gui:
+                elif self.args.external_auth and not self.args.gui:
                     if sys.stdin and sys.stdin.isatty():
                         self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
                                               '%s' % data['username'])
@@ -3013,7 +3045,7 @@ class App:
 
         AppConfig.save()
 
-        if sys.platform == 'darwin' and not self.args.no_gui:
+        if sys.platform == 'darwin' and self.args.gui:
             # noinspection PyUnresolvedReferences
             SystemConfiguration.SCNetworkReachabilityUnscheduleFromRunLoop(self.macos_reachability_target,
                                                                            SystemConfiguration.CFRunLoopGetCurrent(),
@@ -3043,7 +3075,7 @@ class App:
             restart_callback()
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
-        if sys.platform == 'darwin' and not self.args.no_gui and self.macos_unload_plist_on_exit:
+        if sys.platform == 'darwin' and self.args.gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
 
 
