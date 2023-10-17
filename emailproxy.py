@@ -594,11 +594,12 @@ class Cryptographer:
 
         # try to read the user configured token iterations
         try:
-            iterations = int(config.get(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS))
+            iterations = config.getint(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS)
         except ValueError:
             iterations = self.LEGACY_ITERATIONS
 
-        # the first fernet is the primary fernet so sort the iterations count descending
+        # with MultiFernet each fernet is tried in order to decrypt a value, but encryption always uses the first fernet
+        # so sort the iterations count descending.
         self._iterations_options = sorted({self.ITERATIONS, iterations, self.LEGACY_ITERATIONS}, reverse=True)
 
         # generate encrypter/decrypter based on the password and a random salt
