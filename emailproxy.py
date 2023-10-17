@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-17'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -571,12 +571,12 @@ class AppConfig:
 
 
 class Cryptographer:
-    ITERATIONS = 870000  # taken from cryptography's suggestion of using Django's defaults
-    LEGACY_ITERATIONS = 100000  # fallback used when the config file does not specify the iteration count
+    ITERATIONS = 870_000  # taken from cryptography's suggestion of using Django's defaults
+    LEGACY_ITERATIONS = 100_000  # fallback when the iteration count is not in the config file (versions < 2023-10-17)
 
     def __init__(self, config, username, password):
         """Creates a cryptographer which allows encrypting and decrypting sensitive information for this account,
-        including any stored tokens."""
+        (such as stored tokens), and also supports increasing the encryption/decryption iterations (i.e., strength)"""
         self._salt = None
 
         # try to base64 decode the existing salt
@@ -592,22 +592,18 @@ class Cryptographer:
         if not self._salt:
             self._salt = os.urandom(16)
 
-        # try to read the user configured token iterations
-        try:
-            iterations = config.getint(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS)
-        except ValueError:
-            iterations = self.LEGACY_ITERATIONS
+        # the iteration count is stored with the credentials, so could if required be user-edited (see PR #198 comments)
+        iterations = config.getint(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS)
 
         # with MultiFernet each fernet is tried in order to decrypt a value, but encryption always uses the first fernet
-        # so sort the iterations count descending.
+        # so sort the iterations count descending (i.e., use the best available encryption)
         self._iterations_options = sorted({self.ITERATIONS, iterations, self.LEGACY_ITERATIONS}, reverse=True)
 
-        # generate encrypter/decrypter based on the password and a random salt
-        password_bytes = password.encode('utf-8')
+        # generate encrypter/decrypter based on the password and salt
         self._fernets = [
             Fernet(base64.urlsafe_b64encode(
                 PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self._salt, iterations=iterations,
-                           backend=default_backend()).derive(password_bytes)))
+                           backend=default_backend()).derive(password.encode('utf-8'))))
             for iterations in self._iterations_options
         ]
         self.fernet = MultiFernet(self._fernets)
@@ -628,17 +624,16 @@ class Cryptographer:
 
     def requires_rotation(self, value):
         try:
-            # if the first fernet works, everything is up to date
+            # if the first fernet works, everything is up-to-date
             self._fernets[0].decrypt(value.encode('utf-8'))
             return False
         except InvalidToken:
             try:
-                # check to see if any fernet can decrypt the value
+                # check to see if any fernet can decrypt the value - if so we can upgrade the encryption strength
                 self.decrypt(value)
+                return True
             except InvalidToken:
                 return False
-
-            return True
 
     def rotate(self, value):
         return self.fernet.rotate(value.encode('utf-8')).decode('utf-8')
