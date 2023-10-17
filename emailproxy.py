@@ -572,7 +572,7 @@ class AppConfig:
 
 class Cryptographer:
     ITERATIONS = 870000  # taken from cryptography's suggestion of using Django's defaults
-    LEGACY_ITERATIONS = 100000
+    LEGACY_ITERATIONS = 100000  # fallback used when the config file does not specify the iteration count
 
     def __init__(self, config, username, password):
         """Creates a cryptographer which allows encrypting and decrypting sensitive information for this account,
