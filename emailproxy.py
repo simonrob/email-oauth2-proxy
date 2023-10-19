@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-09-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-19'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -126,6 +126,7 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
     J6Sp0urC5fCken5STr0KDoUlyhjVd4nxSUvq3tCftEn8r2ro+mxUDIaCMQmQrGZGHmi53tAT3rPGH1e3qF0p9w7LtcohwuyvnRxWZ8sZUej6WvlhXSk1
     7k+POJ1iR73N/+w2xN0f4+GJcHtfqoWzgfi6cuZscC54lSq3SbN1tmzC4MXtcwN/zOC78r9BIfNc3M='''  # TTF ('e') -> zlib -> base64
 
+CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
@@ -1027,8 +1028,8 @@ class OAuth2Helper:
 
 
 class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
-    def __init__(self, connection=None, socket_map=None):
-        asyncore.dispatcher_with_send.__init__(self, sock=connection, map=socket_map)
+    def __init__(self, connection_socket=None, socket_map=None):
+        asyncore.dispatcher_with_send.__init__(self, sock=connection_socket, map=socket_map)
         self.ssl_handshake_errors = (ssl.SSLWantReadError, ssl.SSLWantWriteError,
                                      ssl.SSLEOFError, ssl.SSLZeroReturnError)
         self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self._reset()
@@ -1153,18 +1154,18 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     """The base client-side connection that is subclassed to handle IMAP/POP/SMTP client interaction (note that there
     is some protocol-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
 
-    def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
-                 custom_configuration):
-        SSLAsyncoreDispatcher.__init__(self, connection, socket_map)
+    def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
+        SSLAsyncoreDispatcher.__init__(self, connection_socket=connection_socket, socket_map=socket_map)
         self.receive_buffer = b''
         self.proxy_type = proxy_type
-        self.connection_info = connection_info
-        self.server_connection = server_connection
-        self.local_address = proxy_parent.local_address
-        self.server_address = server_connection.server_address
+        self.server_connection = None
         self.proxy_parent = proxy_parent
+        self.local_address = proxy_parent.local_address
+        self.server_address = proxy_parent.server_address
         self.custom_configuration = custom_configuration
         self.has_plugins = len(self.custom_configuration['plugins']) > 0
+        self.debug_address_string = '%s-{%s}-%s' % tuple(map(Log.format_host_port, (
+            connection_socket.getpeername(), connection_socket.getsockname(), self.server_address)))
 
         self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
@@ -1173,11 +1174,11 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             bool(custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']))
 
     def info_string(self):
-        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
-            self.server_address)) if Log.get_level() == logging.DEBUG else ''
+        debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
+            Log.format_host_port(self.local_address)
         account = '; %s' % self.server_connection.authenticated_username if \
             self.server_connection and self.server_connection.authenticated_username else ''
-        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
+        return '%s (%s%s)' % (self.proxy_type, debug_string, account)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1234,7 +1235,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                     log_data = re.sub(b'(%s)?( )?(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
                                       br'\1\2\3\4 \5 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
 
-                Log.debug(self.info_string(), '-->', log_data)
+                Log.debug(self.info_string(), '-->', log_data if CENSOR_CREDENTIALS else line)
                 try:
                     self.process_data(line)
                 except AttributeError:  # AttributeError("'NoneType' object has no attribute 'username'"), etc
@@ -1283,9 +1284,8 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
     """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth 2.0 SASL"""
 
-    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('IMAP', connection, socket_map, connection_info, server_connection, proxy_parent,
-                         custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('IMAP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
@@ -1413,9 +1413,8 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
         XOAUTH2_AWAITING_CONFIRMATION = 5
         XOAUTH2_CREDENTIALS_SENT = 6
 
-    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('POP', connection, socket_map, connection_info, server_connection, proxy_parent,
-                         custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('POP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.connection_state = self.STATE.PENDING
 
     def process_data(self, byte_data, censor_server_log=False):
@@ -1492,9 +1491,8 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         XOAUTH2_AWAITING_CONFIRMATION = 6
         XOAUTH2_CREDENTIALS_SENT = 7
 
-    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('SMTP', connection, socket_map, connection_info, server_connection, proxy_parent,
-                         custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('SMTP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.connection_state = self.STATE.PENDING
 
     def process_data(self, byte_data, censor_server_log=False):
@@ -1569,17 +1567,18 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     """The base server-side connection that is subclassed to handle IMAP/POP/SMTP server interaction"""
 
-    def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
+    def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
         SSLAsyncoreDispatcher.__init__(self, socket_map=socket_map)  # note: establish connection later due to STARTTLS
         self.receive_buffer = b''
         self.proxy_type = proxy_type
-        self.connection_info = connection_info
         self.client_connection = None
-        self.local_address = proxy_parent.local_address
-        self.server_address = server_address
         self.proxy_parent = proxy_parent
+        self.local_address = proxy_parent.local_address
+        self.server_address = proxy_parent.server_address
         self.custom_configuration = custom_configuration
         self.has_plugins = len(self.custom_configuration['plugins']) > 0
+        self.debug_address_string = '%s-{%s}-%s' % tuple(map(Log.format_host_port, (
+            connection_socket.getpeername(), connection_socket.getsockname(), self.server_address)))
 
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
@@ -1594,10 +1593,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             return
 
     def info_string(self):
-        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
-            self.server_address)) if Log.get_level() == logging.DEBUG else ''
+        debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
+            Log.format_host_port(self.local_address)
         account = '; %s' % self.authenticated_username if self.authenticated_username else ''
-        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
+        return '%s (%s%s)' % (self.proxy_type, debug_string, account)
 
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
@@ -1683,8 +1682,9 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             self.close()
 
     def send(self, byte_data, censor_log=False):
-        if not self.client_connection.authenticated or self.has_plugins:  # after auth, only plugin edits require logs
-            Log.debug(self.info_string(), '    -->', b'%s\r\n' % CENSOR_MESSAGE if censor_log else byte_data)
+        if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
+            Log.debug(self.info_string(), '    -->',
+                      b'%s\r\n' % CENSOR_MESSAGE if CENSOR_CREDENTIALS and censor_log else byte_data)
         return super().send(byte_data)
 
     def handle_error(self):
@@ -1732,8 +1732,8 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
     # IMAP: https://tools.ietf.org/html/rfc3501
     # IMAP SASL-IR: https://tools.ietf.org/html/rfc4959
-    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        super().__init__('IMAP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('IMAP', connection_socket, socket_map, proxy_parent, custom_configuration)
 
     def process_data(self, byte_data):
         # note: there is no reason why IMAP STARTTLS (https://tools.ietf.org/html/rfc2595) couldn't be supported here
@@ -1774,8 +1774,8 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
     # POP3 CAPA: https://tools.ietf.org/html/rfc2449
     # POP3 AUTH: https://tools.ietf.org/html/rfc1734
     # POP3 SASL: https://tools.ietf.org/html/rfc5034
-    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        super().__init__('POP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('POP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.capa = []
         self.username = None
         self.password = None
@@ -1859,8 +1859,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         NEGOTIATING = 2
         COMPLETE = 3
 
-    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        super().__init__('SMTP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('SMTP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.ehlo = None
         if self.custom_configuration['starttls']:
             self.starttls_state = self.STARTTLS.PENDING
@@ -1968,11 +1968,12 @@ class OAuth2Proxy(asyncore.dispatcher):
         else:
             Log.debug('Ignoring incoming connection to', self.info_string(), '- no connection information')
 
-    def handle_accepted(self, connection, address):
+    def handle_accepted(self, connection_socket, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             new_server_connection = None
             try:
-                Log.debug('Accepting new connection to', self.info_string(), 'via', connection.getpeername())
+                Log.debug('Accepting new connection to', self.info_string(), 'from',
+                          Log.format_host_port(connection_socket.getpeername()))
 
                 configuration = self.custom_configuration.copy()  # each connection needs its own plugin instance
                 configuration['plugins'] = []
@@ -1985,11 +1986,11 @@ class OAuth2Proxy(asyncore.dispatcher):
 
                 socket_map = {}
                 server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
-                new_server_connection = server_class(socket_map, self.server_address, address, self, configuration)
+                new_server_connection = server_class(connection_socket, socket_map, self, configuration)
                 client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
-                new_client_connection = client_class(connection, socket_map, address, new_server_connection, self,
-                                                     configuration)
+                new_client_connection = client_class(connection_socket, socket_map, self, configuration)
                 new_server_connection.client_connection = new_client_connection
+                new_client_connection.server_connection = new_server_connection
                 self.client_connections.append(new_client_connection)
 
                 for i, plugin in enumerate(configuration['plugins']):
@@ -2007,11 +2008,11 @@ class OAuth2Proxy(asyncore.dispatcher):
                 error_text = '%s encountered a TypeError - did you specify an incorrect plugin parameter? %s' % (
                     self.info_string(), Log.error_string(e))
                 Log.error(error_text)
-                connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
-                connection.close()
+                connection_socket.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
+                connection_socket.close()
 
             except Exception:
-                connection.close()
+                connection_socket.close()
                 if new_server_connection:
                     new_server_connection.close()
                 raise
@@ -2019,8 +2020,8 @@ class OAuth2Proxy(asyncore.dispatcher):
             error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
                 self.info_string(), MAX_CONNECTIONS)
             Log.error(error_text)
-            connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
-            connection.close()
+            connection_socket.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
+            connection_socket.close()
 
     @staticmethod
     def run_server(client, socket_map):
@@ -2288,8 +2289,7 @@ class App:
         self.args = parser.parse_args()
 
         Log.initialise(self.args.log_file)
-        if self.args.debug:
-            Log.set_level(logging.DEBUG)
+        self.toggle_debug(self.args.debug, log_message=False)
 
         if self.args.config_file:
             CONFIG_FILE_PATH = CACHE_STORE = self.args.config_file
@@ -2363,6 +2363,7 @@ class App:
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda _signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda _signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGHUP, lambda _signum: self.load_and_start_servers(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGUSR1, lambda _: self.toggle_debug(Log.get_level() == logging.INFO))
 
         else:
             # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
@@ -2374,6 +2375,10 @@ class App:
                 # allow config file reloading without having to stop/start - e.g.: pkill -SIGHUP -f emailproxy.py
                 # (we don't use linux_restart() here as it exits then uses nohup to restart, which may not be desirable)
                 signal.signal(signal.SIGHUP, lambda _signum, _frame: self.load_and_start_servers(self.icon))
+            if hasattr(signal, 'SIGUSR1'):
+                # use SIGUSR1 as a toggle for debug mode (e.g.: pkill -USR1 -f emailproxy.py) - please note that the
+                # proxy's handling of this signal may change in future if other actions are seen as more suitable
+                signal.signal(signal.SIGUSR1, lambda _signum, _fr: self.toggle_debug(Log.get_level() == logging.INFO))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2406,7 +2411,8 @@ class App:
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Start at login', self.toggle_start_at_login, checked=self.started_at_login),
-            pystray.MenuItem('Debug mode', self.toggle_debug, checked=lambda _: Log.get_level() == logging.DEBUG),
+            pystray.MenuItem('Debug mode', lambda _, item: self.toggle_debug(not item.checked),
+                             checked=lambda _: Log.get_level() == logging.DEBUG),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
 
@@ -2825,9 +2831,12 @@ class App:
 
         return False
 
-    @staticmethod
-    def toggle_debug(_, item):
-        Log.set_level(logging.INFO if item.checked else logging.DEBUG)
+    def toggle_debug(self, enable_debug_mode, log_message=True):
+        Log.set_level(logging.DEBUG if enable_debug_mode else logging.INFO)
+        if log_message:
+            Log.info('Setting debug mode:', Log.get_level() == logging.DEBUG)
+        if hasattr(self, 'icon') and self.icon:
+            self.icon.update_menu()
 
     # noinspection PyUnresolvedReferences
     def notify(self, title, text):
@@ -2875,7 +2884,9 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
+        Log.info('Initialising', APP_NAME,
+                 '(version %s)%s' % (__version__, ' in debug mode' if Log.get_level() == logging.DEBUG else ''),
+                 'from config file', CONFIG_FILE_PATH)
         if reload:
             AppConfig.unload()
         config = AppConfig.get()
