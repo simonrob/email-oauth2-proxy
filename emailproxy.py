@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-17'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-19'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -50,7 +50,7 @@ with warnings.catch_warnings():
     import asyncore
 
 # for encrypting/decrypting the locally-stored credentials
-from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+from cryptography.fernet import Fernet, MultiFernet, InvalidToken
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -461,8 +461,8 @@ class AppConfig:
     _PARSER_LOCK = threading.Lock()
 
     # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
-    _CACHED_OPTION_KEYS = ['access_token', 'access_token_expiry', 'client_secret_encrypted', 'last_activity',
-                           'refresh_token', 'token_salt', 'token_iterations']
+    _CACHED_OPTION_KEYS = ['access_token', 'access_token_expiry', 'refresh_token', 'token_salt', 'token_iterations',
+                           'client_secret_encrypted', 'last_activity']
 
     # additional cache stores may be implemented by extending CacheStore and adding a prefix entry in this dict
     _EXTERNAL_CACHE_STORES = {'aws:': AWSSecretsManagerCacheStore}
@@ -579,38 +579,34 @@ class Cryptographer:
         (such as stored tokens), and also supports increasing the encryption/decryption iterations (i.e., strength)"""
         self._salt = None
 
-        # try to base64 decode the existing salt
         token_salt = config.get(username, 'token_salt', fallback=None)
         if token_salt:
             try:
-                self._salt = base64.b64decode(token_salt.encode('ascii'))  # catch incorrect third-party proxy guide
+                self._salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
             except (binascii.Error, UnicodeError):
                 Log.info('%s: Invalid `token_salt` value found in config file entry for account %s - this value is not '
                          'intended to be manually created; generating new `token_salt`' % (APP_NAME, username))
 
-        # generate a new salt if the salt cannot be decoded or this is the initial run
         if not self._salt:
-            self._salt = os.urandom(16)
+            self._salt = os.urandom(16)  # either a failed decode or the initial run when no salt exists
 
         # the iteration count is stored with the credentials, so could if required be user-edited (see PR #198 comments)
         iterations = config.getint(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS)
 
-        # with MultiFernet each fernet is tried in order to decrypt a value, but encryption always uses the first fernet
-        # so sort the iterations count descending (i.e., use the best available encryption)
+        # with MultiFernet each fernet is tried in order to decrypt a value, but encryption always uses the first
+        # fernet, so sort unique iteration counts in descending order (i.e., use the best available encryption)
         self._iterations_options = sorted({self.ITERATIONS, iterations, self.LEGACY_ITERATIONS}, reverse=True)
 
         # generate encrypter/decrypter based on the password and salt
-        self._fernets = [
-            Fernet(base64.urlsafe_b64encode(
-                PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self._salt, iterations=iterations,
-                           backend=default_backend()).derive(password.encode('utf-8'))))
-            for iterations in self._iterations_options
-        ]
+        self._fernets = [Fernet(base64.urlsafe_b64encode(
+            PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self._salt, iterations=iterations,
+                       backend=default_backend()).derive(password.encode('utf-8')))) for iterations in
+            self._iterations_options]
         self.fernet = MultiFernet(self._fernets)
 
     @property
     def salt(self):
-        return base64.b64encode(self._salt).decode('ascii')
+        return base64.b64encode(self._salt).decode('utf-8')
 
     @property
     def iterations(self):
@@ -624,12 +620,10 @@ class Cryptographer:
 
     def requires_rotation(self, value):
         try:
-            # if the first fernet works, everything is up-to-date
-            self._fernets[0].decrypt(value.encode('utf-8'))
+            self._fernets[0].decrypt(value.encode('utf-8'))  # if the first fernet works, everything is up-to-date
             return False
         except InvalidToken:
-            try:
-                # check to see if any fernet can decrypt the value - if so we can upgrade the encryption strength
+            try:  # check to see if any fernet can decrypt the value - if so we can upgrade the encryption strength
                 self.decrypt(value)
                 return True
             except InvalidToken:
@@ -713,11 +707,11 @@ class OAuth2Helper:
         cryptographer = Cryptographer(config, username, password)
         rotatable_values = {
             'access_token': access_token,
-            'client_secret_encrypted': client_secret_encrypted,
             'refresh_token': refresh_token,
+            'client_secret_encrypted': client_secret_encrypted
         }
         if any(value and cryptographer.requires_rotation(value) for value in rotatable_values.values()):
-            Log.info('Rotating stored secrets with new cryptographic parameters.')
+            Log.info('Rotating stored secrets for account', username, 'to use new cryptographic parameters')
             for key, value in rotatable_values.items():
                 if value:
                     config.set(username, key, cryptographer.rotate(value))
@@ -812,6 +806,7 @@ class OAuth2Helper:
             if not has_access_token:
                 # if this is already a second failure, remove the refresh token as well, and force re-authentication
                 config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'token_iterations')
                 config.remove_option(username, 'refresh_token')
 
             AppConfig.save()
@@ -825,6 +820,7 @@ class OAuth2Helper:
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
                 config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'token_iterations')
                 config.remove_option(username, 'refresh_token')
                 AppConfig.save()
 
