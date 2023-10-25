@@ -20,30 +20,7 @@ classifiers = [
     "Topic :: Communications :: Email :: Post-Office :: POP3",
     "License :: OSI Approved :: Apache Software License",
 ]
-dependencies = [
-    "cryptography", # for encrypting cached account tokens
-    "pyasyncore; python_version >= '3.12'", # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
-    "pyoslog>=0.3.0; sys_platform == 'darwin'", # macOS only: output to unified logging
-    "prompt_toolkit" # required only if using the --external-auth option in --no-gui mode
-]
-dynamic = ["version"]
-
-[project.optional-dependencies]
-gui = [
-    "pillow", # to create the menu bar icon image from a TTF icon
-    "setuptools", # for pkg_resources (checking dependency versions)
-    "timeago", # for displaying the last authenticated activity hint
-    "pystray>=0.19.4", # force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)
-
-    # force pywebview 4.2.1+ to fix Windows issue with PyInstaller/pythonw (https://github.com/r0x0r/pywebview/issues/1086)
-    # and a macOS pre-Mojave crash when opening browser windows (https://github.com/r0x0r/pywebview/pull/1047),
-    # plus a missing macOS dependency issue introduced in 4.1 (https://github.com/r0x0r/pywebview/pull/1154)
-    "pywebview>=4.2.1", # - note that we could do, e.g., platform_release < "18" to allow Linux platforms more flexibility, but that seems over-the-top
-
-    # macOS: improve menu bar interaction, provide native notifications and handle system events
-    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
-    "pyobjc-framework-SystemConfiguration; sys_platform == 'darwin'"
-]
+dynamic = ["dependencies", "optional-dependencies", "version"]
 
 [project.scripts]
 emailproxy = "emailproxy:App"
@@ -53,4 +30,6 @@ emailproxy = "emailproxy:App"
 "Bug Tracker" = "https://github.com/simonrob/email-oauth2-proxy/issues"
 
 [tool.setuptools.dynamic]
+dependencies = { file = ["requirements-core.txt"] }
+optional-dependencies.gui = { file = ["requirements-gui.txt"] }
 version = { attr = "emailproxy.__package_version__" }
