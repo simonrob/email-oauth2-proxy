@@ -1,7 +1,7 @@
 # this file contains the proxy's core dependencies beyond inbuilt python packages
 # note that to use this file instead of the default requirements.txt you *must* pass the `--no-gui` option when starting
 # the proxy - see the script's readme for further details
-cryptography
+cryptography>=2.2
 
 # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
 pyasyncore; python_version >= '3.12'
