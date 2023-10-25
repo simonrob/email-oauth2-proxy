@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-25'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -59,67 +59,77 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
 has_gui_requirements = True
 
-try:
-    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
-except ImportError:
+
+def missing_gui_requirement(exception):
+    print('%s: %s' % (type(exception).__name__, exception))
+    global has_gui_requirements
     has_gui_requirements = False
 
-try:
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', DeprecationWarning)
-        # noinspection PyDeprecation
-        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
-except ImportError:
-    has_gui_requirements = False
 
 try:
     import pystray  # the menu bar/taskbar GUI
-except ImportError:
-    has_gui_requirements = False
+except ImportError as gui_requirement_import_error:
+    missing_gui_requirement(gui_requirement_import_error)
 
 
-    # dummy implementation allows initialization to complete
-    class pystray:
+    class DummyPystray:  # dummy implementation allows initialisation to complete
         class Icon:
             pass
 
-try:
-    import timeago  # the last authenticated activity hint
-except ImportError:
-    has_gui_requirements = False
+
+    pystray = DummyPystray  # this is just to avoid unignorable IntelliJ warnings about naming and spacing
 
 try:
-    # noinspection PyPackageRequirements
+    # noinspection PyUnresolvedReferences
+    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+except ImportError as gui_requirement_import_error:
+    missing_gui_requirement(gui_requirement_import_error)
+
+try:
+    # noinspection PyUnresolvedReferences
+    import timeago  # the last authenticated activity hint
+except ImportError as gui_requirement_import_error:
+    missing_gui_requirement(gui_requirement_import_error)
+
+try:
+    # noinspection PyUnresolvedReferences
     import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
-except ImportError:
-    has_gui_requirements = False
+except ImportError as gui_requirement_import_error:
+    missing_gui_requirement(gui_requirement_import_error)
+
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    try:
+        # noinspection PyDeprecation,PyUnresolvedReferences
+        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
+    except ImportError as gui_requirement_import_error:
+        missing_gui_requirement(gui_requirement_import_error)
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
     try:
+        # PyUnresolvedReferences; see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppression)
+        # noinspection PyPackageRequirements,PyUnresolvedReferences
+        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+    except ImportError as gui_requirement_import_error:
+        missing_gui_requirement(gui_requirement_import_error)
+
+    try:
+        # noinspection PyPackageRequirements,PyUnresolvedReferences
+        import SystemConfiguration  # network availability monitoring
+    except ImportError as gui_requirement_import_error:
+        missing_gui_requirement(gui_requirement_import_error)
+
+    try:
         # noinspection PyPackageRequirements
         import AppKit  # retina icon, menu update on click, native notifications and receiving system events
-    except ImportError:
-        has_gui_requirements = False
+    except ImportError as gui_requirement_import_error:
+        missing_gui_requirement(gui_requirement_import_error)
 
 
-        # dummy implementation allows initialization to complete
-        class AppKit:
+        class AppKit:  # dummy implementation allows initialisation to complete
             class NSObject:
                 pass
-
-
-    try:
-        # noinspection PyPackageRequirements
-        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
-    except ImportError:
-        has_gui_requirements = False
-
-    try:
-        # noinspection PyPackageRequirements
-        import SystemConfiguration  # network availability monitoring
-    except ImportError:
-        has_gui_requirements = False
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -220,8 +230,8 @@ class Log:
     _LOGGER = None
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
-    _MACOS_USE_SYSLOG = False
     _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
+    _MACOS_USE_SYSLOG = False
 
     @staticmethod
     def initialise(log_file=None):
@@ -232,27 +242,25 @@ class Log:
                                                            os.path.realpath(__file__)), APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
-        # for macOS-specific unified logging
+
         elif sys.platform == 'darwin':
-            # pyoslog *is* present;
-            # see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
             # noinspection PyPackageRequirements
-            import pyoslog
-
+            import pyoslog  # for macOS-specific unified logging
             Log._MACOS_USE_SYSLOG = not pyoslog.is_supported()
-
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
                 handler = logging.handlers.SysLogHandler(address='/var/run/syslog')
                 handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:  # unified logging in 10.12+
                 handler = pyoslog.Handler()
                 handler.setSubsystem(APP_PACKAGE)
+
         else:
             if os.path.exists('/dev/log'):
                 handler = logging.handlers.SysLogHandler(address='/dev/log')
                 handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:
                 handler = logging.StreamHandler()
+
         Log._HANDLER = handler
         Log._LOGGER.addHandler(Log._HANDLER)
         Log.set_level(logging.INFO)
@@ -2210,7 +2218,7 @@ class App:
                                                      'support this authentication method.' % APP_NAME, add_help=False,
                                          epilog='Full readme and guide: https://github.com/simonrob/email-oauth2-proxy')
         group_gui = parser.add_argument_group(title='appearance')
-        group_gui.add_argument('--no-gui', action='store_false', dest='gui', default=True,
+        group_gui.add_argument('--no-gui', action='store_false', dest='gui',
                                help='start the proxy without a menu bar icon (note: account authorisation requests '
                                     'will fail unless a pre-authorised `--config-file` is used, or you use '
                                     '`--external-auth` or `--local-server-auth` and monitor log/terminal output)')
@@ -2243,17 +2251,17 @@ class App:
 
         self.args = parser.parse_args(args)
 
-        if self.args.external_auth:
+        if not self.args.gui and self.args.external_auth:
             try:
-                # prompt_toolkit is a recent dependency addition that is only required in no-GUI external authorisation
-                # mode, but may not be present if only the proxy script itself has been updated
+                # prompt_toolkit is a relatively recent dependency addition that is only required in no-GUI external
+                # authorisation mode, but may not be present if only the proxy script itself has been updated
                 import prompt_toolkit
             except ImportError:
                 sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in '
                          '`--no-gui` mode. Please run `python -m pip install -r requirements-no-gui.txt`')
 
         if self.args.gui and not has_gui_requirements:
-            sys.exit('GUI requirements are missing - did you mean to run in --no-gui mode? Otherwise, please run '
+            sys.exit('GUI requirements are missing - did you mean to run in `--no-gui` mode? Otherwise, please run '
                      '`python -m pip install -r requirements.txt`')
 
         Log.initialise(self.args.log_file)
@@ -2921,6 +2929,7 @@ class App:
     @staticmethod
     def terminal_external_auth_input(prompt_session, prompt_stop_event, data):
         with contextlib.suppress(Exception):  # cancel any other prompts; thrown if there are none to cancel
+            # noinspection PyUnresolvedReferences
             prompt_toolkit.application.current.get_app().exit(exception=EOFError)
             time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
@@ -2972,6 +2981,7 @@ class App:
                 time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
     def terminal_external_auth_prompt(self, data):
+        # noinspection PyUnresolvedReferences
         prompt_session = prompt_toolkit.PromptSession()
         prompt_stop_event = threading.Event()
         threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
