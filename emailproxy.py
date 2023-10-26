@@ -3130,6 +3130,10 @@ class App:
                 proxy.stop()
 
         if icon:
+            # work around a pystray issue with removing the macOS status bar icon when started from a parent script
+            if sys.platform == 'darwin':
+                # noinspection PyProtectedMember
+                icon._status_item.button().setImage_(None)
             icon.stop()
 
         # for the 'Start at login' option we need a callback to restart the script the first time this preference is
@@ -3142,6 +3146,8 @@ class App:
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
         if sys.platform == 'darwin' and self.args.gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
+
+        EXITING = False  # to allow restarting when imported from parent scripts (or an interpreter)
 
 
 if __name__ == '__main__':
