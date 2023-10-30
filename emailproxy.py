@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-25'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-30'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -181,7 +181,6 @@ IMAP_CAPABILITY_MATCHER = re.compile(r'^\* (?:OK \[)?CAPABILITY .*$', flags=re.I
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
-WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 MENU_UPDATE = object()  # object to send to trigger a force-refresh of the GUI menu (new catch-all account added)
 
@@ -2331,6 +2330,7 @@ class App:
         self.authorisation_requests = []
 
         self.web_view_started = False
+        self.macos_web_view_queue = queue.Queue()  # authentication window events (macOS only)
 
         self.init_platforms()
 
@@ -2623,7 +2623,7 @@ class App:
                         forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
                         webview.start(gui=forced_gui, debug=Log.get_level() == logging.DEBUG)
                 else:
-                    WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
+                    self.macos_web_view_queue.put(request)  # future requests need to use the same thread
                 return
         self.notify(APP_NAME, 'There are no pending authorisation requests')
 
@@ -2673,7 +2673,7 @@ class App:
         dummy_window.hide()  # hidden=True (above) doesn't seem to work in all cases
 
         while True:
-            data = WEBVIEW_QUEUE.get()  # note: blocking call
+            data = self.macos_web_view_queue.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
             self.create_authorisation_window(data)
@@ -3118,9 +3118,9 @@ class App:
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
-        WEBVIEW_QUEUE.put(QUEUE_SENTINEL)
 
         if self.web_view_started:
+            self.macos_web_view_queue.put(QUEUE_SENTINEL)
             for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
                 window.show()
                 window.destroy()
