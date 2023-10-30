@@ -1,6 +1,5 @@
-# the standard way to install the proxy is `python -m pip install emailproxy` (i.e., directly from PyPI)
-# if you would instead like to install from requirements files, then you must use:
-# `python -m pip install -r requirements-core.txt -r requirements-gui.txt`
+# the standard way to install the proxy and dependencies is `python -m pip install emailproxy` (i.e., direct from PyPI)
+# to install requirements directly, use: `python -m pip install -r requirements-core.txt -r requirements-gui.txt`
 
 pillow  # to create the menu bar icon image from a TTF icon
 setuptools  # for pkg_resources (checking dependency versions)

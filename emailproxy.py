@@ -57,14 +57,12 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
-# where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-has_gui_requirements = True
+# where not having to install GUI-only requirements can be helpful - see the proxy's readme (the `--no-gui` option)
+MISSING_GUI_REQUIREMENTS = []
 
 
 def missing_gui_requirement(exception):
-    print('%s: %s' % (type(exception).__name__, exception))
-    global has_gui_requirements
-    has_gui_requirements = False
+    MISSING_GUI_REQUIREMENTS.append('%s: %s' % (type(exception).__name__, exception))
 
 
 try:
@@ -151,8 +149,10 @@ CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     script_path = '/'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
-CONFIG_FILE_PATH = CACHE_STORE = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
+script_path = os.getcwd() if __package__ is not None else os.path.dirname(script_path)  # for packaged version (PyPI)
+CONFIG_FILE_PATH = CACHE_STORE = os.path.join(script_path, '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
+del script_path
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
 
@@ -2313,11 +2313,13 @@ class App:
                 import prompt_toolkit
             except ImportError:
                 sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in '
-                         '`--no-gui` mode. Please run `python -m pip install -r requirements-no-gui.txt`')
+                         '`--no-gui` mode. Please run `python -m pip install -r requirements-core.txt`')
 
-        if self.args.gui and not has_gui_requirements:
+        if self.args.gui and len(MISSING_GUI_REQUIREMENTS) > 0:
+            for requirement in MISSING_GUI_REQUIREMENTS:
+                print(requirement)
             sys.exit('GUI requirements are missing - did you mean to run in `--no-gui` mode? Otherwise, please run '
-                     '`python -m pip install -r requirements.txt`')
+                     '`python -m pip install -r requirements-gui.txt`')
 
         Log.initialise(self.args.log_file)
         self.toggle_debug(self.args.debug, log_message=False)
