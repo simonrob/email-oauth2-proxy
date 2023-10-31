@@ -28,7 +28,7 @@ Begin by downloading the proxy via one of the following methods:
 <ol type="A">
   <li>Pick a <a href="https://github.com/simonrob/email-oauth2-proxy/releases/latest">pre-built release</a> for your platform (no installation needed); <i>or</i>,</li>
   <li>Install from <a href="https://pypi.org/project/emailproxy/">PyPI</a>: <code>python -m pip install emailproxy[gui]</code> to set up, then <code>python -m emailproxy</code> to run; <i>or</i>,</li>
-  <li>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a> (and star :-) this repository, then: <code>python -m pip install -r requirements-core.txt -r requirements-gui.txt</code> to install requirements, and <code>python emailproxy.py</code> to run</li>
+  <li>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a> (and star :-) the <a href="https://github.com/simonrob/email-oauth2-proxy/">GitHub repository</a>, then: <code>python -m pip install -r requirements-core.txt -r requirements-gui.txt</code> to install requirements, and <code>python emailproxy.py</code> to run</li>
 </ol>
 
 If you choose download option (A) or (B), you should also [download the sample `emailproxy.config` file](https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config) and place this into the directory you will run the proxy from.
@@ -225,12 +225,12 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 
 ## Advanced / experimental features
-The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins) has a semi-experimental new feature that enables the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
+The [plugins variant](https://github.com/simonrob/email-oauth2-proxy/tree/plugins) has a semi-experimental new feature that enables the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
 This allows a wide range of additional capabilities or triggers to be added the proxy.
 For example, the [IMAPIgnoreSentMessageUpload plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPIgnoreSentMessageUpload.py) intercepts any client commands to add emails to the IMAP sent messages mailbox, which resolves message duplication issues for servers that automatically do this when emails are received via SMTP (e.g., Office 365, Gmail, etc).
 The [IMAPCleanO365ATPLinks plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPCleanO365ATPLinks.py) restores links modified by Office 365 Advanced Threat Protection to their original URLs.
 The [SMTPBlackHole plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/SMTPBlackHole.py) gives the impression emails are being sent but actually silently discards them, which is useful for testing email sending tools.
-See the documentation and examples in this branch for further details, additional sample plugins and setup instructions.
+See the [documentation and examples](https://github.com/simonrob/email-oauth2-proxy/tree/plugins/plugins) for further details, additional sample plugins and setup instructions.
 
 
 ## Potential improvements (pull requests welcome)
@@ -238,7 +238,6 @@ See the documentation and examples in this branch for further details, additiona
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status; clickable notifications)
 - STARTTLS for IMAP/POP?
 - Python 2 support? (see [discussion](https://github.com/simonrob/email-oauth2-proxy/issues/38))
-- Releases packaged as .app/.exe etc?
 
 
 ## Related projects and alternatives

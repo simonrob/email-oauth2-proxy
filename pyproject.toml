@@ -12,13 +12,18 @@ readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 requires-python = ">=3.6"
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
     "Topic :: Communications :: Email",
     "Topic :: Communications :: Email :: Mail Transport Agents",
     "Topic :: Communications :: Email :: Post-Office",
     "Topic :: Communications :: Email :: Post-Office :: IMAP",
     "Topic :: Communications :: Email :: Post-Office :: POP3",
-    "License :: OSI Approved :: Apache Software License",
+    "Development Status :: 6 - Mature",
+    "License :: OSI Approved :: Apache Software License"
 ]
 dynamic = ["dependencies", "optional-dependencies", "version"]
 
