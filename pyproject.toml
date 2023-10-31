@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "pyasyncore", "cryptography", "pyoslog"] # core requirements are needed for version detection, which requires importing the script
+requires = ["setuptools>=61.0", "pyasyncore; python_version >= '3.12'", "cryptography"] # core requirements are needed for version detection, which requires importing the script
 build-backend = "setuptools.build_meta"
 
 [project]
