@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-30'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-10-31'  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -2014,8 +2014,8 @@ class OAuth2Proxy(asyncore.dispatcher):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             new_server_connection = None
             try:
-                Log.debug('Accepting new connection to', self.info_string(), 'from',
-                          Log.format_host_port(connection_socket.getpeername()))
+                Log.info('Accepting new connection from', Log.format_host_port(connection_socket.getpeername()),
+                         'to', self.info_string())
                 socket_map = {}
                 server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
                 new_server_connection = server_class(connection_socket, socket_map, self, self.custom_configuration)
