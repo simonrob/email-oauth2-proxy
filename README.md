@@ -10,7 +10,7 @@ The proxy works in the background with a menu bar/taskbar helper or as a system 
 
 ### Example use-cases
 - You need to use an Office 365 email account, but don't get on with Outlook.
-The email client you like doesn't support OAuth 2.0, which is mandatory [from January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437).
+The email client you like doesn't support OAuth 2.0, which became mandatory [in January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437).
 - You used to use Gmail via IMAP/POP/SMTP with your raw account credentials (i.e., your real password), but cannot do this now that Google has disabled this method, and don't want to use an [App Password](https://support.google.com/accounts/answer/185833) (or cannot enable this option).
 - You have an account already set up in an email client, and you need to switch it to OAuth 2.0 authentication.
 You can edit the server details, but the client forces you to delete and re-add the account to enable OAuth 2.0, and you don't want to do this.
@@ -23,27 +23,37 @@ For commercial support or feature requests, please also consider [sponsoring thi
 
 
 ## Getting started
-After cloning or [downloading](https://github.com/simonrob/email-oauth2-proxy/releases/latest) (and starring :-) this repository, start by editing the file `emailproxy.config` to add configuration details for each email server and account that you want to use with the proxy.
-[Guidance and example account configurations](emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](#oauth-20-client-credentials)).
+Begin by downloading the proxy via one of the following methods:
+
+<ol type="A">
+  <li>Pick a <a href="https://github.com/simonrob/email-oauth2-proxy/releases/latest">pre-built release</a> for your platform (no installation needed); <i>or</i>,</li>
+  <li>Install from <a href="https://pypi.org/project/emailproxy/">PyPI</a>: <code>python -m pip install emailproxy[gui]</code> to set up, then <code>python -m emailproxy</code> to run; <i>or</i>,</li>
+  <li>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a> (and star :-) the <a href="https://github.com/simonrob/email-oauth2-proxy/">GitHub repository</a>, then: <code>python -m pip install -r requirements-core.txt -r requirements-gui.txt</code> to install requirements, and <code>python emailproxy.py</code> to run</li>
+</ol>
+
+If you choose download option (A) or (B), you should also [download the sample `emailproxy.config` file](https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config) and place this into the directory you will run the proxy from.
+Next, edit the `emailproxy.config` file to add configuration details for each email server and account that you want to use with the proxy.
+[Guidance and example account configurations](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](https://github.com/simonrob/email-oauth2-proxy/#oauth-20-client-credentials)).
 You can remove details from the sample configuration file for services you don't use, or add additional ones for any other OAuth 2.0-authenticated IMAP/POP/SMTP servers you would like to use with the proxy.
 
-Next, from a terminal, install the script's requirements: `python -m pip install -r requirements.txt`, and start the proxy: `python emailproxy.py` – a menu bar/taskbar icon should appear.
-If instead of the icon you see an error in the terminal, it is likely that your system is missing dependencies for the `pywebview` or `pystray` packages.
-See the [dependencies and setup](#dependencies-and-setup) section below for help resolving this, and also the [advanced configuration](#advanced-configuration) section for additional options (including fully headless deployments and integration with a secrets manager).
+You can now start the proxy: depending on which installation option you chose, either open the application or use the appropriate run command listed above.
+A menu bar/taskbar icon should appear.
+If instead of the icon you see an error notification, it is likely that your system is missing dependencies for the `pywebview` or `pystray` packages.
+See the [dependencies and setup](https://github.com/simonrob/email-oauth2-proxy/#dependencies-and-setup) section below for help resolving this, and also the [advanced configuration](https://github.com/simonrob/email-oauth2-proxy/#advanced-configuration) section for additional options (including fully headless deployments and integration with a secrets manager).
 
 Finally, open your email client and configure its server details to match the ones you set in the proxy's configuration file.
 The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `localhost` on port `1993` for IMAP, port `1995` for POP and port `1587` for SMTP.
 The proxy supports multiple accounts simultaneously, and all accounts associated with the same provider can share the same proxy server.
 The local connection in your email client should be configured as unencrypted to allow the proxy to operate, but the connection between the proxy and your email server is always secure (implicit SSL/TLS for IMAP and POP; implicit or explicit (STARTTLS) SSL/TLS for SMTP).
-See the [sample configuration file](emailproxy.config) for additional documentation about advanced features, including local encryption, account configuration inheritance and support for running in a container.
+See the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for additional documentation about advanced features, including local encryption, account configuration inheritance and support for running in a container.
 
 The first time your email client makes a request you should see a notification from the proxy about authorising your account.
 Click the proxy's menu bar icon, select your account name in the `Authorise account` submenu, and then log in via the popup browser window that appears.
 The window will close itself once the process is complete.
-See the various [optional arguments](#optional-arguments-and-configuration) below for completing authentication if running without a GUI.
+See the various [optional arguments](https://github.com/simonrob/email-oauth2-proxy/#optional-arguments-and-configuration) below for completing authentication if running without a GUI.
 
 After successful authentication and authorisation you should have IMAP/POP/SMTP access to your account as normal.
-Make sure you keep the proxy running at all times to allow it to authorise your email client's background activity – enable `Start at login` from the proxy's menu, or see the [instructions below](#starting-the-proxy-automatically) about how to configure this in various different setups.
+Make sure you keep the proxy running at all times to allow it to authorise your email client's background activity – enable `Start at login` from the proxy's menu, or see the [instructions below](https://github.com/simonrob/email-oauth2-proxy/#starting-the-proxy-automatically) about how to configure this in various different setups.
 
 After your accounts are fully set-up and authorised, no further proxy interaction should be required unless your account needs authorising again.
 It will notify you if this is the case.
@@ -58,7 +68,7 @@ If you do not have access to credentials for an existing client you will need to
 The process to do this is different for each provider, but the registration guides for several common ones are linked below.
 In all cases, when registering, make sure your client is set up to use an OAuth scope that will give it permission to access IMAP/POP/SMTP as desired.
 It is also highly recommended to use a scope that will grant "offline" access (i.e., a way to [refresh the OAuth 2.0 authentication token](https://oauth.net/2/refresh-tokens/) without user intervention).
-The [sample configuration file](emailproxy.config) provides example scope values for several common providers.
+The [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) provides example scope values for several common providers.
 
 - Office 365: register a new [Microsoft identity application](https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app)
 - Gmail / Google Workspace: register a [Google API desktop app client](https://developers.google.com/identity/protocols/oauth2/native-app)
@@ -67,7 +77,7 @@ The [sample configuration file](emailproxy.config) provides example scope values
 The proxy also supports the [client credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant](https://learn.microsoft.com/en-us/azure/active-directory/develop/v2-oauth-ropc) OAuth 2.0 flows if needed.
 Please note that currently only Office 365 is known to support these methods.
 In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections) (use [smtp2graph](https://github.com/EvanTrow/smtp2graph) instead here).
-See the [sample configuration file](emailproxy.config) for further details.
+See the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for further details.
 
 
 ## Optional arguments and configuration
@@ -89,38 +99,38 @@ This argument is identical to enabling external authorisation mode from the `Aut
 The `--external-auth` option is ignored in this mode.
 To authorise your account, visit the link that is provided, authenticate, and proceed until you are presented with a success webpage from the proxy.
 Please note that while authentication links can actually be visited from anywhere to log in and authorise access, by default the final redirection target (i.e., a link starting with your account's `redirect_uri` value) must be accessed from the machine hosting the proxy itself so that the local server can receive the authorisation result.
-See the [sample configuration file](emailproxy.config) for advanced options to configure this (via `redirect_listen_address`).
+See the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for advanced options to configure this (via `redirect_listen_address`).
 
-- `--config-file` allows you to specify the location of a [configuration file](emailproxy.config) that the proxy should load.
+- `--config-file` allows you to specify the location of a [configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) that the proxy should load.
 By default, the proxy also saves its cached OAuth 2.0 tokens back to this file, so it must be writable.
 See the `--cache-store` option, if you would rather store configuration and cached values separately.
 If this argument is not provided, the proxy will look for `emailproxy.config` in the same directory as the script itself.
 
 - `--cache-store` is used to specify a separate location in which to cache authorised OAuth 2.0 tokens and associated metadata.
-The value of this argument can either be the full path to a local file (which must be writable), or an identifier for an external store such as a secrets manager (see the [documentation below](#advanced-configuration)).
+The value of this argument can either be the full path to a local file (which must be writable), or an identifier for an external store such as a secrets manager (see the [documentation below](https://github.com/simonrob/email-oauth2-proxy/#advanced-configuration)).
 If this argument is not provided, credentials will be cached in the current configuration file.
 
 - `--log-file` allows you to specify the location of a file to send log output to (full path required).
 Log files are rotated at 32MB and 10 older log files are kept.
-This option overrides the proxy's default behaviour, which varies by platform (see [below](#troubleshooting) for details).
+This option overrides the proxy's default behaviour, which varies by platform (see [below](https://github.com/simonrob/email-oauth2-proxy/#troubleshooting) for details).
 
-- `--debug` enables debug mode, printing more verbose output to the log as [discussed below](#troubleshooting).
+- `--debug` enables debug mode, printing more verbose output to the log as [discussed below](https://github.com/simonrob/email-oauth2-proxy/#troubleshooting).
 This argument is identical to enabling debug mode from the proxy's menu bar icon.
 
 ### Advanced configuration
-The [example configuration file](emailproxy.config) contains further documentation for various additional features of the proxy, including catch-all (wildcard) accounts, locally-encrypted connections and advanced Office 365 OAuth 2.0 flows.
+The [example configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) contains further documentation for various additional features of the proxy, including catch-all (wildcard) accounts, locally-encrypted connections and advanced Office 365 OAuth 2.0 flows.
 
 The proxy caches authenticated OAuth 2.0 tokens and associated metadata back to its own configuration file by default, but can alternatively be configured to use either a separate local file or a secrets manager service for this purpose.
 Currently only [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/) is supported for remote token storage.
-To use this feature, set the [`--cache-store`](#optional-arguments-and-configuration) parameter to either a full ARN or a secret name, prefixing the value with `aws:` to identify its type to the proxy.
+To use this feature, set the [`--cache-store`](https://github.com/simonrob/email-oauth2-proxy/#optional-arguments-and-configuration) parameter to either a full ARN or a secret name, prefixing the value with `aws:` to identify its type to the proxy.
 You must also install the AWS SDK for Python: `python -m pip install boto3` and [set up authentication credentials](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/quickstart.html#configuration) (including a region).
 The minimum required permissions for the associated AWS IAM user are `secretsmanager:GetSecretValue` and `secretsmanager:PutSecretValue`.
 If the named AWS Secret does not yet exist, the proxy will attempt to create it; here, the `secretsmanager:CreateSecret` permission is also required.
 
 If you are using the proxy in a non-GUI environment it is possible to skip installation of dependencies that apply only to the interactive version.
-To do this, install the script's requirements via `python -m pip install -r requirements-no-gui.txt`, and pass the [`--no-gui`](#optional-arguments-and-configuration) argument when starting the proxy.
+To do this, install the script via `python -m pip install emailproxy` (i.e., without the `[gui]` variant option), and pass the [`--no-gui`](https://github.com/simonrob/email-oauth2-proxy/#optional-arguments-and-configuration) argument when starting the proxy.
 Please note that the proxy was designed as a GUI-based tool from the outset due to the inherently interactive nature of OAuth 2.0 authorisation, and there are limits to its ability to support fully no-GUI operation.
-See the [optional arguments and configuration](#optional-arguments-and-configuration) section of this file for further details.
+See the [optional arguments and configuration](https://github.com/simonrob/email-oauth2-proxy/#optional-arguments-and-configuration) section of this file for further details.
 
 If your network requires connections to use an existing proxy, you can instruct the script to use this by setting the [proxy handler](https://docs.python.org/3/library/urllib.request.html#urllib.request.ProxyHandler) environment variable `https_proxy` (and/or `http_proxy`) – for example, `https_proxy=localhost python emailproxy.py`.
 
@@ -142,7 +152,7 @@ On macOS, the file `~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist`
 If you stop the proxy's service (i.e., `Quit Email OAuth 2.0 Proxy` from the menu bar), you can restart it using `launchctl start ac.robinson.email-oauth2-proxy` from a terminal.
 You can stop, disable or remove the service from your startup items either via the menu bar icon option, or using `launchctl unload [plist path]`.
 If you edit the plist file manually, make sure you `unload` and then `load` it to update the system with your changes.
-If the `Start at login` option appears not to be working for you on macOS, see the [known issues](#known-issues) section below for potential solutions.
+If the `Start at login` option appears not to be working for you on macOS, see the [known issues](https://github.com/simonrob/email-oauth2-proxy/#known-issues) section below for potential solutions.
 
 On Windows the auto-start functionality is achieved via a shortcut in your user account's startup folder.
 Pressing `⊞ Win` + `r` and entering `shell:startup` (and then clicking OK) will open this folder – from here you can either double-click the `ac.robinson.email-oauth2-proxy.cmd` file to relaunch the proxy, edit it to configure, or delete this file (either manually or by deselecting the option in the proxy's menu) to remove the script from your startup items.
@@ -168,16 +178,16 @@ Because of this, if you are concerned about debug mode and security you can use 
 
 It is often helpful to be able to view the raw connection details when debugging (i.e., without using your email client).
 This can be achieved using `telnet`, [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) or similar.
-For example, to test the Office 365 IMAP server from the [example configuration](emailproxy.config), first open a connection using `telnet localhost 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant).
+For example, to test the Office 365 IMAP server from the [example configuration](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config), first open a connection using `telnet localhost 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant).
 If you have already authorised your account with the proxy you should see a response starting with `a1 OK`; if not, this command should trigger a notification from the proxy about authorising your account.
 
-If you are using a [secure local connection](emailproxy.config) the interaction with the remote email server is the same as above, but you will need to use a local debugging tool that supports encryption.
+If you are using a [secure local connection](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) the interaction with the remote email server is the same as above, but you will need to use a local debugging tool that supports encryption.
 The easiest approach here is to use [OpenSSL](https://www.openssl.org/): `openssl s_client -crlf -connect localhost:1993`.
 
 If you are having trouble actually connecting to the proxy, it is always worth double-checking the `local_address` values that you are using.
-The [sample configuration file](emailproxy.config) sets this parameter to `127.0.0.1` for all servers.
+The [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) sets this parameter to `127.0.0.1` for all servers.
 If you remove this value and do not provide your own, the proxy defaults to `::` – in most cases this resolves to `localhost` for both IPv4 and IPv6 configurations, but it is possible that this differs depending on your environment.
-If you are unable to connect to the proxy from your client, it is always worth first specifying this value explicitly – see the [sample configuration file](emailproxy.config) for further details about how to do this.
+If you are unable to connect to the proxy from your client, it is always worth first specifying this value explicitly – see the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for further details about how to do this.
 Please try setting and connecting to both IPv4 (i.e., `127.0.0.1`) and IPv6 (i.e., `::1`) loopback addresses before reporting any connection issues with the proxy.
 
 ### Dependencies and setup
@@ -215,12 +225,12 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 
 
 ## Advanced / experimental features
-The [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins) has a semi-experimental new feature that enables the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
+The [plugins variant](https://github.com/simonrob/email-oauth2-proxy/tree/plugins) has a semi-experimental new feature that enables the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
 This allows a wide range of additional capabilities or triggers to be added the proxy.
 For example, the [IMAPIgnoreSentMessageUpload plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPIgnoreSentMessageUpload.py) intercepts any client commands to add emails to the IMAP sent messages mailbox, which resolves message duplication issues for servers that automatically do this when emails are received via SMTP (e.g., Office 365, Gmail, etc).
 The [IMAPCleanO365ATPLinks plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPCleanO365ATPLinks.py) restores links modified by Office 365 Advanced Threat Protection to their original URLs.
 The [SMTPBlackHole plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/SMTPBlackHole.py) gives the impression emails are being sent but actually silently discards them, which is useful for testing email sending tools.
-See the documentation and examples in this branch for further details, additional sample plugins and setup instructions.
+See the [documentation and examples](https://github.com/simonrob/email-oauth2-proxy/tree/plugins/plugins) for further details, additional sample plugins and setup instructions.
 
 
 ## Potential improvements (pull requests welcome)
@@ -228,7 +238,6 @@ See the documentation and examples in this branch for further details, additiona
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status; clickable notifications)
 - STARTTLS for IMAP/POP?
 - Python 2 support? (see [discussion](https://github.com/simonrob/email-oauth2-proxy/issues/38))
-- Releases packaged as .app/.exe etc?
 
 
 ## Related projects and alternatives
@@ -246,4 +255,4 @@ This proxy was developed to work around these limitations for providers that do 
 
 
 ## License
-[Apache 2.0](LICENSE)
+[Apache 2.0](https://github.com/simonrob/email-oauth2-proxy/blob/main/LICENSE)

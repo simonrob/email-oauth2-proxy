@@ -7,6 +7,7 @@ __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
 __version__ = '2023-10-31'  # ISO 8601 (YYYY-MM-DD)
+__package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
 import argparse
@@ -56,20 +57,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
-# where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-has_gui_requirements = True
-
-
-def missing_gui_requirement(exception):
-    print('%s: %s' % (type(exception).__name__, exception))
-    global has_gui_requirements
-    has_gui_requirements = False
-
+# where not having to install GUI-only requirements can be helpful - see the proxy's readme (the `--no-gui` option)
+MISSING_GUI_REQUIREMENTS = []
 
 try:
     import pystray  # the menu bar/taskbar GUI
 except ImportError as gui_requirement_import_error:
-    missing_gui_requirement(gui_requirement_import_error)
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 
     class DummyPystray:  # dummy implementation allows initialisation to complete
@@ -83,19 +77,19 @@ try:
     # noinspection PyUnresolvedReferences
     from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
 except ImportError as gui_requirement_import_error:
-    missing_gui_requirement(gui_requirement_import_error)
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 try:
     # noinspection PyUnresolvedReferences
     import timeago  # the last authenticated activity hint
 except ImportError as gui_requirement_import_error:
-    missing_gui_requirement(gui_requirement_import_error)
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 try:
     # noinspection PyUnresolvedReferences
     import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
 except ImportError as gui_requirement_import_error:
-    missing_gui_requirement(gui_requirement_import_error)
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
@@ -103,7 +97,7 @@ with warnings.catch_warnings():
         # noinspection PyDeprecation,PyUnresolvedReferences
         import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
     except ImportError as gui_requirement_import_error:
-        missing_gui_requirement(gui_requirement_import_error)
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
@@ -112,19 +106,19 @@ if sys.platform == 'darwin':
         # noinspection PyPackageRequirements,PyUnresolvedReferences
         import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
     except ImportError as gui_requirement_import_error:
-        missing_gui_requirement(gui_requirement_import_error)
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
     try:
         # noinspection PyPackageRequirements,PyUnresolvedReferences
         import SystemConfiguration  # network availability monitoring
     except ImportError as gui_requirement_import_error:
-        missing_gui_requirement(gui_requirement_import_error)
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
     try:
         # noinspection PyPackageRequirements
         import AppKit  # retina icon, menu update on click, native notifications and receiving system events
     except ImportError as gui_requirement_import_error:
-        missing_gui_requirement(gui_requirement_import_error)
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 
         class AppKit:  # dummy implementation allows initialisation to complete
@@ -150,8 +144,10 @@ CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     script_path = '/'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
-CONFIG_FILE_PATH = CACHE_STORE = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
+script_path = os.getcwd() if __package__ is not None else os.path.dirname(script_path)  # for packaged version (PyPI)
+CONFIG_FILE_PATH = CACHE_STORE = os.path.join(script_path, '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
+del script_path
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
 
@@ -2305,19 +2301,6 @@ class App:
 
         self.args = parser.parse_args(args)
 
-        if not self.args.gui and self.args.external_auth:
-            try:
-                # prompt_toolkit is a relatively recent dependency addition that is only required in no-GUI external
-                # authorisation mode, but may not be present if only the proxy script itself has been updated
-                import prompt_toolkit
-            except ImportError:
-                sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in '
-                         '`--no-gui` mode. Please run `python -m pip install -r requirements-no-gui.txt`')
-
-        if self.args.gui and not has_gui_requirements:
-            sys.exit('GUI requirements are missing - did you mean to run in `--no-gui` mode? Otherwise, please run '
-                     '`python -m pip install -r requirements.txt`')
-
         Log.initialise(self.args.log_file)
         self.toggle_debug(self.args.debug, log_message=False)
 
@@ -2334,12 +2317,29 @@ class App:
 
         self.init_platforms()
 
+        if not self.args.gui and self.args.external_auth:
+            try:
+                # prompt_toolkit is a relatively recent dependency addition that is only required in no-GUI external
+                # authorisation mode, but may not be present if only the proxy script itself has been updated
+                import prompt_toolkit
+            except ImportError:
+                Log.error('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in',
+                          '`--no-gui` mode. Please run `python -m pip install -r requirements-core.txt`')
+                self.exit(None)
+                return
+
+        if self.args.gui and len(MISSING_GUI_REQUIREMENTS) > 0:
+            Log.error('Unable to load all GUI requirements:', MISSING_GUI_REQUIREMENTS, '- did you mean to run in',
+                      '`--no-gui` mode? If not, please run `python -m pip install -r requirements-gui.txt`')
+            self.exit(None)
+            return
+
         if self.args.gui:
             self.icon = self.create_icon()
             try:
                 self.icon.run(self.post_create)
             except NotImplementedError:
-                Log.error('Unable to initialise icon - did you mean to run in --no-gui mode?')
+                Log.error('Unable to initialise icon - did you mean to run in `--no-gui` mode?')
                 self.exit(None)
                 # noinspection PyProtectedMember
                 self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
@@ -2968,6 +2968,9 @@ class App:
             else:
                 error_text = 'Invalid' if len(AppConfig.servers()) > 0 else 'No'
                 Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
+                if not os.path.exists(CONFIG_FILE_PATH):
+                    Log.error(APP_NAME, 'config file not found - see https://github.com/simonrob/email-oauth2-proxy',
+                              'for full documentation and example configurations to help get started')
                 self.notify(APP_NAME, error_text + ' server configuration(s) found. ' +
                             'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
