@@ -1,5 +1,5 @@
-# include core requirements (separated in order to support usage without GUI-only dependencies)
--r requirements-no-gui.txt
+# the standard way to install the proxy and dependencies is `python -m pip install emailproxy` (i.e., direct from PyPI)
+# to install requirements directly, use: `python -m pip install -r requirements-core.txt -r requirements-gui.txt`
 
 pillow  # to create the menu bar icon image from a TTF icon
 setuptools  # for pkg_resources (checking dependency versions)
