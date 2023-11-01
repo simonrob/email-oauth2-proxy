@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-10-31'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-01'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2428,7 +2428,7 @@ class App:
 
     # noinspection PyDeprecation
     def create_icon(self):
-        # temporary fix for pystray <= 0.19.4 incompatibility with PIL 10.0.0+; fixed once pystray PR #147 is released
+        # fix pystray <= 0.19.4 incompatibility with PIL 10.0.0+; resolved in 0.19.5 and later via pystray PR #147
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', DeprecationWarning)
             pystray_version = pkg_resources.get_distribution('pystray').version

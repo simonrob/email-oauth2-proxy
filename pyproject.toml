@@ -9,7 +9,7 @@ authors = [
 ]
 description = "Transparently add OAuth 2.0 support to IMAP/POP/SMTP clients that don't support this authentication method."
 readme = { file = "README.md", content-type = "text/markdown" }
-license = { file = "LICENSE" }
+license = { text = "Apache License 2.0" }
 requires-python = ">=3.6"
 classifiers = [
     "Operating System :: OS Independent",
@@ -32,7 +32,10 @@ emailproxy = "emailproxy:App"
 
 [project.urls]
 "Homepage" = "https://github.com/simonrob/email-oauth2-proxy"
+"Changelog" = "https://github.com/simonrob/email-oauth2-proxy/releases"
+"Documentation" = "https://github.com/simonrob/email-oauth2-proxy#email-oauth-20-proxy"
 "Bug Tracker" = "https://github.com/simonrob/email-oauth2-proxy/issues"
+"Source Code" = "https://github.com/simonrob/email-oauth2-proxy"
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements-core.txt"] }
