@@ -1,0 +1,65 @@
+name: Deploy to PyPI and add to latest release
+
+on:
+  push:
+
+permissions:
+  contents: write
+  id-token: write
+
+# see: https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      # set up build environment and package the proxy
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m build
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish-to-pypi:
+    needs: build
+
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/emailproxy
+
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      # upload the built packages to PyPI (we use a token rather than trusted publishing due to our unconventional build branch method)
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI }}
+          skip-existing: true  # avoid failing when repeating this action
+
+      # sign the built packages
+      - uses: sigstore/gh-action-sigstore-python@v1.2.3
+        with:
+          inputs: >-
+            ./dist/*.tar.gz
+            ./dist/*.whl
+
+      # append the built packages to the latest release
+      - uses: xresloader/upload-to-github-release@v1.3.12
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          file: dist/*.whl;dist/*.tar.gz
+          update_latest_release: true

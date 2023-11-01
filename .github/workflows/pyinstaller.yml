@@ -15,7 +15,7 @@ jobs:
       output: ${{ steps.latest_tag.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - id: latest_tag
         run: |
           git fetch -a
@@ -31,23 +31,23 @@ jobs:
         os: [macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with:
-          python-version: '3.11.2'
+          python-version: '3.x'
 
       # install requirements and build
       # - note: `--hidden-import` is required for GUI mode until https://github.com/hustcc/timeago/issues/40 is fixed
       - run: |
           python -m pip install --upgrade pip
           python -m pip install wheel
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements-core.txt -r requirements-gui.txt pyinstaller
           python -m PyInstaller --clean --noconsole --onefile --hidden-import timeago.locales.en_short --icon icon.png emailproxy.py
-      
+
       # add license, documentation, configuration file sample and disclaimer
       # - note: `move [...] alias move=mv [...]` is to support using the same commands on all platforms
       - run: |
-          move LICENSE . 2> nul || { shopt -s expand_aliases; alias move=mv; } 
+          move LICENSE . 2> nul || { shopt -s expand_aliases; alias move=mv; }
           move LICENSE dist/
           move README.md dist/
           move emailproxy.config dist/
@@ -55,20 +55,20 @@ jobs:
           echo 'but is not tested, and is not officially supported. Using the main emailproxy.py script ' >> _.txt
           echo 'directly is recommended for best results: https://github.com/simonrob/email-oauth2-proxy/' >> _.txt
           move _.txt dist/GettingStarted.txt
-      
+
       # on macOS `--onefile` creates bundle *and* binary; we don't need both (and the .app also contains the binary)
       - if: runner.os == 'macOS'
         run: rm dist/emailproxy
 
       # zip the built output, naming according to tag and OS
-      - uses: thedoctor0/zip-release@0.7.1
+      - uses: thedoctor0/zip-release@0.7.6
         with:
           type: zip
           directory: dist/
           filename: emailproxy-${{ needs.get_tag.outputs.output }}_pyinstaller-${{ runner.os }}.zip
 
       # append the zip to the latest release
-      - uses: xresloader/upload-to-github-release@v1
+      - uses: xresloader/upload-to-github-release@v1.3.12
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

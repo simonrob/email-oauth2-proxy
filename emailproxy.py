@@ -6,7 +6,8 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-09-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-01'  # ISO 8601 (YYYY-MM-DD)
+__package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
 import argparse
@@ -50,65 +51,79 @@ with warnings.catch_warnings():
     import asyncore
 
 # for encrypting/decrypting the locally-stored credentials
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, MultiFernet, InvalidToken
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# for macOS-specific unified logging
-if sys.platform == 'darwin':
-    # pyoslog *is* present; see youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppressed inspection)
-    # noinspection PyPackageRequirements
-    import pyoslog
-
 # by default the proxy is a GUI application with a menu bar/taskbar icon, but it is also useful in 'headless' contexts
-# where not having to install GUI-only requirements can be helpful - see the proxy's readme and requirements-no-gui.txt
-no_gui_parser = argparse.ArgumentParser(add_help=False)
-no_gui_parser.add_argument('--no-gui', action='store_true')
-no_gui_parser.add_argument('--external-auth', action='store_true')
-no_gui_args = no_gui_parser.parse_known_args()[0]
-if not no_gui_args.no_gui:
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', DeprecationWarning)
-        # noinspection PyDeprecation
-        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
+# where not having to install GUI-only requirements can be helpful - see the proxy's readme (the `--no-gui` option)
+MISSING_GUI_REQUIREMENTS = []
+
+try:
     import pystray  # the menu bar/taskbar GUI
-    import timeago  # the last authenticated activity hint
-    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+except ImportError as gui_requirement_import_error:
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
-    # noinspection PyPackageRequirements
-    import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
 
-    # for macOS-specific functionality
-    if sys.platform == 'darwin':
-        # noinspection PyPackageRequirements
-        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
-        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
-        import SystemConfiguration  # network availability monitoring
-
-else:
-    # dummy implementations to allow use regardless of whether pystray or AppKit are available
-    # noinspection PyPep8Naming
-    class pystray:
+    class DummyPystray:  # dummy implementation allows initialisation to complete
         class Icon:
             pass
 
 
-    class AppKit:
-        class NSObject:
-            pass
+    pystray = DummyPystray  # this is just to avoid unignorable IntelliJ warnings about naming and spacing
+
+try:
+    # noinspection PyUnresolvedReferences
+    from PIL import Image, ImageDraw, ImageFont  # draw the menu bar icon from the TTF font stored in APP_ICON
+except ImportError as gui_requirement_import_error:
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+try:
+    # noinspection PyUnresolvedReferences
+    import timeago  # the last authenticated activity hint
+except ImportError as gui_requirement_import_error:
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+try:
+    # noinspection PyUnresolvedReferences
+    import webview  # the popup authentication window (in default and GUI `--external-auth` modes only)
+except ImportError as gui_requirement_import_error:
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', DeprecationWarning)
+    try:
+        # noinspection PyDeprecation,PyUnresolvedReferences
+        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
+    except ImportError as gui_requirement_import_error:
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+# for macOS-specific functionality
+if sys.platform == 'darwin':
+    try:
+        # PyUnresolvedReferences; see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppression)
+        # noinspection PyPackageRequirements,PyUnresolvedReferences
+        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+    except ImportError as gui_requirement_import_error:
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+    try:
+        # noinspection PyPackageRequirements,PyUnresolvedReferences
+        import SystemConfiguration  # network availability monitoring
+    except ImportError as gui_requirement_import_error:
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+    try:
+        # noinspection PyPackageRequirements
+        import AppKit  # retina icon, menu update on click, native notifications and receiving system events
+    except ImportError as gui_requirement_import_error:
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 
-    if no_gui_args.external_auth:
-        try:
-            # prompt_toolkit is a recent dependency addition that is only required in no-GUI external authorisation
-            # mode, but may not be present if only the proxy script itself has been updated
-            import prompt_toolkit
-        except ModuleNotFoundError:
-            sys.exit('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in `--no-gui` '
-                     'mode. Please run `python -m pip install -r requirements-no-gui.txt`')
-del no_gui_parser
-del no_gui_args
+        class AppKit:  # dummy implementation allows initialisation to complete
+            class NSObject:
+                pass
 
 APP_NAME = 'Email OAuth 2.0 Proxy'
 APP_SHORT_NAME = 'emailproxy'
@@ -123,13 +138,16 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
     J6Sp0urC5fCken5STr0KDoUlyhjVd4nxSUvq3tCftEn8r2ro+mxUDIaCMQmQrGZGHmi53tAT3rPGH1e3qF0p9w7LtcohwuyvnRxWZ8sZUej6WvlhXSk1
     7k+POJ1iR73N/+w2xN0f4+GJcHtfqoWzgfi6cuZscC54lSq3SbN1tmzC4MXtcwN/zOC78r9BIfNc3M='''  # TTF ('e') -> zlib -> base64
 
+CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     script_path = '/'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
-CONFIG_FILE_PATH = CACHE_STORE = os.path.join(os.path.dirname(script_path), '%s.config' % APP_SHORT_NAME)
+script_path = os.getcwd() if __package__ is not None else os.path.dirname(script_path)  # for packaged version (PyPI)
+CONFIG_FILE_PATH = CACHE_STORE = os.path.join(script_path, '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
+del script_path
 
 MAX_CONNECTIONS = 0  # maximum concurrent IMAP/POP/SMTP connections; 0 = no limit; limit is per server
 
@@ -159,7 +177,6 @@ IMAP_CAPABILITY_MATCHER = re.compile(r'^\* (?:OK \[)?CAPABILITY .*$', flags=re.I
 
 REQUEST_QUEUE = queue.Queue()  # requests for authentication
 RESPONSE_QUEUE = queue.Queue()  # responses from user
-WEBVIEW_QUEUE = queue.Queue()  # authentication window events (macOS only)
 QUEUE_SENTINEL = object()  # object to send to signify queues should exit loops
 MENU_UPDATE = object()  # object to send to trigger a force-refresh of the GUI menu (new catch-all account added)
 
@@ -209,7 +226,7 @@ class Log:
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
     _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
-    _MACOS_USE_SYSLOG = not pyoslog.is_supported() if sys.platform == 'darwin' else False
+    _MACOS_USE_SYSLOG = False
 
     @staticmethod
     def initialise(log_file=None):
@@ -220,19 +237,25 @@ class Log:
                                                            os.path.realpath(__file__)), APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
+
         elif sys.platform == 'darwin':
+            # noinspection PyPackageRequirements
+            import pyoslog  # for macOS-specific unified logging
+            Log._MACOS_USE_SYSLOG = not pyoslog.is_supported()
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
                 handler = logging.handlers.SysLogHandler(address='/var/run/syslog')
                 handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:  # unified logging in 10.12+
                 handler = pyoslog.Handler()
                 handler.setSubsystem(APP_PACKAGE)
+
         else:
             if os.path.exists('/dev/log'):
                 handler = logging.handlers.SysLogHandler(address='/dev/log')
                 handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:
                 handler = logging.StreamHandler()
+
         Log._HANDLER = handler
         Log._LOGGER.addHandler(Log._HANDLER)
         Log.set_level(logging.INFO)
@@ -460,8 +483,8 @@ class AppConfig:
     _PARSER_LOCK = threading.Lock()
 
     # note: removing the unencrypted version of `client_secret_encrypted` is not automatic with --cache-store (see docs)
-    _CACHED_OPTION_KEYS = ['token_salt', 'access_token', 'access_token_expiry', 'refresh_token', 'last_activity',
-                           'client_secret_encrypted']
+    _CACHED_OPTION_KEYS = ['access_token', 'access_token_expiry', 'refresh_token', 'token_salt', 'token_iterations',
+                           'client_secret_encrypted', 'last_activity']
 
     # additional cache stores may be implemented by extending CacheStore and adding a prefix entry in this dict
     _EXTERNAL_CACHE_STORES = {'aws:': AWSSecretsManagerCacheStore}
@@ -569,6 +592,69 @@ class AppConfig:
             Log.error('Error saving state to cache store file at', cache_store_identifier, '- is the file writable?')
 
 
+class Cryptographer:
+    ITERATIONS = 870_000  # taken from cryptography's suggestion of using Django's defaults
+    LEGACY_ITERATIONS = 100_000  # fallback when the iteration count is not in the config file (versions < 2023-10-17)
+
+    def __init__(self, config, username, password):
+        """Creates a cryptographer which allows encrypting and decrypting sensitive information for this account,
+        (such as stored tokens), and also supports increasing the encryption/decryption iterations (i.e., strength)"""
+        self._salt = None
+
+        token_salt = config.get(username, 'token_salt', fallback=None)
+        if token_salt:
+            try:
+                self._salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
+            except (binascii.Error, UnicodeError):
+                Log.info('%s: Invalid `token_salt` value found in config file entry for account %s - this value is not '
+                         'intended to be manually created; generating new `token_salt`' % (APP_NAME, username))
+
+        if not self._salt:
+            self._salt = os.urandom(16)  # either a failed decode or the initial run when no salt exists
+
+        # the iteration count is stored with the credentials, so could if required be user-edited (see PR #198 comments)
+        iterations = config.getint(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS)
+
+        # with MultiFernet each fernet is tried in order to decrypt a value, but encryption always uses the first
+        # fernet, so sort unique iteration counts in descending order (i.e., use the best available encryption)
+        self._iterations_options = sorted({self.ITERATIONS, iterations, self.LEGACY_ITERATIONS}, reverse=True)
+
+        # generate encrypter/decrypter based on the password and salt
+        self._fernets = [Fernet(base64.urlsafe_b64encode(
+            PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=self._salt, iterations=iterations,
+                       backend=default_backend()).derive(password.encode('utf-8')))) for iterations in
+            self._iterations_options]
+        self.fernet = MultiFernet(self._fernets)
+
+    @property
+    def salt(self):
+        return base64.b64encode(self._salt).decode('utf-8')
+
+    @property
+    def iterations(self):
+        return self._iterations_options[0]
+
+    def encrypt(self, value):
+        return self.fernet.encrypt(value.encode('utf-8')).decode('utf-8')
+
+    def decrypt(self, value):
+        return self.fernet.decrypt(value.encode('utf-8')).decode('utf-8')
+
+    def requires_rotation(self, value):
+        try:
+            self._fernets[0].decrypt(value.encode('utf-8'))  # if the first fernet works, everything is up-to-date
+            return False
+        except InvalidToken:
+            try:  # check to see if any fernet can decrypt the value - if so we can upgrade the encryption strength
+                self.decrypt(value)
+                return True
+            except InvalidToken:
+                return False
+
+    def rotate(self, value):
+        return self.fernet.rotate(value.encode('utf-8')).decode('utf-8')
+
+
 class OAuth2Helper:
     class TokenRefreshError(Exception):
         pass
@@ -631,7 +717,6 @@ class OAuth2Helper:
                          'otherwise, if authentication fails, please double-check this value is correct')
 
         current_time = int(time.time())
-        token_salt = config.get(username, 'token_salt', fallback=None)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
@@ -641,37 +726,37 @@ class OAuth2Helper:
             AppConfig.unload()
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
-        # we hash locally-stored tokens with the given password
-        if not token_salt:
-            token_salt = base64.b64encode(os.urandom(16)).decode('utf-8')
+        cryptographer = Cryptographer(config, username, password)
+        rotatable_values = {
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'client_secret_encrypted': client_secret_encrypted
+        }
+        if any(value and cryptographer.requires_rotation(value) for value in rotatable_values.values()):
+            Log.info('Rotating stored secrets for account', username, 'to use new cryptographic parameters')
+            for key, value in rotatable_values.items():
+                if value:
+                    config.set(username, key, cryptographer.rotate(value))
 
-        # generate encrypter/decrypter based on password and random salt
-        try:
-            decoded_salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
-        except binascii.Error:
-            return (False, '%s: Invalid `token_salt` value found in config file entry for account %s - this value is '
-                           'not intended to be manually created; please remove and retry' % (APP_NAME, username))
-        key_derivation_function = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=decoded_salt, iterations=100000,
-                                             backend=default_backend())
-        fernet = Fernet(base64.urlsafe_b64encode(key_derivation_function.derive(password.encode('utf-8'))))
+            config.set(username, 'token_iterations', str(cryptographer.iterations))
+            AppConfig.save()
 
         try:
             # if both secret values are present we use the unencrypted version (as it may have been user-edited)
             if client_secret_encrypted and not client_secret:
-                client_secret = OAuth2Helper.decrypt(fernet, client_secret_encrypted)
+                client_secret = cryptographer.decrypt(client_secret_encrypted)
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
-                                                                            OAuth2Helper.decrypt(fernet, refresh_token))
+                                                                            cryptographer.decrypt(refresh_token))
 
                         access_token = response['access_token']
-                        config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
+                        config.set(username, 'access_token', cryptographer.encrypt(access_token))
                         config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
                         if 'refresh_token' in response:
-                            config.set(username, 'refresh_token',
-                                       OAuth2Helper.encrypt(fernet, response['refresh_token']))
+                            config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                         AppConfig.save()
 
                     else:
@@ -682,7 +767,7 @@ class OAuth2Helper:
                         # very infrequently, we don't add the extra complexity for just 10 extra minutes of token life)
                         access_token = None  # avoid trying invalid (or soon to be) tokens
                 else:
-                    access_token = OAuth2Helper.decrypt(fernet, access_token)
+                    access_token = cryptographer.decrypt(access_token)
 
             if not access_token:
                 auth_result = None
@@ -709,12 +794,13 @@ class OAuth2Helper:
                 if username not in config.sections():
                     config.add_section(username)  # in catch-all mode the section may not yet exist
                     REQUEST_QUEUE.put(MENU_UPDATE)  # make sure the menu shows the newly-added account
-                config.set(username, 'token_salt', token_salt)
-                config.set(username, 'access_token', OAuth2Helper.encrypt(fernet, access_token))
+                config.set(username, 'token_salt', cryptographer.salt)
+                config.set(username, 'token_iterations', str(cryptographer.iterations))
+                config.set(username, 'access_token', cryptographer.encrypt(access_token))
                 config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
 
                 if 'refresh_token' in response:
-                    config.set(username, 'refresh_token', OAuth2Helper.encrypt(fernet, response['refresh_token']))
+                    config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                 elif permission_url:  # ignore this situation with client credentials flow - it is expected
                     Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
                              'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
@@ -723,7 +809,7 @@ class OAuth2Helper:
                     if client_secret:
                         # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when using
                         # incompatible `encrypt_client_secret_on_first_use` and `allow_catch_all_accounts` options
-                        config.set(username, 'client_secret_encrypted', OAuth2Helper.encrypt(fernet, client_secret))
+                        config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
                         config.remove_option(username, 'client_secret')
 
                 AppConfig.save()
@@ -742,6 +828,7 @@ class OAuth2Helper:
             if not has_access_token:
                 # if this is already a second failure, remove the refresh token as well, and force re-authentication
                 config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'token_iterations')
                 config.remove_option(username, 'refresh_token')
 
             AppConfig.save()
@@ -755,6 +842,7 @@ class OAuth2Helper:
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
                 config.remove_option(username, 'token_salt')
+                config.remove_option(username, 'token_iterations')
                 config.remove_option(username, 'refresh_token')
                 AppConfig.save()
 
@@ -774,14 +862,6 @@ class OAuth2Helper:
             Log.info('Caught exception while requesting OAuth 2.0 credentials for %s:' % username, Log.error_string(e))
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
-
-    @staticmethod
-    def encrypt(cryptographer, byte_input):
-        return cryptographer.encrypt(byte_input.encode('utf-8')).decode('utf-8')
-
-    @staticmethod
-    def decrypt(cryptographer, byte_input):
-        return cryptographer.decrypt(byte_input.encode('utf-8')).decode('utf-8')
 
     @staticmethod
     def oauth2_url_escape(text):
@@ -1018,8 +1098,8 @@ class OAuth2Helper:
 
 
 class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
-    def __init__(self, connection=None, socket_map=None):
-        asyncore.dispatcher_with_send.__init__(self, sock=connection, map=socket_map)
+    def __init__(self, connection_socket=None, socket_map=None):
+        asyncore.dispatcher_with_send.__init__(self, sock=connection_socket, map=socket_map)
         self.ssl_handshake_errors = (ssl.SSLWantReadError, ssl.SSLWantWriteError,
                                      ssl.SSLEOFError, ssl.SSLZeroReturnError)
         self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self._reset()
@@ -1144,17 +1224,17 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     """The base client-side connection that is subclassed to handle IMAP/POP/SMTP client interaction (note that there
     is some protocol-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
 
-    def __init__(self, proxy_type, connection, socket_map, connection_info, server_connection, proxy_parent,
-                 custom_configuration):
-        SSLAsyncoreDispatcher.__init__(self, connection, socket_map)
+    def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
+        SSLAsyncoreDispatcher.__init__(self, connection_socket=connection_socket, socket_map=socket_map)
         self.receive_buffer = b''
         self.proxy_type = proxy_type
-        self.connection_info = connection_info
-        self.server_connection = server_connection
-        self.local_address = proxy_parent.local_address
-        self.server_address = server_connection.server_address
+        self.server_connection = None
         self.proxy_parent = proxy_parent
+        self.local_address = proxy_parent.local_address
+        self.server_address = proxy_parent.server_address
         self.custom_configuration = custom_configuration
+        self.debug_address_string = '%s-{%s}-%s' % tuple(map(Log.format_host_port, (
+            connection_socket.getpeername(), connection_socket.getsockname(), self.server_address)))
 
         self.censor_next_log = False  # try to avoid logging credentials
         self.authenticated = False
@@ -1163,11 +1243,11 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
             bool(custom_configuration['local_certificate_path'] and custom_configuration['local_key_path']))
 
     def info_string(self):
-        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
-            self.server_address)) if Log.get_level() == logging.DEBUG else ''
+        debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
+            Log.format_host_port(self.local_address)
         account = '; %s' % self.server_connection.authenticated_username if \
             self.server_connection and self.server_connection.authenticated_username else ''
-        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
+        return '%s (%s%s)' % (self.proxy_type, debug_string, account)
 
     def handle_read(self):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
@@ -1214,7 +1294,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                     log_data = re.sub(b'(%s)?( )?(AUTH)(ENTICATE)? (PLAIN|LOGIN) (.*)\r\n' % tag_pattern,
                                       br'\1\2\3\4 \5 ' + CENSOR_MESSAGE + b'\r\n', log_data, flags=re.IGNORECASE)
 
-                Log.debug(self.info_string(), '-->', log_data)
+                Log.debug(self.info_string(), '-->', log_data if CENSOR_CREDENTIALS else line)
                 try:
                     self.process_data(line)
                 except AttributeError:  # AttributeError("'NoneType' object has no attribute 'username'"), etc
@@ -1263,9 +1343,8 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
 class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
     """The client side of the connection - intercept LOGIN/AUTHENTICATE commands and replace with OAuth 2.0 SASL"""
 
-    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('IMAP', connection, socket_map, connection_info, server_connection, proxy_parent,
-                         custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('IMAP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
@@ -1393,9 +1472,8 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
         XOAUTH2_AWAITING_CONFIRMATION = 5
         XOAUTH2_CREDENTIALS_SENT = 6
 
-    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('POP', connection, socket_map, connection_info, server_connection, proxy_parent,
-                         custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('POP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.connection_state = self.STATE.PENDING
 
     def process_data(self, byte_data, censor_server_log=False):
@@ -1472,9 +1550,8 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         XOAUTH2_AWAITING_CONFIRMATION = 6
         XOAUTH2_CREDENTIALS_SENT = 7
 
-    def __init__(self, connection, socket_map, connection_info, server_connection, proxy_parent, custom_configuration):
-        super().__init__('SMTP', connection, socket_map, connection_info, server_connection, proxy_parent,
-                         custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('SMTP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.connection_state = self.STATE.PENDING
 
     def process_data(self, byte_data, censor_server_log=False):
@@ -1549,16 +1626,17 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     """The base server-side connection that is subclassed to handle IMAP/POP/SMTP server interaction"""
 
-    def __init__(self, proxy_type, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
+    def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
         SSLAsyncoreDispatcher.__init__(self, socket_map=socket_map)  # note: establish connection later due to STARTTLS
         self.receive_buffer = b''
         self.proxy_type = proxy_type
-        self.connection_info = connection_info
         self.client_connection = None
-        self.local_address = proxy_parent.local_address
-        self.server_address = server_address
         self.proxy_parent = proxy_parent
+        self.local_address = proxy_parent.local_address
+        self.server_address = proxy_parent.server_address
         self.custom_configuration = custom_configuration
+        self.debug_address_string = '%s-{%s}-%s' % tuple(map(Log.format_host_port, (
+            connection_socket.getpeername(), connection_socket.getsockname(), self.server_address)))
 
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
@@ -1573,10 +1651,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
             return
 
     def info_string(self):
-        debug_string = '; %s->%s' % (Log.format_host_port(self.connection_info), Log.format_host_port(
-            self.server_address)) if Log.get_level() == logging.DEBUG else ''
+        debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
+            Log.format_host_port(self.local_address)
         account = '; %s' % self.authenticated_username if self.authenticated_username else ''
-        return '%s (%s%s%s)' % (self.proxy_type, Log.format_host_port(self.local_address), debug_string, account)
+        return '%s (%s%s)' % (self.proxy_type, debug_string, account)
 
     def handle_connect(self):
         Log.debug(self.info_string(), '--> [ Client connected ]')
@@ -1643,7 +1721,8 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def send(self, byte_data, censor_log=False):
         if not self.client_connection.authenticated:  # after authentication these are identical to server-side logs
-            Log.debug(self.info_string(), '    -->', b'%s\r\n' % CENSOR_MESSAGE if censor_log else byte_data)
+            Log.debug(self.info_string(), '    -->',
+                      b'%s\r\n' % CENSOR_MESSAGE if CENSOR_CREDENTIALS and censor_log else byte_data)
         return super().send(byte_data)
 
     def handle_error(self):
@@ -1691,8 +1770,8 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
     # IMAP: https://tools.ietf.org/html/rfc3501
     # IMAP SASL-IR: https://tools.ietf.org/html/rfc4959
-    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        super().__init__('IMAP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('IMAP', connection_socket, socket_map, proxy_parent, custom_configuration)
 
     def process_data(self, byte_data):
         # note: there is no reason why IMAP STARTTLS (https://tools.ietf.org/html/rfc2595) couldn't be supported here
@@ -1733,8 +1812,8 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
     # POP3 CAPA: https://tools.ietf.org/html/rfc2449
     # POP3 AUTH: https://tools.ietf.org/html/rfc1734
     # POP3 SASL: https://tools.ietf.org/html/rfc5034
-    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        super().__init__('POP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('POP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.capa = []
         self.username = None
         self.password = None
@@ -1818,8 +1897,8 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         NEGOTIATING = 2
         COMPLETE = 3
 
-    def __init__(self, socket_map, server_address, connection_info, proxy_parent, custom_configuration):
-        super().__init__('SMTP', socket_map, server_address, connection_info, proxy_parent, custom_configuration)
+    def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
+        super().__init__('SMTP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.ehlo = None
         if self.custom_configuration['starttls']:
             self.starttls_state = self.STARTTLS.PENDING
@@ -1927,26 +2006,26 @@ class OAuth2Proxy(asyncore.dispatcher):
         else:
             Log.debug('Ignoring incoming connection to', self.info_string(), '- no connection information')
 
-    def handle_accepted(self, connection, address):
+    def handle_accepted(self, connection_socket, address):
         if MAX_CONNECTIONS <= 0 or len(self.client_connections) < MAX_CONNECTIONS:
             new_server_connection = None
             try:
-                Log.debug('Accepting new connection to', self.info_string(), 'via', connection.getpeername())
+                Log.info('Accepting new connection from', Log.format_host_port(connection_socket.getpeername()),
+                         'to', self.info_string())
                 socket_map = {}
                 server_class = globals()['%sOAuth2ServerConnection' % self.proxy_type]
-                new_server_connection = server_class(socket_map, self.server_address, address, self,
-                                                     self.custom_configuration)
+                new_server_connection = server_class(connection_socket, socket_map, self, self.custom_configuration)
                 client_class = globals()['%sOAuth2ClientConnection' % self.proxy_type]
-                new_client_connection = client_class(connection, socket_map, address, new_server_connection, self,
-                                                     self.custom_configuration)
+                new_client_connection = client_class(connection_socket, socket_map, self, self.custom_configuration)
                 new_server_connection.client_connection = new_client_connection
+                new_client_connection.server_connection = new_server_connection
                 self.client_connections.append(new_client_connection)
 
                 threading.Thread(target=OAuth2Proxy.run_server, args=(new_client_connection, socket_map),
                                  name='EmailOAuth2Proxy-connection-%d' % address[1], daemon=True).start()
 
             except Exception:
-                connection.close()
+                connection_socket.close()
                 if new_server_connection:
                     new_server_connection.close()
                 raise
@@ -1954,8 +2033,8 @@ class OAuth2Proxy(asyncore.dispatcher):
             error_text = '%s rejecting new connection above MAX_CONNECTIONS limit of %d' % (
                 self.info_string(), MAX_CONNECTIONS)
             Log.error(error_text)
-            connection.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
-            connection.close()
+            connection_socket.send(b'%s\r\n' % self.bye_message(error_text).encode('utf-8'))
+            connection_socket.close()
 
     @staticmethod
     def run_server(client, socket_map):
@@ -2182,14 +2261,14 @@ if sys.platform == 'darwin':
 class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
-    def __init__(self):
+    def __init__(self, args=None):
         global CONFIG_FILE_PATH, CACHE_STORE
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
                                                      'applications, scripts or any other email use-cases that don\'t '
                                                      'support this authentication method.' % APP_NAME, add_help=False,
                                          epilog='Full readme and guide: https://github.com/simonrob/email-oauth2-proxy')
         group_gui = parser.add_argument_group(title='appearance')
-        group_gui.add_argument('--no-gui', action='store_true',
+        group_gui.add_argument('--no-gui', action='store_false', dest='gui',
                                help='start the proxy without a menu bar icon (note: account authorisation requests '
                                     'will fail unless a pre-authorised `--config-file` is used, or you use '
                                     '`--external-auth` or `--local-server-auth` and monitor log/terminal output)')
@@ -2220,11 +2299,10 @@ class App:
                                  help='show the proxy\'s version string and exit')
         group_debug.add_argument('-h', '--help', action='help', help='show this help message and exit')
 
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(args)
 
         Log.initialise(self.args.log_file)
-        if self.args.debug:
-            Log.set_level(logging.DEBUG)
+        self.toggle_debug(self.args.debug, log_message=False)
 
         if self.args.config_file:
             CONFIG_FILE_PATH = CACHE_STORE = self.args.config_file
@@ -2235,26 +2313,44 @@ class App:
         self.authorisation_requests = []
 
         self.web_view_started = False
+        self.macos_web_view_queue = queue.Queue()  # authentication window events (macOS only)
 
         self.init_platforms()
 
-        if self.args.no_gui:
-            self.icon = None
-            self.post_create(None)
-        else:
+        if not self.args.gui and self.args.external_auth:
+            try:
+                # prompt_toolkit is a relatively recent dependency addition that is only required in no-GUI external
+                # authorisation mode, but may not be present if only the proxy script itself has been updated
+                import prompt_toolkit
+            except ImportError:
+                Log.error('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in',
+                          '`--no-gui` mode. Please run `python -m pip install -r requirements-core.txt`')
+                self.exit(None)
+                return
+
+        if self.args.gui and len(MISSING_GUI_REQUIREMENTS) > 0:
+            Log.error('Unable to load all GUI requirements:', MISSING_GUI_REQUIREMENTS, '- did you mean to run in',
+                      '`--no-gui` mode? If not, please run `python -m pip install -r requirements-gui.txt`')
+            self.exit(None)
+            return
+
+        if self.args.gui:
             self.icon = self.create_icon()
             try:
                 self.icon.run(self.post_create)
             except NotImplementedError:
-                Log.error('Unable to initialise icon - did you mean to run in --no-gui mode?')
+                Log.error('Unable to initialise icon - did you mean to run in `--no-gui` mode?')
                 self.exit(None)
                 # noinspection PyProtectedMember
                 self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
+        else:
+            self.icon = None
+            self.post_create(None)
 
     # PyAttributeOutsideInit inspection suppressed because init_platforms() is itself called from __init__()
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
-        if sys.platform == 'darwin' and not self.args.no_gui:
+        if sys.platform == 'darwin' and self.args.gui:
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -2298,6 +2394,7 @@ class App:
             PyObjCTools.MachSignals.signal(signal.SIGTERM, lambda _signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGQUIT, lambda _signum: self.exit(self.icon))
             PyObjCTools.MachSignals.signal(signal.SIGHUP, lambda _signum: self.load_and_start_servers(self.icon))
+            PyObjCTools.MachSignals.signal(signal.SIGUSR1, lambda _: self.toggle_debug(Log.get_level() == logging.INFO))
 
         else:
             # for other platforms, or in no-GUI mode, just try to exit gracefully if SIGINT/SIGTERM/SIGQUIT is received
@@ -2309,6 +2406,10 @@ class App:
                 # allow config file reloading without having to stop/start - e.g.: pkill -SIGHUP -f emailproxy.py
                 # (we don't use linux_restart() here as it exits then uses nohup to restart, which may not be desirable)
                 signal.signal(signal.SIGHUP, lambda _signum, _frame: self.load_and_start_servers(self.icon))
+            if hasattr(signal, 'SIGUSR1'):
+                # use SIGUSR1 as a toggle for debug mode (e.g.: pkill -USR1 -f emailproxy.py) - please note that the
+                # proxy's handling of this signal may change in future if other actions are seen as more suitable
+                signal.signal(signal.SIGUSR1, lambda _signum, _fr: self.toggle_debug(Log.get_level() == logging.INFO))
 
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
@@ -2327,7 +2428,7 @@ class App:
 
     # noinspection PyDeprecation
     def create_icon(self):
-        # temporary fix for pystray <= 0.19.4 incompatibility with PIL 10.0.0+; fixed once pystray PR #147 is released
+        # fix pystray <= 0.19.4 incompatibility with PIL 10.0.0+; resolved in 0.19.5 and later via pystray PR #147
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', DeprecationWarning)
             pystray_version = pkg_resources.get_distribution('pystray').version
@@ -2341,7 +2442,8 @@ class App:
             pystray.MenuItem('Authorise account', pystray.Menu(self.create_authorisation_menu)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Start at login', self.toggle_start_at_login, checked=self.started_at_login),
-            pystray.MenuItem('Debug mode', self.toggle_debug, checked=lambda _: Log.get_level() == logging.DEBUG),
+            pystray.MenuItem('Debug mode', lambda _, item: self.toggle_debug(not item.checked),
+                             checked=lambda _: Log.get_level() == logging.DEBUG),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem('Quit %s' % APP_NAME, self.exit)))
 
@@ -2521,7 +2623,7 @@ class App:
                         forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
                         webview.start(gui=forced_gui, debug=Log.get_level() == logging.DEBUG)
                 else:
-                    WEBVIEW_QUEUE.put(request)  # future requests need to use the same thread
+                    self.macos_web_view_queue.put(request)  # future requests need to use the same thread
                 return
         self.notify(APP_NAME, 'There are no pending authorisation requests')
 
@@ -2571,7 +2673,7 @@ class App:
         dummy_window.hide()  # hidden=True (above) doesn't seem to work in all cases
 
         while True:
-            data = WEBVIEW_QUEUE.get()  # note: blocking call
+            data = self.macos_web_view_queue.get()  # note: blocking call
             if data is QUEUE_SENTINEL:  # app is closing
                 break
             self.create_authorisation_window(data)
@@ -2756,9 +2858,12 @@ class App:
 
         return False
 
-    @staticmethod
-    def toggle_debug(_, item):
-        Log.set_level(logging.INFO if item.checked else logging.DEBUG)
+    def toggle_debug(self, enable_debug_mode, log_message=True):
+        Log.set_level(logging.DEBUG if enable_debug_mode else logging.INFO)
+        if log_message:
+            Log.info('Setting debug mode:', Log.get_level() == logging.DEBUG)
+        if hasattr(self, 'icon') and self.icon:
+            self.icon.update_menu()
 
     # noinspection PyUnresolvedReferences
     def notify(self, title, text):
@@ -2806,7 +2911,9 @@ class App:
     def load_and_start_servers(self, icon=None, reload=True):
         # we allow reloading, so must first stop any existing servers
         self.stop_servers()
-        Log.info('Initialising', APP_NAME, '(version %s)' % __version__, 'from config file', CONFIG_FILE_PATH)
+        Log.info('Initialising', APP_NAME,
+                 '(version %s)%s' % (__version__, ' in debug mode' if Log.get_level() == logging.DEBUG else ''),
+                 'from config file', CONFIG_FILE_PATH)
         if reload:
             AppConfig.unload()
         config = AppConfig.get()
@@ -2861,6 +2968,9 @@ class App:
             else:
                 error_text = 'Invalid' if len(AppConfig.servers()) > 0 else 'No'
                 Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
+                if not os.path.exists(CONFIG_FILE_PATH):
+                    Log.error(APP_NAME, 'config file not found - see https://github.com/simonrob/email-oauth2-proxy',
+                              'for full documentation and example configurations to help get started')
                 self.notify(APP_NAME, error_text + ' server configuration(s) found. ' +
                             'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
@@ -2877,6 +2987,7 @@ class App:
     @staticmethod
     def terminal_external_auth_input(prompt_session, prompt_stop_event, data):
         with contextlib.suppress(Exception):  # cancel any other prompts; thrown if there are none to cancel
+            # noinspection PyUnresolvedReferences
             prompt_toolkit.application.current.get_app().exit(exception=EOFError)
             time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
@@ -2928,6 +3039,7 @@ class App:
                 time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
     def terminal_external_auth_prompt(self, data):
+        # noinspection PyUnresolvedReferences
         prompt_session = prompt_toolkit.PromptSession()
         prompt_stop_event = threading.Event()
         threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
@@ -2962,7 +3074,7 @@ class App:
                                 data['username'])
                     data['local_server_auth'] = True
                     RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
-                elif self.args.external_auth and self.args.no_gui:
+                elif self.args.external_auth and not self.args.gui:
                     if sys.stdin and sys.stdin.isatty():
                         self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
                                               '%s' % data['username'])
@@ -3001,7 +3113,7 @@ class App:
 
         AppConfig.save()
 
-        if sys.platform == 'darwin' and not self.args.no_gui:
+        if sys.platform == 'darwin' and self.args.gui:
             # noinspection PyUnresolvedReferences
             SystemConfiguration.SCNetworkReachabilityUnscheduleFromRunLoop(self.macos_reachability_target,
                                                                            SystemConfiguration.CFRunLoopGetCurrent(),
@@ -3009,9 +3121,9 @@ class App:
 
         REQUEST_QUEUE.put(QUEUE_SENTINEL)
         RESPONSE_QUEUE.put(QUEUE_SENTINEL)
-        WEBVIEW_QUEUE.put(QUEUE_SENTINEL)
 
         if self.web_view_started:
+            self.macos_web_view_queue.put(QUEUE_SENTINEL)
             for window in webview.windows[:]:  # iterate over a copy; remove (in destroy()) from original
                 window.show()
                 window.destroy()
@@ -3021,6 +3133,10 @@ class App:
                 proxy.stop()
 
         if icon:
+            # work around a pystray issue with removing the macOS status bar icon when started from a parent script
+            if sys.platform == 'darwin':
+                # noinspection PyProtectedMember
+                icon._status_item.button().setImage_(None)
             icon.stop()
 
         # for the 'Start at login' option we need a callback to restart the script the first time this preference is
@@ -3031,8 +3147,10 @@ class App:
             restart_callback()
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
-        if sys.platform == 'darwin' and not self.args.no_gui and self.macos_unload_plist_on_exit:
+        if sys.platform == 'darwin' and self.args.gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
+
+        EXITING = False  # to allow restarting when imported from parent scripts (or an interpreter)
 
 
 if __name__ == '__main__':

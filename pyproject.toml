@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "pyasyncore; python_version >= '3.12'", "cryptography"] # core requirements are needed for version detection, which requires importing the script
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emailproxy"
+authors = [
+    { name = "Simon Robinson", email = "simon@robinson.ac" }
+]
+description = "Transparently add OAuth 2.0 support to IMAP/POP/SMTP clients that don't support this authentication method."
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "Apache License 2.0" }
+requires-python = ">=3.6"
+classifiers = [
+    "Operating System :: OS Independent",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Topic :: Communications :: Email",
+    "Topic :: Communications :: Email :: Mail Transport Agents",
+    "Topic :: Communications :: Email :: Post-Office",
+    "Topic :: Communications :: Email :: Post-Office :: IMAP",
+    "Topic :: Communications :: Email :: Post-Office :: POP3",
+    "Development Status :: 6 - Mature",
+    "License :: OSI Approved :: Apache Software License"
+]
+dynamic = ["dependencies", "optional-dependencies", "version"]
+
+[project.scripts]
+emailproxy = "emailproxy:App"
+
+[project.urls]
+"Homepage" = "https://github.com/simonrob/email-oauth2-proxy"
+"Changelog" = "https://github.com/simonrob/email-oauth2-proxy/releases"
+"Documentation" = "https://github.com/simonrob/email-oauth2-proxy#email-oauth-20-proxy"
+"Bug Tracker" = "https://github.com/simonrob/email-oauth2-proxy/issues"
+"Source Code" = "https://github.com/simonrob/email-oauth2-proxy"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements-core.txt"] }
+optional-dependencies.gui = { file = ["requirements-gui.txt"] }
+version = { attr = "emailproxy.__package_version__" }
