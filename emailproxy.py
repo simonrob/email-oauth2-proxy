@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-01'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-02'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2262,7 +2262,9 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self, args=None):
-        global CONFIG_FILE_PATH, CACHE_STORE
+        global CONFIG_FILE_PATH, CACHE_STORE, EXITING
+        EXITING = False  # needed to allow restarting when imported from parent scripts (or an interpreter)
+
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
                                                      'applications, scripts or any other email use-cases that don\'t '
                                                      'support this authentication method.' % APP_NAME, add_help=False,
@@ -3149,8 +3151,6 @@ class App:
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
         if sys.platform == 'darwin' and self.args.gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
-
-        EXITING = False  # to allow restarting when imported from parent scripts (or an interpreter)
 
 
 if __name__ == '__main__':

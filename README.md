@@ -31,7 +31,7 @@ Begin by downloading the proxy via one of the following methods:
   <li>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a> (and star :-) the <a href="https://github.com/simonrob/email-oauth2-proxy/">GitHub repository</a>, then: <code>python -m pip install -r requirements-core.txt -r requirements-gui.txt</code> to install requirements, and <code>python emailproxy.py</code> to run</li>
 </ol>
 
-If you choose download option (A) or (B), you should also [download the sample `emailproxy.config` file](https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config) and place this into the directory you will run the proxy from.
+If you choose download option (B), you should also [download the sample `emailproxy.config` file](https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config) and place this into the directory you will run the proxy from.
 Next, edit the `emailproxy.config` file to add configuration details for each email server and account that you want to use with the proxy.
 [Guidance and example account configurations](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) are provided for Office 365, Gmail and several other providers, though you will need to insert your own client credentials for each one (see the [documentation below](https://github.com/simonrob/email-oauth2-proxy/#oauth-20-client-credentials)).
 You can remove details from the sample configuration file for services you don't use, or add additional ones for any other OAuth 2.0-authenticated IMAP/POP/SMTP servers you would like to use with the proxy.
