@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-02'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-06'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -60,18 +60,25 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme (the `--no-gui` option)
 MISSING_GUI_REQUIREMENTS = []
 
-try:
-    import pystray  # the menu bar/taskbar GUI
-except ImportError as gui_requirement_import_error:
-    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+no_gui_parser = argparse.ArgumentParser(add_help=False)
+no_gui_parser.add_argument('--no-gui', action='store_false', dest='gui')
+no_gui_args = no_gui_parser.parse_known_args()[0]
+if no_gui_args.gui:
+    try:
+        import pystray  # the menu bar/taskbar GUI
+    except Exception as gui_requirement_import_error:  # see #204 - incomplete pystray installation can throw exceptions
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+        no_gui_args.gui = False  # we need the dummy implementation
 
-
+if not no_gui_args.gui:
     class DummyPystray:  # dummy implementation allows initialisation to complete
         class Icon:
             pass
 
 
     pystray = DummyPystray  # this is just to avoid unignorable IntelliJ warnings about naming and spacing
+del no_gui_parser
+del no_gui_args
 
 try:
     # noinspection PyUnresolvedReferences
@@ -104,7 +111,7 @@ if sys.platform == 'darwin':
     try:
         # PyUnresolvedReferences; see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppression)
         # noinspection PyPackageRequirements,PyUnresolvedReferences
-        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+        import PyObjCTools.MachSignals  # SIGTERM handling (only needed in GUI mode; `signal` is sufficient otherwise)
     except ImportError as gui_requirement_import_error:
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
