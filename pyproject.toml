@@ -27,6 +27,9 @@ classifiers = [
 ]
 dynamic = ["dependencies", "optional-dependencies", "version"]
 
+[tool.setuptools]
+py-modules = ["emailproxy"] # ignore other folders in the root directory (note that some (such as "tests") *cannot* be ignored in the .tar.gz sdist without a MANIFEST.in)
+
 [project.scripts]
 emailproxy = "emailproxy:App"
 
