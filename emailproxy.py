@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-10'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -240,8 +240,9 @@ class Log:
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
-                                                           os.path.realpath(__file__)), APP_SHORT_NAME),
+                log_file or os.path.join(os.getcwd() if __package__ is not None else
+                                         os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
+                                                         os.path.realpath(__file__)), '%s.log' % APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
 
@@ -2815,7 +2816,10 @@ class App:
 
         script_command = [python_command]
         if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
-            script_command.append(os.path.realpath(__file__))
+            if __package__ is not None:
+                script_command.extend(['-m', APP_SHORT_NAME])
+            else:
+                script_command.append(os.path.realpath(__file__))
 
         # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
         script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
