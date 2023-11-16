@@ -2270,7 +2270,7 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self, args=None):
-        global CONFIG_FILE_PATH, CACHE_STORE, EXITING
+        global CONFIG_FILE_PATH, CACHE_STORE, EXITING, prompt_toolkit
         EXITING = False  # needed to allow restarting when imported from parent scripts (or an interpreter)
 
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
