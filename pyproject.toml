@@ -33,11 +33,10 @@ py-modules = ["emailproxy"] # ignore other folders in the root directory (note t
 [project.scripts]
 emailproxy = "emailproxy:App"
 
-[project.urls]
-"Homepage" = "https://github.com/simonrob/email-oauth2-proxy"
-"Changelog" = "https://github.com/simonrob/email-oauth2-proxy/releases"
+[project.urls] # shown in alphabetical order on PyPI, and there is no way to put a "Homepage" link first as with the setup.py approach (but see https://github.com/pypi/warehouse/blob/main/warehouse/templates/packaging/detail.html)
 "Documentation" = "https://github.com/simonrob/email-oauth2-proxy#email-oauth-20-proxy"
-"Bug Tracker" = "https://github.com/simonrob/email-oauth2-proxy/issues"
+"Release Notes" = "https://github.com/simonrob/email-oauth2-proxy/releases"
+"Report Issues" = "https://github.com/simonrob/email-oauth2-proxy/issues"
 "Source Code" = "https://github.com/simonrob/email-oauth2-proxy"
 
 [tool.setuptools.dynamic]
