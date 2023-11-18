@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-01'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-18'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -63,18 +63,25 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # where not having to install GUI-only requirements can be helpful - see the proxy's readme (the `--no-gui` option)
 MISSING_GUI_REQUIREMENTS = []
 
-try:
-    import pystray  # the menu bar/taskbar GUI
-except ImportError as gui_requirement_import_error:
-    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+no_gui_parser = argparse.ArgumentParser(add_help=False)
+no_gui_parser.add_argument('--no-gui', action='store_false', dest='gui')
+no_gui_args = no_gui_parser.parse_known_args()[0]
+if no_gui_args.gui:
+    try:
+        import pystray  # the menu bar/taskbar GUI
+    except Exception as gui_requirement_import_error:  # see #204 - incomplete pystray installation can throw exceptions
+        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+        no_gui_args.gui = False  # we need the dummy implementation
 
-
+if not no_gui_args.gui:
     class DummyPystray:  # dummy implementation allows initialisation to complete
         class Icon:
             pass
 
 
     pystray = DummyPystray  # this is just to avoid unignorable IntelliJ warnings about naming and spacing
+del no_gui_parser
+del no_gui_args
 
 try:
     # noinspection PyUnresolvedReferences
@@ -107,7 +114,7 @@ if sys.platform == 'darwin':
     try:
         # PyUnresolvedReferences; see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppression)
         # noinspection PyPackageRequirements,PyUnresolvedReferences
-        import PyObjCTools  # SIGTERM handling (only needed when in GUI mode; `signal` is sufficient otherwise)
+        import PyObjCTools.MachSignals  # SIGTERM handling (only needed in GUI mode; `signal` is sufficient otherwise)
     except ImportError as gui_requirement_import_error:
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
@@ -236,8 +243,9 @@ class Log:
         Log._LOGGER = logging.getLogger(APP_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
-                log_file or '%s/%s.log' % (os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
-                                                           os.path.realpath(__file__)), APP_SHORT_NAME),
+                log_file or os.path.join(os.getcwd() if __package__ is not None else
+                                         os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
+                                                         os.path.realpath(__file__)), '%s.log' % APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
 
@@ -2328,7 +2336,9 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self, args=None):
-        global CONFIG_FILE_PATH, CACHE_STORE
+        global CONFIG_FILE_PATH, CACHE_STORE, EXITING, prompt_toolkit
+        EXITING = False  # needed to allow restarting when imported from parent scripts (or an interpreter)
+
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
                                                      'applications, scripts or any other email use-cases that don\'t '
                                                      'support this authentication method.' % APP_NAME, add_help=False,
@@ -2876,7 +2886,10 @@ class App:
 
         script_command = [python_command]
         if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
-            script_command.append(os.path.realpath(__file__))
+            if __package__ is not None:
+                script_command.extend(['-m', APP_SHORT_NAME])
+            else:
+                script_command.append(os.path.realpath(__file__))
 
         # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
         script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
@@ -3239,8 +3252,6 @@ class App:
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
         if sys.platform == 'darwin' and self.args.gui and self.macos_unload_plist_on_exit:
             self.macos_launchctl('unload')
-
-        EXITING = False  # to allow restarting when imported from parent scripts (or an interpreter)
 
 
 if __name__ == '__main__':
