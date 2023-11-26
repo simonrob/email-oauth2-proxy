@@ -28,7 +28,7 @@ Begin by downloading the proxy via one of the following methods:
 <ol type="A">
   <li><b>Pick a <a href="https://github.com/simonrob/email-oauth2-proxy/releases/latest">pre-built release</a></b> for your platform (macOS or Windows; no installation needed); <i>or</i>,</li>
   <li><b>Install from <a href="https://pypi.org/project/emailproxy/">PyPI</a></b>: set up using <code>python -m pip install emailproxy[gui]</code>, download the <a href="https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config">sample <code>emailproxy.config</code> file</a>, then <code>python -m emailproxy</code> to run; <i>or</i>,</li>
-  <li><b>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a></b> (and star :-) the <a href="https://github.com/simonrob/email-oauth2-proxy/">GitHub repository</a>, then: <code>python -m pip install -r requirements-core.txt -r requirements-gui.txt</code> to install requirements, and <code>python emailproxy.py</code> to run.</li>
+  <li><b>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a></b> (and star :-) the <a href="https://github.com/simonrob/email-oauth2-proxy/">GitHub repository</a>, then: <code>python -m pip .</code> or <code>python -m pip .[gui]</code>to install requirements (for headless or GUI respectively), and <code>python emailproxy.py</code> to run.</li>
 </ol>
 
 Next, edit the sample `emailproxy.config` file to add configuration details for each email server and account that you want to use with the proxy.
