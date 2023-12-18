@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-18'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-12-18'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -340,10 +340,10 @@ class CacheStore(abc.ABC):
 
 
 class AWSSecretsManagerCacheStore(CacheStore):
-    # noinspection PyGlobalUndefined,PyPackageRequirements
     @staticmethod
     def _get_boto3_client(store_id):
         try:
+            # noinspection PyGlobalUndefined
             global boto3, botocore
             import boto3
             import botocore.exceptions
@@ -752,7 +752,11 @@ class OAuth2Helper:
         try:
             # if both secret values are present we use the unencrypted version (as it may have been user-edited)
             if client_secret_encrypted and not client_secret:
-                client_secret = cryptographer.decrypt(client_secret_encrypted)
+                try:
+                    client_secret = cryptographer.decrypt(client_secret_encrypted)
+                except InvalidToken as e:  # needed to avoid looping as we don't remove secrets on decryption failure
+                    Log.error('Invalid password to decrypt', username, 'secret - aborting login:', Log.error_string(e))
+                    return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
@@ -2270,7 +2274,9 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self, args=None):
-        global CONFIG_FILE_PATH, CACHE_STORE, EXITING, prompt_toolkit
+        # noinspection PyGlobalUndefined
+        global prompt_toolkit
+        global CONFIG_FILE_PATH, CACHE_STORE, EXITING
         EXITING = False  # needed to allow restarting when imported from parent scripts (or an interpreter)
 
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
