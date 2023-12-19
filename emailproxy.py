@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-18'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-19'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -777,12 +777,14 @@ class OAuth2Helper:
                         AppConfig.save()
 
                     else:
-                        # we used to keep tokens until the last possible moment here, but it is simpler to just obtain a
-                        # new one within TOKEN_EXPIRY_MARGIN, particularly when in CCG or ROPCG flow modes where getting
-                        # a new token involves no user interaction (note that in interactive mode it would be better to
+                        # avoid trying invalid (or soon to be) tokens - we used to keep tokens until the last possible
+                        # moment here, but it is simpler to just obtain a new one within TOKEN_EXPIRY_MARGIN, especially
+                        # when in CCG/ROPCG/Google Cloud service account modes, for all of which getting a new token
+                        # involves no interaction from the user (note that in interactive mode it would be better to
                         # request a new token via the user before discarding the existing one, but since this happens
                         # very infrequently, we don't add the extra complexity for just 10 extra minutes of token life)
-                        access_token = None  # avoid trying invalid (or soon to be) tokens
+                        cryptographer.decrypt(access_token)  # check request is valid (raises InvalidToken on failure)
+                        access_token = None
                 else:
                     access_token = cryptographer.decrypt(access_token)
 
