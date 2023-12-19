@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-18'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-11-19'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -440,7 +440,7 @@ class ConcurrentConfigParser:
     """Helper wrapper to add locking to a ConfigParser object (note: only wraps the methods used in this script)"""
 
     def __init__(self):
-        self.config = configparser.ConfigParser()
+        self.config = configparser.ConfigParser(interpolation=None)
         self.lock = threading.Lock()
 
     def read(self, filename):
@@ -522,7 +522,7 @@ class AppConfig:
 
     @staticmethod
     def _load_cache(cache_store_identifier):
-        cache_file_parser = configparser.ConfigParser()
+        cache_file_parser = configparser.ConfigParser(interpolation=None)
         for prefix, cache_store_handler in AppConfig._EXTERNAL_CACHE_STORES.items():
             if cache_store_identifier.startswith(prefix):
                 cache_file_parser.read_dict(cache_store_handler.load(cache_store_identifier[len(prefix):]))
@@ -555,6 +555,13 @@ class AppConfig:
         return [s for s in AppConfig.get().sections() if '@' in s]
 
     @staticmethod
+    def get_option_with_catch_all_fallback(config, account, option, fallback=None):
+        if AppConfig.get_global('allow_catch_all_accounts', fallback=False):
+            user_domain = '@%s' % account.split('@')[-1]
+            fallback = config.get(user_domain, option, fallback=config.get('@', option, fallback=fallback))
+        return config.get(account, option, fallback=fallback)
+
+    @staticmethod
     def save():
         with AppConfig._PARSER_LOCK:
             if AppConfig._PARSER is None:  # intentionally using _PARSER not get() so we don't (re-)load if unloaded
@@ -562,7 +569,7 @@ class AppConfig:
 
             if CACHE_STORE != CONFIG_FILE_PATH:
                 # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc)
-                output_config_parser = configparser.ConfigParser()
+                output_config_parser = configparser.ConfigParser(interpolation=None)
                 output_config_parser.read_dict(AppConfig._PARSER)  # a deep copy of the current configuration
                 config_accounts = [s for s in output_config_parser.sections() if '@' in s]
 
@@ -609,7 +616,8 @@ class Cryptographer:
         (such as stored tokens), and also supports increasing the encryption/decryption iterations (i.e., strength)"""
         self._salt = None
 
-        token_salt = config.get(username, 'token_salt', fallback=None)
+        # token_salt (and iterations, below) can optionally be inherited in, e.g., CCG / service account configurations
+        token_salt = AppConfig.get_option_with_catch_all_fallback(config, username, 'token_salt')
         if token_salt:
             try:
                 self._salt = base64.b64decode(token_salt.encode('utf-8'))  # catch incorrect third-party proxy guide
@@ -621,7 +629,8 @@ class Cryptographer:
             self._salt = os.urandom(16)  # either a failed decode or the initial run when no salt exists
 
         # the iteration count is stored with the credentials, so could if required be user-edited (see PR #198 comments)
-        iterations = config.getint(username, 'token_iterations', fallback=self.LEGACY_ITERATIONS)
+        iterations = int(AppConfig.get_option_with_catch_all_fallback(config, username, 'token_iterations',
+                                                                      fallback=self.LEGACY_ITERATIONS))
 
         # with MultiFernet each fernet is tried in order to decrypt a value, but encryption always uses the first
         # fernet, so sort unique iteration counts in descending order (i.e., use the best available encryption)
@@ -687,22 +696,17 @@ class OAuth2Helper:
                            'client_secret' % (APP_NAME, username))
 
         config = AppConfig.get()
-
-        def get_account_with_catch_all_fallback(option):
-            fallback = None
-            if AppConfig.get_global('allow_catch_all_accounts', fallback=False):
-                fallback = config.get(user_domain, option, fallback=config.get('@', option, fallback=None))
-            return config.get(username, option, fallback=fallback)
-
-        permission_url = get_account_with_catch_all_fallback('permission_url')
-        token_url = get_account_with_catch_all_fallback('token_url')
-        oauth2_scope = get_account_with_catch_all_fallback('oauth2_scope')
-        oauth2_flow = get_account_with_catch_all_fallback('oauth2_flow')
-        redirect_uri = get_account_with_catch_all_fallback('redirect_uri')
-        redirect_listen_address = get_account_with_catch_all_fallback('redirect_listen_address')
-        client_id = get_account_with_catch_all_fallback('client_id')
-        client_secret = get_account_with_catch_all_fallback('client_secret')
-        client_secret_encrypted = get_account_with_catch_all_fallback('client_secret_encrypted')
+        permission_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'permission_url')
+        token_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'token_url')
+        oauth2_scope = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_scope')
+        oauth2_flow = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_flow')
+        redirect_uri = AppConfig.get_option_with_catch_all_fallback(config, username, 'redirect_uri')
+        redirect_listen_address = AppConfig.get_option_with_catch_all_fallback(config, username,
+                                                                               'redirect_listen_address')
+        client_id = AppConfig.get_option_with_catch_all_fallback(config, username, 'client_id')
+        client_secret = AppConfig.get_option_with_catch_all_fallback(config, username, 'client_secret')
+        client_secret_encrypted = AppConfig.get_option_with_catch_all_fallback(config, username,
+                                                                               'client_secret_encrypted')
 
         # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
         # and likewise for client_secret here because it can be optional for Office 365 configurations
@@ -713,7 +717,7 @@ class OAuth2Helper:
                            'and client_secret)' % (APP_NAME, username))
 
         # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
-        example_client_value = '*** your client'
+        example_client_value = '*** your'
         example_client_status = [example_client_value in i for i in [client_id, client_secret] if i]
         if any(example_client_status):
             if all(example_client_status) or example_client_value in client_id:
@@ -768,18 +772,20 @@ class OAuth2Helper:
                         AppConfig.save()
 
                     else:
-                        # we used to keep tokens until the last possible moment here, but it is simpler to just obtain a
-                        # new one within TOKEN_EXPIRY_MARGIN, particularly when in CCG or ROPCG flow modes where getting
-                        # a new token involves no user interaction (note that in interactive mode it would be better to
+                        # avoid trying invalid (or soon to be) tokens - we used to keep tokens until the last possible
+                        # moment here, but it is simpler to just obtain a new one within TOKEN_EXPIRY_MARGIN, especially
+                        # when in CCG/ROPCG/Google Cloud service account modes, for all of which getting a new token
+                        # involves no interaction from the user (note that in interactive mode it would be better to
                         # request a new token via the user before discarding the existing one, but since this happens
                         # very infrequently, we don't add the extra complexity for just 10 extra minutes of token life)
-                        access_token = None  # avoid trying invalid (or soon to be) tokens
+                        cryptographer.decrypt(access_token)  # check request is valid (raises InvalidToken on failure)
+                        access_token = None
                 else:
                     access_token = cryptographer.decrypt(access_token)
 
             if not access_token:
                 auth_result = None
-                if permission_url:  # O365 CCG and ROPCG flows skip the authorisation step; no permission_url
+                if permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
                     oauth2_flow = 'authorization_code'
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
@@ -793,10 +799,18 @@ class OAuth2Helper:
                         return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
-                    oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
+                    # default to ROPCG if not set (CCG is `client_credentials`; service account is `service_account`)
+                    oauth2_flow = 'password'
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, auth_result, oauth2_scope,
                                                                         oauth2_flow, username, password)
+
+                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
+                    if client_secret:
+                        # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when
+                        # using `encrypt_client_secret_on_first_use` with the `allow_catch_all_accounts` option
+                        config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
+                        config.remove_option(username, 'client_secret')
 
                 access_token = response['access_token']
                 if username not in config.sections():
@@ -809,16 +823,9 @@ class OAuth2Helper:
 
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
-                elif permission_url:  # ignore this situation with client credentials flow - it is expected
+                elif permission_url:  # ignore this situation with CCG/ROPCG/service account flows - it is expected
                     Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
                              'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
-
-                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
-                    if client_secret:
-                        # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when using
-                        # incompatible `encrypt_client_secret_on_first_use` and `allow_catch_all_accounts` options
-                        config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
-                        config.remove_option(username, 'client_secret')
 
                 AppConfig.save()
 
@@ -846,7 +853,11 @@ class OAuth2Helper:
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
         except InvalidToken as e:
-            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True):
+            # regardless of the `delete_account_token_on_password_error` setting, we only reset tokens for standard or
+            # ROPCG flows; when using CCG or a service account it is far safer to deny account access and require a
+            # config file edit in order to reset an account rather than allowing *any* password to be used for access
+            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True) and (
+                    permission_url or oauth2_flow not in ['client_credentials', 'service_account']):
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
                 config.remove_option(username, 'token_salt')
@@ -1019,6 +1030,10 @@ class OAuth2Helper:
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
+        if oauth2_flow == 'service_account':  # service accounts are slightly different, and are handled separately
+            return OAuth2Helper.get_service_account_authorisation_token(client_id, client_secret, oauth2_scope,
+                                                                        username)
+
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
                   'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         if not client_secret:
@@ -1038,6 +1053,33 @@ class OAuth2Helper:
             e.message = json.loads(e.read())
             Log.debug('Error requesting access token - received invalid response:', e.message)
             raise e
+
+    @staticmethod
+    def get_service_account_authorisation_token(key_type, key_path_or_contents, oauth2_scope, username):
+        """Requests an authorisation token via a Service Account key (currently Google Cloud only)"""
+        import json
+        try:
+            import requests
+            import google.oauth2.service_account
+            import google.auth.transport.requests
+        except ModuleNotFoundError:
+            error_message = 'Unable to load Google Auth SDK - please install the `requests` and `google-auth` ' \
+                            'modules: `python -m pip install requests google-auth`'
+            raise Exception(error_message)
+
+        if key_type == 'file':
+            with open(key_path_or_contents) as key_file:
+                service_account = json.load(key_file)
+        else:
+            service_account = json.loads(key_path_or_contents)
+
+        credentials = google.oauth2.service_account.Credentials.from_service_account_info(service_account)
+        credentials = credentials.with_scopes(oauth2_scope.split(' '))
+        credentials = credentials.with_subject(username)
+
+        request = google.auth.transport.requests.Request()
+        credentials.refresh(request)
+        return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
 
     @staticmethod
     def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
