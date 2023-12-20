@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-19'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-12-20'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -799,7 +799,11 @@ class OAuth2Helper:
                         return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
-                    oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
+                    Log.error('No `oauth2_flow` value specified for', username, '- aborting login')
+                    return (False, '%s: Incomplete config file entry found for account %s - please make sure an '
+                                   '`oauth2_flow` value is specified when using a method that does not require a '
+                                   '`permission_url`' % (APP_NAME, username))
+
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, auth_result, oauth2_scope,
                                                                         oauth2_flow, username, password)
@@ -852,7 +856,11 @@ class OAuth2Helper:
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
         except InvalidToken as e:
-            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True):
+            # regardless of the `delete_account_token_on_password_error` setting, we only reset tokens for standard or
+            # ROPCG flows; when using CCG or a service account it is far safer to deny account access and require a
+            # config file edit in order to reset an account rather than allowing *any* password to be used for access
+            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True) and (
+                    permission_url or oauth2_flow not in ['client_credentials', 'service_account']):
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
                 config.remove_option(username, 'token_salt')
