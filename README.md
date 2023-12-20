@@ -73,9 +73,9 @@ The [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/b
 - Gmail / Google Workspace: register a [Google API desktop app client](https://developers.google.com/identity/protocols/oauth2/native-app)
 - AOL and Yahoo Mail (and subproviders such as AT&T) are not currently allowing new client registrations with the OAuth email scope – the only option here is to reuse the credentials from an existing client that does have this permission.
 
-The proxy also supports the [client credentials grant](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth-ropc) OAuth 2.0 flows if needed.
-Please note that currently only Office 365 is known to support these methods.
-In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections) (use [smtp2graph](https://github.com/EvanTrow/smtp2graph) instead here).
+The proxy supports [Google Cloud service accounts](https://cloud.google.com/iam/docs/service-account-overview) for access to Google Workspace Gmail.
+It also supports the [client credentials grant (CCG)](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant (ROPCG)](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth-ropc) OAuth 2.0 flows.
+Please note that currently only Office 365 is known to support the CCG and ROPCG methods.
 See the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for further details.
 
 
