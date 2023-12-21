@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-12-20'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-12-21'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1938,8 +1938,9 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         if self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.EHLO_AWAITING_RESPONSE:
             # intercept EHLO response AUTH capabilities and replace with what we can actually do - note that we assume
             # an AUTH line will be included in the response; if there are any servers for which this is not the case, we
-            # could cache and re-stream as in POP. Formal syntax: https://tools.ietf.org/html/rfc4954#section-8
-            updated_response = re.sub('250([ -])AUTH( [!-*,-<>-~]+)+', r'250\1AUTH PLAIN LOGIN', str_data,
+            # could cache and re-stream as in POP. AUTH command: https://datatracker.ietf.org/doc/html/rfc4954#section-3
+            # and corresponding formal `sasl-mech` syntax: https://tools.ietf.org/html/rfc4422#section-3.1
+            updated_response = re.sub(r'250([ -])AUTH(?: [A-Z\d_-]{1,20})+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = b'%s\r\n' % updated_response.encode('utf-8')
             if self.starttls_state is self.STARTTLS.COMPLETE:
