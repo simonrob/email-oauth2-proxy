@@ -32,14 +32,14 @@ Note that no detection of whether the remote server is actually O365 takes place
 This plugin helps avoid message duplication for servers that automatically place messages sent via SMTP into the relevant IMAP mailbox.
 Note that many clients are aware of this behaviour and provide an option to not upload sent messages – if this is available it is a much more efficient solution than adding a proxy plugin.
 
-- [`/IMAPRegexContentReplacer`](plugins/IMAPRegexContentReplacer.py): An example IMAP plugin that performs regular expression searches and substitutions in received messages.
-Please note that this is a relatively simplistic example of how such a plugin could work, and if you try to confuse/break it you will likely succeed.
+- [`IMAPRegexContentReplacer`](plugins/IMAPRegexContentReplacer.py): An example IMAP plugin that performs regular expression searches and substitutions on the content of received messages.
+Please note that this is a relatively simplistic example of how such a plugin could work, and if you try to confuse or break it you will likely succeed.
 
 - [`SMTPBlackHole`](plugins/SMTPBlackHole.py): An example SMTP plugin that accepts incoming email messages but silently discards them without passing to the remote server.
 Useful for testing email sending tools with no risk of actually delivering messages.
 
 - [`SMTPSimpleMailingList`](plugins/SMTPSimpleMailingList.py): An example SMTP plugin that replaces specified recipient addresses in outgoing emails with one or more different recipients.
-Please note that this is a relatively simplistic example of how such a plugin could work, and if you try to confuse/break it you will likely succeed (please use a real mailing list if you need to handle this).
+Please note that this is a relatively simplistic example of how such a plugin could work, and if you try to confuse or break it you will likely succeed (please use a real mailing list if you need to handle this).
 However, this approach works well for basic cases - for example, when you often find yourself sending an email to the same addresses, you can consolidate the group into a single address and never forget any recipients.
 Recipients themselves only ever see the real addresses, not your list, so there is no danger of replying to an address that does not exist.
 It recommended to chain with [`SMTPBlackHole`](plugins/SMTPBlackHole.py) and enable debug mode in the proxy at first use to check intended behaviour.
@@ -50,12 +50,14 @@ Extend [`BasePlugin`](plugins/BasePlugin.py) to create your own plugins that cus
 The two overridable methods `receive_from_client` and `receive_from_server` give access to raw IMAP/POP/SMTP messages/commands as they are received.
 The return values from these overridden methods, and the two sender methods `send_to_server` and `send_to_client` allow you to send messages/commands to the client/server (and other chained plugins) in response.
 The `log_debug`, `log_info` and `log_error` methods allow you to post messages to the proxy's main log.
-Note that plugins on the client side are inserted after authentication has finished – you will not receive anything from the client until that process is complete.
+See the method documentation and the sample plugins above for further guidance.
+
+Please note that for security reasons, plugins on the client side are inserted after authentication has finished – you will not receive anything from the client until that process is complete.
 
 ### Supporting tools
-See the discussion, variables and methods in [`BasePlugin`](plugins/BasePlugin.py) for pointers and suggestions about how to develop your own plugins.
-In addition, extending the following examples may help you get started:
+The discussion, methods and variables in [`BasePlugin`](plugins/BasePlugin.py) contain pointers and suggestions about how to develop your own plugins.
+In addition, extending the following helpers may help you get started:
 
-- [`/IMAPMessageEditor`](plugins/IMAPMessageEditor.py): An example IMAP plugin helper that can be extended to create other IMAP plugins that modify the content of received messages.
+- [`IMAPMessageEditor`](plugins/IMAPMessageEditor.py): An example IMAP plugin helper that can be extended to create other IMAP plugins that modify the content of received messages.
 This plugin abstracts away the potentially error-prone message decoding process and instead provides a single method that is called whenever an email is loaded.
 See [`IMAPRegexContentReplacer`](plugins/IMAPRegexContentReplacer.py) for an example of this helper in use.
