@@ -1685,6 +1685,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         if not self.custom_configuration['starttls']:
             # noinspection PyTypeChecker
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 1
             super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
                                                        suppress_ragged_eofs=True, do_handshake_on_connect=False))
             self.set_ssl_connection(True)
@@ -1956,6 +1957,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('220'):
                 # noinspection PyTypeChecker
                 ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+                ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 2
                 super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
                                                            suppress_ragged_eofs=True, do_handshake_on_connect=False))
                 self.set_ssl_connection(True)
