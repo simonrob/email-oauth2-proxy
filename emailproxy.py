@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-11-19'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-12-21'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -349,10 +349,10 @@ class CacheStore(abc.ABC):
 
 
 class AWSSecretsManagerCacheStore(CacheStore):
-    # noinspection PyGlobalUndefined,PyPackageRequirements
     @staticmethod
     def _get_boto3_client(store_id):
         try:
+            # noinspection PyGlobalUndefined
             global boto3, botocore
             import boto3
             import botocore.exceptions
@@ -761,7 +761,11 @@ class OAuth2Helper:
         try:
             # if both secret values are present we use the unencrypted version (as it may have been user-edited)
             if client_secret_encrypted and not client_secret:
-                client_secret = cryptographer.decrypt(client_secret_encrypted)
+                try:
+                    client_secret = cryptographer.decrypt(client_secret_encrypted)
+                except InvalidToken as e:  # needed to avoid looping as we don't remove secrets on decryption failure
+                    Log.error('Invalid password to decrypt', username, 'secret - aborting login:', Log.error_string(e))
+                    return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
@@ -804,7 +808,11 @@ class OAuth2Helper:
                         return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
-                    oauth2_flow = 'client_credentials'  # default to CCG over ROPCG if not set (ROPCG is `password`)
+                    Log.error('No `oauth2_flow` value specified for', username, '- aborting login')
+                    return (False, '%s: Incomplete config file entry found for account %s - please make sure an '
+                                   '`oauth2_flow` value is specified when using a method that does not require a '
+                                   '`permission_url`' % (APP_NAME, username))
+
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, auth_result, oauth2_scope,
                                                                         oauth2_flow, username, password)
@@ -857,7 +865,11 @@ class OAuth2Helper:
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
         except InvalidToken as e:
-            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True):
+            # regardless of the `delete_account_token_on_password_error` setting, we only reset tokens for standard or
+            # ROPCG flows; when using CCG or a service account it is far safer to deny account access and require a
+            # config file edit in order to reset an account rather than allowing *any* password to be used for access
+            if AppConfig.get_global('delete_account_token_on_password_error', fallback=True) and (
+                    permission_url or oauth2_flow not in ['client_credentials', 'service_account']):
                 config.remove_option(username, 'access_token')
                 config.remove_option(username, 'access_token_expiry')
                 config.remove_option(username, 'token_salt')
@@ -1694,6 +1706,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         if not self.custom_configuration['starttls']:
             # noinspection PyTypeChecker
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 1
             super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
                                                        suppress_ragged_eofs=True, do_handshake_on_connect=False))
             self.set_ssl_connection(True)
@@ -1967,8 +1980,9 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         if self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.EHLO_AWAITING_RESPONSE:
             # intercept EHLO response AUTH capabilities and replace with what we can actually do - note that we assume
             # an AUTH line will be included in the response; if there are any servers for which this is not the case, we
-            # could cache and re-stream as in POP. Formal syntax: https://tools.ietf.org/html/rfc4954#section-8
-            updated_response = re.sub('250([ -])AUTH( [!-*,-<>-~]+)+', r'250\1AUTH PLAIN LOGIN', str_data,
+            # could cache and re-stream as in POP. AUTH command: https://datatracker.ietf.org/doc/html/rfc4954#section-3
+            # and corresponding formal `sasl-mech` syntax: https://tools.ietf.org/html/rfc4422#section-3.1
+            updated_response = re.sub(r'250([ -])AUTH(?: [A-Z\d_-]{1,20})+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = b'%s\r\n' % updated_response.encode('utf-8')
             if self.starttls_state is self.STARTTLS.COMPLETE:
@@ -1984,6 +1998,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('220'):
                 # noinspection PyTypeChecker
                 ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+                ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 2
                 super().set_socket(ssl_context.wrap_socket(self.socket, server_hostname=self.server_address[0],
                                                            suppress_ragged_eofs=True, do_handshake_on_connect=False))
                 self.set_ssl_connection(True)
@@ -2338,7 +2353,9 @@ class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
     def __init__(self, args=None):
-        global CONFIG_FILE_PATH, CACHE_STORE, EXITING, prompt_toolkit
+        # noinspection PyGlobalUndefined
+        global prompt_toolkit
+        global CONFIG_FILE_PATH, CACHE_STORE, EXITING
         EXITING = False  # needed to allow restarting when imported from parent scripts (or an interpreter)
 
         parser = argparse.ArgumentParser(description='%s: transparently add OAuth 2.0 support to IMAP/POP/SMTP client '
