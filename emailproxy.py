@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2023 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-12-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2023-12-22'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -751,12 +751,18 @@ class OAuth2Helper:
 
         try:
             # if both secret values are present we use the unencrypted version (as it may have been user-edited)
-            if client_secret_encrypted and not client_secret:
-                try:
-                    client_secret = cryptographer.decrypt(client_secret_encrypted)
-                except InvalidToken as e:  # needed to avoid looping as we don't remove secrets on decryption failure
-                    Log.error('Invalid password to decrypt', username, 'secret - aborting login:', Log.error_string(e))
-                    return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
+            if client_secret_encrypted:
+                if not client_secret:
+                    try:
+                        client_secret = cryptographer.decrypt(client_secret_encrypted)
+                    except InvalidToken as e:  # needed to avoid looping (we don't remove secrets on decryption failure)
+                        Log.error('Invalid password to decrypt', username, 'secret - aborting login:',
+                                  Log.error_string(e))
+                        return False, '%s: Login failed - the password for account %s is incorrect' % (
+                            APP_NAME, username)
+                else:
+                    Log.info('Warning: found both `client_secret_encrypted` and `client_secret` for account', username,
+                             ' - the un-encrypted value will be used. Removing the un-encrypted value is recommended')
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
