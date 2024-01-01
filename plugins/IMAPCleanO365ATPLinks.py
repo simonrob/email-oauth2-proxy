@@ -32,7 +32,18 @@ class IMAPCleanO365ATPLinks(plugins.IMAPMessageEditor.IMAPMessageEditor):
             except UnicodeDecodeError:
                 # urlparse assumes ascii encoding which is not always the case; try to recover if possible
                 atp_url_query = atp_url.replace(b'&amp;', b'&').rsplit(b'&data', 2)[0].partition(b'?')[2]
-            atp_url_parts = dict(urllib.parse.parse_qsl(atp_url_query))
+            try:
+                # parse_qsl not parse_qs because we only ever care about non-array values; extra dict formatting
+                # as IntelliJ has a bug incorrectly detecting parse_qs/l as returning a dict with byte-type keys
+                atp_url_parts = {str(key): value for key, value in urllib.parse.parse_qsl(atp_url_query)}
+            except UnicodeEncodeError:
+                # the encoding and errors parameters for parse_qsl are not actually passed to _encode_result, so invalid
+                # (or incorrectly hyperlinked) values can cause decoding errors - we temporarily patch as a workaround
+                # noinspection PyUnresolvedReferences,PyProtectedMember
+                original_encode_result = urllib.parse._encode_result
+                urllib.parse._encode_result = lambda obj, encoding='utf-8', err='replace': obj.encode(encoding, err)
+                atp_url_parts = {str(key): value for key, value in urllib.parse.parse_qsl(atp_url_query)}
+                urllib.parse._encode_result = original_encode_result
             if b'url' in atp_url_parts:
                 edited_message += atp_url_parts[b'url']
                 link_count += 1
