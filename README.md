@@ -38,7 +38,7 @@ You can remove details from the sample configuration file for services you don't
 You can now start the proxy: depending on which installation option you chose, either launch the application or use the appropriate run command listed above.
 A menu bar/taskbar icon should appear.
 If this does not happen, see the [dependencies and setup](#dependencies-and-setup) section for help resolving this.
-For additional options, including fully headless deployments and integration with a secrets manager, see the [optional arguments](#optional-arguments-and-configuration) and [advanced configuration](#advanced-configuration)) sections.
+For additional options, including fully headless deployments and integration with a secrets manager, see the [optional arguments](#optional-arguments-and-configuration) and [advanced configuration](#advanced-configuration) sections.
 
 Finally, open your email client and configure its server details to match the ones you set in the proxy's configuration file.
 The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `127.0.0.1` on port `1993` for IMAP, port `1995` for POP and port `1587` for SMTP.
