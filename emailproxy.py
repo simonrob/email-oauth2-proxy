@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2023 Simon Robinson'
+__copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-12-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-01-07'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -3044,9 +3044,15 @@ class App:
                 Log.error('Error: invalid value', server_port, 'for remote server port in section', match.string)
                 server_load_error = True
 
-            # note: this is a semi-experimental option that allows the use of plugins to modify IMAP/SMTP messages
+            # note: this is an advanced option that allows the use of plugins to modify IMAP/POP/SMTP messages
             # see the documentation in the configuration file and sample plugins for more details and setup instructions
-            plugin_configuration = ast.literal_eval(config.get(section, 'plugins', fallback='{}'))
+            try:
+                plugin_configuration = ast.literal_eval(config.get(section, 'plugins', fallback='{}'))
+            except Exception as e:
+                plugin_configuration = {}
+                Log.error('Error: plugin configuration in section', match.string, 'is invalid:', Log.error_string(e))
+                server_load_error = True
+
             imported_plugins = collections.OrderedDict()  # (note: default dict is ordered only from Python 3.7+)
             for name, options in plugin_configuration.items():
                 plugin = None
