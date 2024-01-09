@@ -29,7 +29,9 @@ class IMAPLinkDestinationRevealer(plugins.IMAPMessageEditor.IMAPMessageEditor):
             link_post_attr = match.group('post_attr')
             link_text = match.group('text')
 
-            if link_prefix + link_url != b'http' + link_text:
+            href_url = link_prefix + link_url
+            text_url = b'http' + link_text
+            if href_url not in [text_url, b'%s/' % text_url, text_url.rstrip(b'/')]:
                 parts = link_url.split(b'/', 1)
                 truncated = b'%s%s' % (link_prefix, parts[0])
                 if len(parts) > 0:
@@ -37,9 +39,9 @@ class IMAPLinkDestinationRevealer(plugins.IMAPMessageEditor.IMAPMessageEditor):
                         truncated, parts[1][:DESTINATION_MAX_LENGTH])) if 0 <= DESTINATION_MAX_LENGTH < len(
                         parts[1]) else b'%s/%s' % (truncated, parts[1])
 
-                edited_message += (b'<a ' + link_pre_attr + b'href="http' + link_text + b'"' + link_post_attr +
-                                   b'>http' + link_text + b'</a> <i>[<a ' + link_pre_attr + b'href="' + link_prefix +
-                                   link_url + b'"' + link_post_attr + b'>' + truncated + b'</a>]</i>')
+                edited_message += (b'<a ' + link_pre_attr + b'href="' + text_url + b'"' + link_post_attr + b'>' +
+                                   text_url + b'</a> <i>[<a ' + link_pre_attr + b'href="' + href_url + b'"' +
+                                   link_post_attr + b'>' + truncated + b'</a>]</i>')
                 link_count += 1
             else:
                 edited_message += byte_message[start:end]
