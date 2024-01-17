@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2023 Simon Robinson'
+__copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2023-12-22'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-01-17'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1052,7 +1052,7 @@ class OAuth2Helper:
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
-                                       headers={'User-Agent': APP_NAME})).read()
+                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
@@ -1070,7 +1070,7 @@ class OAuth2Helper:
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
-                                       headers={'User-Agent': APP_NAME})).read()
+                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
             return json.loads(response)
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
