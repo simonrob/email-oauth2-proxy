@@ -25,6 +25,7 @@ import logging
 import logging.handlers
 import os
 import pathlib
+import platform
 import plistlib
 import queue
 import re
@@ -150,7 +151,10 @@ CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual 
 
 script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
-    script_path = '/'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
+    if float('.'.join(platform.mac_ver()[0].split('.')[:2])) >= 10.12:  # need a known path (due to App Translocation)
+        script_path = pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser()
+    else:
+        script_path = '.'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
 script_path = os.getcwd() if __package__ is not None else os.path.dirname(script_path)  # for packaged version (PyPI)
 CONFIG_FILE_PATH = CACHE_STORE = os.path.join(script_path, '%s.config' % APP_SHORT_NAME)
 CONFIG_SERVER_MATCHER = re.compile(r'^(?P<type>(IMAP|POP|SMTP))-(?P<port>\d+)$')
