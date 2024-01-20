@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-01-17'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-01-20'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -340,6 +340,7 @@ class CacheStore(abc.ABC):
 
 
 class AWSSecretsManagerCacheStore(CacheStore):
+    # noinspection PyUnresolvedReferences
     @staticmethod
     def _get_boto3_client(store_id):
         try:
@@ -568,7 +569,7 @@ class AppConfig:
                 return
 
             if CACHE_STORE != CONFIG_FILE_PATH:
-                # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc)
+                # in `--cache-store` mode we ignore everything except _CACHED_OPTION_KEYS (OAuth 2.0 tokens, etc.)
                 output_config_parser = configparser.ConfigParser(interpolation=None)
                 output_config_parser.read_dict(AppConfig._PARSER)  # a deep copy of the current configuration
                 config_accounts = [s for s in output_config_parser.sections() if '@' in s]
@@ -678,6 +679,7 @@ class OAuth2Helper:
 
     @staticmethod
     def get_oauth2_credentials(username, password, reload_remote_accounts=True):
+        # noinspection GrazieInspection
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
@@ -1067,6 +1069,7 @@ class OAuth2Helper:
             Log.debug('Error requesting access token - received invalid response:', e.message)
             raise e
 
+    # noinspection PyUnresolvedReferences
     @staticmethod
     def get_service_account_authorisation_token(key_type, key_path_or_contents, oauth2_scope, username):
         """Requests an authorisation token via a Service Account key (currently Google Cloud only)"""
@@ -1144,7 +1147,7 @@ class OAuth2Helper:
 
     @staticmethod
     def strip_quotes(text):
-        """Remove double quotes (i.e., " characters) around a string - used for IMAP LOGIN command"""
+        """Remove double quotes (i.e., "" characters) around a string - used for IMAP LOGIN command"""
         if text.startswith('"') and text.endswith('"'):
             return text[1:-1].replace(r'\"', '"')  # also need to fix any escaped quotes within the string
         return text
@@ -1794,10 +1797,11 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value = Log.get_last_error()
         if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
-                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.EHOSTDOWN, errno.EHOSTUNREACH]:
+                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTDOWN,
+                                                          errno.EHOSTUNREACH]:
             # TimeoutError 60 = 'Operation timed out'; ConnectionError 54 = 'Connection reset by peer', 61 = 'Connection
-            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 64 = 'Host is down';
-            # 65 = 'No route to host'
+            # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 51 = 'Network is
+            # unreachable'; 64 = 'Host is down'; 65 = 'No route to host'
             Log.info(self.info_string(), 'Caught network error (server) - is there a network connection?',
                      'Error type', error_type, 'with message:', value)
             self.close()
