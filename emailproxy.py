@@ -2490,6 +2490,16 @@ class App:
                 # proxy's handling of this signal may change in future if other actions are seen as more suitable
                 signal.signal(signal.SIGUSR1, lambda _signum, _fr: self.toggle_debug(Log.get_level() == logging.INFO))
 
+        # certificates are not imported automatically when packaged using pyinstaller - we need certifi
+        if getattr(sys, 'frozen', False):
+            if ssl.get_default_verify_paths().cafile is None and 'SSL_CERT_FILE' not in os.environ:
+                try:
+                    import certifi
+                    os.environ['SSL_CERT_FILE'] = certifi.where()
+                    Log.info('Running in a packaged/frozen environment - imported SSL certificates from `certifi`')
+                except ImportError:
+                    Log.info('Unable to find `certifi` in a packaged/frozen environment - SSL connections may fail')
+
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def macos_nsworkspace_notification_listener_(self, notification):
         notification_name = notification.name()
