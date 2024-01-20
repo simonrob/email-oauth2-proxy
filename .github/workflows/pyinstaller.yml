@@ -37,12 +37,17 @@ jobs:
           python-version: '3.x'
 
       # install requirements and build
-      # - note: `--hidden-import` is required for GUI mode until https://github.com/hustcc/timeago/issues/40 is fixed
+      # - note: `certifi` is required here because pyinstaller no longer bundles certificates (pyinstaller #7229)
+      # - note: `boto3`, `requests`, `google-auth` and corresponding pyinstaller hidden imports are so that advanced
+      #         proxy features work in pre-built pyinstaller binaries
+      # - note: `--hidden-import timeago.locales.en_short` is required for GUI mode until `timeago` #40 is fixed
       - run: |
           python -m pip install --upgrade pip
           python -m pip install wheel
           python -m pip install -r requirements-core.txt -r requirements-gui.txt pyinstaller
-          python -m PyInstaller --clean --noconsole --onefile --hidden-import timeago.locales.en_short --icon icon.png emailproxy.py
+          python -m pip install certifi
+          python -m pip install boto3 requests google-auth
+          python -m PyInstaller --clean --noconsole --onefile --hidden-import timeago.locales.en_short --hidden-import certifi --hidden-import boto3 --hidden-import requests --hidden-import google-auth --icon icon.png emailproxy.py
 
       # add license, documentation, configuration file sample and disclaimer
       # - note: `move [...] alias move=mv [...]` is to support using the same commands on all platforms

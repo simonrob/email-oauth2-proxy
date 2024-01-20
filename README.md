@@ -38,7 +38,7 @@ You can remove details from the sample configuration file for services you don't
 You can now start the proxy: depending on which installation option you chose, either launch the application or use the appropriate run command listed above.
 A menu bar/taskbar icon should appear.
 If this does not happen, see the [dependencies and setup](#dependencies-and-setup) section for help resolving this.
-For additional options, including fully headless deployments and integration with a secrets manager, see the [optional arguments](#optional-arguments-and-configuration) and [advanced configuration](#advanced-configuration)) sections.
+For additional options, including fully headless deployments and integration with a secrets manager, see the [optional arguments](#optional-arguments-and-configuration) and [advanced configuration](#advanced-configuration) sections.
 
 Finally, open your email client and configure its server details to match the ones you set in the proxy's configuration file.
 The correct server to use with an account is identified using the port number you select in your client – for example, to use the sample Office 365 details, this would be `127.0.0.1` on port `1993` for IMAP, port `1995` for POP and port `1587` for SMTP.
@@ -73,9 +73,9 @@ The [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/b
 - Gmail / Google Workspace: register a [Google API desktop app client](https://developers.google.com/identity/protocols/oauth2/native-app)
 - AOL and Yahoo Mail (and subproviders such as AT&T) are not currently allowing new client registrations with the OAuth email scope – the only option here is to reuse the credentials from an existing client that does have this permission.
 
-The proxy also supports the [client credentials grant](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth-ropc) OAuth 2.0 flows if needed.
-Please note that currently only Office 365 is known to support these methods.
-In addition, when using the client credentials grant flow, Office 365 only supports IMAP/POP, [_not_ SMTP](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth#use-client-credentials-grant-flow-to-authenticate-imap-and-pop-connections) (use [smtp2graph](https://github.com/EvanTrow/smtp2graph) instead here).
+The proxy supports [Google Cloud service accounts](https://cloud.google.com/iam/docs/service-account-overview) for access to Google Workspace Gmail.
+It also supports the [client credentials grant (CCG)](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant (ROPCG)](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth-ropc) OAuth 2.0 flows.
+Please note that currently only Office 365 is known to support the CCG and ROPCG methods.
 See the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for further details.
 
 
@@ -214,7 +214,7 @@ You will know intervention is necessary if the proxy exits (rather than restarts
 To resolve this, exit the proxy and then run `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist` from a terminal.
 A permission pop-up should appear requesting file access for python.
 Once this has been approved, the proxy's menu bar icon will appear as normal.
-In some cases — particularly when running the proxy in a virtual environment, or using the built-in macOS python, rather than the python.org version, or installations managed by, e.g., homebrew, pyenv, etc — the permission prompt does not appear.
+In some cases — particularly when running the proxy in a virtual environment, or using the built-in macOS python, rather than the python.org version, or installations managed by, e.g., homebrew, pyenv, etc. — the permission prompt does not appear.
 If this happens it is worth first trying to `unload` and then `load` the service via `launchctl`.
 If this still does not cause the prompt to appear, the only currently-known resolution is to run the proxy outside of a virtual environment and manually grant Full Disk Access to your python executable via the privacy settings in the macOS System Preferences.
 You may also need to edit the proxy's launch agent plist file, which is found at the location given in the command above, to set the path to your python executable – it must be the real path rather than a symlink (the `readlink` command can help here).
@@ -227,7 +227,7 @@ Please feel free to [open an issue](https://github.com/simonrob/email-oauth2-pro
 ## Advanced features<a id="advanced-features"></a>
 The [plugins variant](https://github.com/simonrob/email-oauth2-proxy/tree/plugins) has an additional feature that enables the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
 This allows a wide range of additional capabilities or triggers to be added the proxy.
-For example, the [IMAPIgnoreSentMessageUpload plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPIgnoreSentMessageUpload.py) intercepts any client commands to add emails to the IMAP sent messages mailbox, which resolves message duplication issues for servers that automatically do this when emails are received via SMTP (e.g., Office 365, Gmail, etc).
+For example, the [IMAPIgnoreSentMessageUpload plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPIgnoreSentMessageUpload.py) intercepts any client commands to add emails to the IMAP sent messages mailbox, which resolves message duplication issues for servers that automatically do this when emails are received via SMTP (e.g., Office 365, Gmail, etc.).
 The [IMAPCleanO365ATPLinks plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/IMAPCleanO365ATPLinks.py) restores "Safe Links" modified by Microsoft Defender for Office 365 to their original URLs.
 The [SMTPBlackHole plugin](https://github.com/simonrob/email-oauth2-proxy/blob/plugins/plugins/SMTPBlackHole.py) gives the impression emails are being sent but actually silently discards them, which is useful for testing email sending tools.
 See the [documentation and examples](https://github.com/simonrob/email-oauth2-proxy/tree/plugins/plugins) for further details, additional sample plugins and setup instructions.
@@ -246,7 +246,7 @@ For Docker, blacktirion has an [example configuration](https://github.com/blackt
 
 If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.
 Similarly, if you use an application that is able to handle OAuth 2.0 tokens but just cannot retrieve them itself, then [pizauth](https://github.com/ltratt/pizauth), [mailctl](https://github.com/pdobsan/mailctl) or [oauth-helper-office-365](https://github.com/ahrex/oauth-helper-office-365) may be more appropriate.
-There are also dedicated helpers available for specific applications (e.g., [mutt_oauth2](https://gitlab.com/muttmua/mutt/-/blob/master/contrib/mutt_oauth2.py)), and several open-source email clients that support OAuth 2.0 natively (e.g., [Thunderbird](https://www.thunderbird.net/), [Mailspring](https://getmailspring.com/), [FairEmail](https://email.faircode.eu/), [Evolution](https://wiki.gnome.org/Apps/Evolution), etc).
+There are also dedicated helpers available for specific applications (e.g., [mutt_oauth2](https://gitlab.com/muttmua/mutt/-/blob/master/contrib/mutt_oauth2.py)), and several open-source email clients that support OAuth 2.0 natively (e.g., [Thunderbird](https://www.thunderbird.net/), [Mailspring](https://getmailspring.com/), [FairEmail](https://email.faircode.eu/), [Evolution](https://wiki.gnome.org/Apps/Evolution), etc.).
 
 [DavMail](http://davmail.sourceforge.net/) is an alternative to this proxy that takes the same approach of providing a local IMAP/POP/SMTP server (and more) for Exchange/Office 365, though it does this by translating these protocols into Exchange API calls rather than proxying the connection.
 That approach is very useful in situations where server-side IMAP/POP/SMTP is not supported or enabled, or the full Exchange capabilities are needed, but it has limitations in terms of speed and the number of email messages that can be retrieved.
