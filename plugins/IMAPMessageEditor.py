@@ -117,6 +117,10 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
     def _decode_and_edit_message_part(self, byte_part, encoding=None):
         """Internal only - handle message part decoding/editing. Do not override this method; see `edit_message()`."""
 
+        if len(byte_part) <= 0:
+            self.log_debug('Ignoring empty message part')
+            return False, byte_part
+
         # see w3.org/Protocols/rfc1341/5_Content-Transfer-Encoding.html and summary at stackoverflow.com/a/28531705
         is_base64 = encoding is not None and encoding.lower() == 'base64'
         is_quopri = encoding is not None and encoding.lower() == 'quoted-printable'
