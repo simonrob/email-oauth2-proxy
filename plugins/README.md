@@ -1,6 +1,7 @@
 # Email OAuth 2.0 Proxy plugins
 Plugins are an advanced Email OAuth 2.0 Proxy feature that enable the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
 This allows a wide range of additional capabilities or triggers to be added the proxy, as demonstrated in the examples below.
+See the [sample configuration file](../emailproxy.config#L42) for further application examples and documentation.
 
 
 ## Sample plugins
