@@ -31,7 +31,7 @@ class IMAPLinkDestinationRevealer(plugins.IMAPMessageEditor.IMAPMessageEditor):
 
             href_url = link_prefix + link_url
             text_url = b'http' + link_text
-            if href_url not in [text_url, b'%s/' % text_url, text_url.rstrip(b'/')]:
+            if self.normalise_url(href_url) != self.normalise_url(text_url):
                 parts = link_url.split(b'/', 1)
                 truncated = b'%s%s' % (link_prefix, parts[0])
                 if len(parts) > 0:
@@ -55,3 +55,7 @@ class IMAPLinkDestinationRevealer(plugins.IMAPMessageEditor.IMAPMessageEditor):
         else:
             # no links to replace (or potentially some encoding not handled by IMAPMessageEditor)
             return byte_message
+
+    @staticmethod
+    def normalise_url(url):
+        return url.rstrip(b'/').replace(b'&amp;', b'&')
