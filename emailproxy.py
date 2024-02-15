@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-01-20'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-02-15'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1416,11 +1416,17 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
 
     def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
         super().__init__('IMAP', connection_socket, socket_map, proxy_parent, custom_configuration)
+        (self.authentication_tag, self.authentication_command, self.awaiting_credentials,
+         self.login_literal_length_awaited, self.login_literal_username) = self.reset_login_state()
+
+    def reset_login_state(self):
         self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
         self.login_literal_length_awaited = 0
         self.login_literal_username = None
+        return (self.authentication_tag, self.authentication_command, self.awaiting_credentials,
+                self.login_literal_length_awaited, self.login_literal_username)  # avoid defining outside init complaint
 
     def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
@@ -1525,11 +1531,11 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             if self.server_connection:
                 self.server_connection.authenticated_username = username
 
-        else:
-            error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
+        error_authentication_tag = self.authentication_tag
+        self.reset_login_state()
+        if not success:
+            error_message = '%s NO %s %s\r\n' % (error_authentication_tag, command.upper(), result)
             self.send(error_message.encode('utf-8'))
-            self.send(b'* BYE Autologout; authentication failed\r\n')
-            self.close()
 
 
 class POPOAuth2ClientConnection(OAuth2ClientConnection):
@@ -1605,8 +1611,10 @@ class POPOAuth2ClientConnection(OAuth2ClientConnection):
             self.connection_state = self.STATE.XOAUTH2_AWAITING_CONFIRMATION
             super().process_data(b'AUTH XOAUTH2\r\n')
         else:
+            self.server_connection.username = None
+            self.server_connection.password = None
+            self.connection_state = self.STATE.PENDING
             self.send(b'-ERR Authentication failed.\r\n')
-            self.close()
 
 
 class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
@@ -1690,8 +1698,10 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
             self.connection_state = self.STATE.XOAUTH2_AWAITING_CONFIRMATION
             super().process_data(b'AUTH XOAUTH2\r\n')
         else:
+            self.server_connection.username = None
+            self.server_connection.password = None
+            self.connection_state = self.STATE.PENDING
             self.send(b'535 5.7.8  Authentication credentials invalid.\r\n')
-            self.close()
 
 
 class OAuth2ServerConnection(SSLAsyncoreDispatcher):
@@ -1890,6 +1900,7 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
         self.capa = []
         self.username = None
         self.password = None
+        self.auth_error_result = None
 
     def process_data(self, byte_data):
         # note: there is no reason why POP STARTTLS (https://tools.ietf.org/html/rfc2595) couldn't be supported here
@@ -1914,6 +1925,7 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
                         if capa_lower == 'user':
                             has_user = True
                         super().process_data(b'%s\r\n' % capa.encode('utf-8'))
+                self.capa = []
 
                 if not has_sasl:
                     super().process_data(b'SASL PLAIN\r\n')
@@ -1930,16 +1942,25 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('+') and self.username and self.password:  # '+ ' = 'please send credentials'
                 success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password)
                 if success:
-                    self.client_connection.connection_state = POPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
+                    # because get_oauth2_credentials blocks, the client could have disconnected, and may no-longer exist
+                    if self.client_connection:
+                        self.client_connection.connection_state = (
+                            POPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT)
                     self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
                     self.authenticated_username = self.username
 
                 self.username = None
                 self.password = None
                 if not success:
-                    # a local authentication error occurred - send details to the client and exit
-                    super().process_data(b'-ERR Authentication failed. %s\r\n' % result.encode('utf-8'))
-                    self.close()
+                    # a local authentication error occurred - cancel then (on confirmation) send details to the client
+                    self.send(b'*\r\n')  # RFC 5034, Section 4
+                    self.auth_error_result = result
+
+            elif str_data.startswith('-ERR') and not self.username and not self.password:
+                self.client_connection.connection_state = POPOAuth2ClientConnection.STATE.PENDING
+                error_message = self.auth_error_result if self.auth_error_result else ''
+                self.auth_error_result = None
+                super().process_data(b'-ERR Authentication failed. %s\r\n' % error_message.encode('utf-8'))
 
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -1980,6 +2001,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
 
         self.username = None
         self.password = None
+        self.auth_error_result = None
 
     def process_data(self, byte_data):
         # SMTP setup/authentication involves a little more back-and-forth than IMAP/POP as the default is STARTTLS...
@@ -2017,6 +2039,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                           're-sending greeting ]')
                 self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.EHLO_AWAITING_RESPONSE
                 self.send(self.ehlo)  # re-send original EHLO/HELO to server (includes domain, so can't just be generic)
+                self.ehlo = None
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
                 self.close()
@@ -2026,17 +2049,28 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('334') and self.username and self.password:  # '334 ' = 'please send credentials'
                 success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password)
                 if success:
-                    self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT
+                    # because get_oauth2_credentials blocks, the client could have disconnected, and may no-longer exist
+                    if self.client_connection:
+                        self.client_connection.connection_state = (
+                            SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT)
                     self.authenticated_username = self.username
                     self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
 
                 self.username = None
                 self.password = None
                 if not success:
-                    # a local authentication error occurred - send details to the client and exit
+                    # a local authentication error occurred - cancel then (on confirmation) send details to the client
+                    self.send(b'*\r\n')  # RFC 4954, Section 4
+                    self.auth_error_result = result
+
+            # note that RFC 4954 says that the server must respond with '501', but some (e.g., Office 365) return '535'
+            elif str_data.startswith('5') and not self.username and not self.password:
+                if len(str_data) >= 4 and str_data[3] == ' ':  # responses may be multiline - wait for last part
+                    self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.PENDING
+                    error_message = self.auth_error_result if self.auth_error_result else ''
+                    self.auth_error_result = None
                     super().process_data(
-                        b'535 5.7.8  Authentication credentials invalid. %s\r\n' % result.encode('utf-8'))
-                    self.close()
+                        b'535 5.7.8  Authentication credentials invalid. %s\r\n' % error_message.encode('utf-8'))
 
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
