@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-02-15'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-02-20'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1436,17 +1436,17 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
 
     def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
         super().__init__('IMAP', connection_socket, socket_map, proxy_parent, custom_configuration)
-        (self.authentication_tag, self.authentication_command, self.awaiting_credentials,
-         self.login_literal_length_awaited, self.login_literal_username) = self.reset_login_state()
+        self.authentication_tag = None
+        (self.authentication_command, self.awaiting_credentials, self.login_literal_length_awaited,
+         self.login_literal_username) = self.reset_login_state()
 
     def reset_login_state(self):
-        self.authentication_tag = None
         self.authentication_command = None
         self.awaiting_credentials = False
         self.login_literal_length_awaited = 0
         self.login_literal_username = None
-        return (self.authentication_tag, self.authentication_command, self.awaiting_credentials,
-                self.login_literal_length_awaited, self.login_literal_username)  # avoid defining outside init complaint
+        return (self.authentication_command, self.awaiting_credentials, self.login_literal_length_awaited,
+                self.login_literal_username)  # avoid lint complaint about defining outside init
 
     def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
@@ -1551,10 +1551,10 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
             if self.server_connection:
                 self.server_connection.authenticated_username = username
 
-        error_authentication_tag = self.authentication_tag
         self.reset_login_state()
         if not success:
-            error_message = '%s NO %s %s\r\n' % (error_authentication_tag, command.upper(), result)
+            error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
+            self.authentication_tag = None
             self.send(error_message.encode('utf-8'))
 
 
@@ -1907,6 +1907,7 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
         if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
             Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
             self.client_connection.authenticated = True
+            self.client_connection.authentication_tag = None
         elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
             super().process_data(byte_data)  # an error occurred - just send to the client and exit
             self.close()
