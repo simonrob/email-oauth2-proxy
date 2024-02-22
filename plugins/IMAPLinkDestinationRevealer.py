@@ -8,8 +8,8 @@ import re
 import plugins.IMAPMessageEditor
 
 LINK_MATCHER = re.compile(
-    br'<a (?P<pre_attr>.*?)href="(?P<prefix>https?://)(?P<url>[^"]+)"(?P<post_attr>[^>]*?)>http(?P<text>.*?)</a>',
-    flags=re.IGNORECASE)
+    br'<a(?P<pre_attr>.+?)href="(?P<prefix>https?://)(?P<url>[^"]+)"(?P<post_attr>[^>]*?)>\s*http(?P<text>.*?)</a>',
+    flags=re.IGNORECASE | re.MULTILINE)
 
 DESTINATION_MAX_LENGTH = 0  # for the original link display, how many characters after the domain to show (-1 = all)
 
