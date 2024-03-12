@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-03-12'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1268,7 +1268,7 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
             # APP_PACKAGE is used when we throw our own SSLError on handshake timeout or socket misconfiguration
             ssl_errors = ['SSLV3_ALERT_BAD_CERTIFICATE', 'PEER_DID_NOT_RETURN_A_CERTIFICATE', 'WRONG_VERSION_NUMBER',
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
-                          'UNSUPPORTED_PROTOCOL', APP_PACKAGE]
+                          'UNSUPPORTED_PROTOCOL', 'record layer failure', APP_PACKAGE]
             error_type, value = Log.get_last_error()
             if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
                     any(i in value.args[1] for i in ssl_errors) or error_type == FileNotFoundError:
@@ -1625,15 +1625,23 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
     class STATE(enum.Enum):
         PENDING = 1
         EHLO_AWAITING_RESPONSE = 2
-        AUTH_PLAIN_AWAITING_CREDENTIALS = 3
-        AUTH_LOGIN_AWAITING_USERNAME = 4
-        AUTH_LOGIN_AWAITING_PASSWORD = 5
-        XOAUTH2_AWAITING_CONFIRMATION = 6
-        XOAUTH2_CREDENTIALS_SENT = 7
+        LOCAL_STARTTLS_AWAITING_CONFIRMATION = 3
+        AUTH_PLAIN_AWAITING_CREDENTIALS = 4
+        AUTH_LOGIN_AWAITING_USERNAME = 5
+        AUTH_LOGIN_AWAITING_PASSWORD = 6
+        XOAUTH2_AWAITING_CONFIRMATION = 7
+        XOAUTH2_CREDENTIALS_SENT = 8
 
     def __init__(self, connection_socket, socket_map, proxy_parent, custom_configuration):
         super().__init__('SMTP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.connection_state = self.STATE.PENDING
+
+    def handle_read(self):
+        # receiving any data after setting up local STARTTLS means this has succeeded
+        if self.connection_state is self.STATE.LOCAL_STARTTLS_AWAITING_CONFIRMATION:
+            Log.debug(self.info_string(), '[ Successfully negotiated SMTP client STARTTLS connection ]')
+            self.connection_state = self.STATE.PENDING
+        super().handle_read()
 
     def process_data(self, byte_data, censor_server_log=False):
         str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
@@ -1649,8 +1657,9 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
             # handle STARTTLS locally if enabled and a certificate is available, or reject the command
             elif str_data_lower.startswith('starttls'):
                 if self.custom_configuration['local_starttls'] and not self.ssl_connection:
-                    self.send(b'220 Ready to start TLS\r\n')
                     self.set_ssl_connection(True)
+                    self.connection_state = self.STATE.LOCAL_STARTTLS_AWAITING_CONFIRMATION
+                    self.send(b'220 Ready to start TLS\r\n')
                     ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
                     try:
                         ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
@@ -1662,13 +1671,12 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
                     # suppress_ragged_eofs: see test_ssl.py documentation in https://github.com/python/cpython/pull/5266
                     self.set_socket(ssl_context.wrap_socket(self.socket, server_side=True, suppress_ragged_eofs=True,
                                                             do_handshake_on_connect=False))
-                    Log.debug(self.info_string(), '[ Successfully negotiated SMTP client STARTTLS connection ]')
                 else:
                     Log.error(self.info_string(), 'Client attempted to begin STARTTLS', (
                         '- please either disable STARTTLS in your client when using the proxy, or set `local_starttls`'
                         'and provide a `local_certificate_path` and `local_key_path`' if not self.custom_configuration[
                             'local_starttls'] else 'again after already completing the STARTTLS process'))
-                    self.send(b'454 STARTTLS not available')
+                    self.send(b'454 STARTTLS not available\r\n')
                     self.close()
 
             # intercept AUTH PLAIN and AUTH LOGIN to replace with AUTH XOAUTH2
@@ -2046,7 +2054,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             updated_response = re.sub(r'250([ -])AUTH(?: [A-Z\d_-]{1,20})+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = re.sub(r'250([ -])STARTTLS(?:\r\n)?', r'', updated_response, flags=re.IGNORECASE)
-            if ehlo_end and self.ehlo.startswith(b'ehlo'):
+            if ehlo_end and self.ehlo.lower().startswith(b'ehlo'):
                 if 'AUTH PLAIN LOGIN' not in self.ehlo_response:
                     self.ehlo_response += '250-AUTH PLAIN LOGIN\r\n'
                 if self.custom_configuration['local_starttls'] and not self.client_connection.ssl_connection:
@@ -2054,18 +2062,18 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             self.ehlo_response += '%s\r\n' % updated_response if updated_response else ''
 
             if ehlo_end:
-                # we replay the original EHLO command on behalf of the client after server STARTTLS completes
-                split_response = self.ehlo_response.split('\r\n')
-                split_response[-1] = split_response[-1].replace('250-', '250 ')  # fix last item if modified
-                if self.starttls_state is self.STARTTLS.COMPLETE:
-                    super().process_data('\r\n'.join(split_response).encode('utf-8'))
-                self.ehlo_response = ''
-
                 self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.PENDING
-
                 if self.starttls_state is self.STARTTLS.PENDING:
                     self.send(b'STARTTLS\r\n')
                     self.starttls_state = self.STARTTLS.NEGOTIATING
+
+                elif self.starttls_state is self.STARTTLS.COMPLETE:
+                    # we replay the original EHLO response to the client after server STARTTLS completes
+                    split_response = self.ehlo_response.split('\r\n')
+                    split_response[-1] = split_response[-1].replace('250-', '250 ')  # fix last item if modified
+                    super().process_data('\r\n'.join(split_response).encode('utf-8'))
+                    self.ehlo = None # only clear on completion - we need to use for any repeat calls
+                self.ehlo_response = ''
 
         elif self.starttls_state is self.STARTTLS.NEGOTIATING:
             if str_data.startswith('220'):
@@ -2138,7 +2146,8 @@ class OAuth2Proxy(asyncore.dispatcher):
         self.local_address = local_address
         self.server_address = server_address
         self.custom_configuration = custom_configuration
-        self.ssl_connection = False
+        self.ssl_connection = bool(
+            custom_configuration['local_certificate_path'] and custom_configuration['local_key_path'])
         self.client_connections = []
 
     def info_string(self):
@@ -2217,7 +2226,10 @@ class OAuth2Proxy(asyncore.dispatcher):
             new_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, False)
         new_socket.setblocking(False)
 
-        if self.ssl_connection:
+        # we support local connections with and without STARTTLS (currently only for SMTP), so need to either actively
+        # set up SSL, or wait until it is requested (note: self.ssl_connection here indicates whether the connection is
+        # eventually secure, either from the outset or after STARTTLS, and is required primarily for GUI icon purposes)
+        if self.ssl_connection and not self.custom_configuration['local_starttls']:
             ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
             try:
                 ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
