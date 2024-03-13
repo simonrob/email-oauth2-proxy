@@ -3098,15 +3098,24 @@ class App:
                  'from config file', CONFIG_FILE_PATH)
         if reload:
             AppConfig.unload()
-        config = AppConfig.get()
+
+        config_parse_error = False
+        try:
+            config = AppConfig.get()
+            servers = AppConfig.servers()
+        except configparser.Error as e:
+            Log.error('Unable to load configuration file:', e)
+            config_parse_error = True
+            servers = []
 
         # load server types and configurations
         server_load_error = False
         server_start_error = False
-        for section in AppConfig.servers():
+        for section in servers:
             match = CONFIG_SERVER_MATCHER.match(section)
             server_type = match.group('type')
 
+            # noinspection PyUnboundLocalVariable
             local_address = config.get(section, 'local_address', fallback='::')
             str_local_port = match.group('port')
             local_port = -1
@@ -3157,15 +3166,15 @@ class App:
                     Log.error('Error: unable to start', match.string, 'server:', Log.error_string(e))
                     server_start_error = True
 
-        if server_start_error or server_load_error or len(self.proxies) <= 0:
+        if config_parse_error or server_start_error or server_load_error or len(self.proxies) <= 0:
             if server_start_error:
                 Log.error('Abandoning setup as one or more servers failed to start - is the proxy already running?')
             else:
-                error_text = 'Invalid' if len(AppConfig.servers()) > 0 else 'No'
-                Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
                 if not os.path.exists(CONFIG_FILE_PATH):
                     Log.error(APP_NAME, 'config file not found - see https://github.com/simonrob/email-oauth2-proxy',
                               'for full documentation and example configurations to help get started')
+                error_text = 'Invalid' if len(servers) > 0 else 'Unparsable' if config_parse_error else 'No'
+                Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
                 self.notify(APP_NAME, error_text + ' server configuration(s) found. ' +
                             'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
