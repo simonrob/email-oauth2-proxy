@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-12'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-03-13'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1636,16 +1636,14 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
         super().__init__('SMTP', connection_socket, socket_map, proxy_parent, custom_configuration)
         self.connection_state = self.STATE.PENDING
 
-    def handle_read(self):
+    def process_data(self, byte_data, censor_server_log=False):
+        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
+        str_data_lower = str_data.lower()
+
         # receiving any data after setting up local STARTTLS means this has succeeded
         if self.connection_state is self.STATE.LOCAL_STARTTLS_AWAITING_CONFIRMATION:
             Log.debug(self.info_string(), '[ Successfully negotiated SMTP client STARTTLS connection ]')
             self.connection_state = self.STATE.PENDING
-        super().handle_read()
-
-    def process_data(self, byte_data, censor_server_log=False):
-        str_data = byte_data.decode('utf-8', 'replace').rstrip('\r\n')
-        str_data_lower = str_data.lower()
 
         # intercept EHLO so we can correct capabilities and replay after STARTTLS if needed (in server connection class)
         if self.connection_state is self.STATE.PENDING:
@@ -2049,6 +2047,11 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             # AUTH command: https://datatracker.ietf.org/doc/html/rfc4954#section-3 and corresponding formal `sasl-mech`
             # syntax: https://tools.ietf.org/html/rfc4422#section-3.1); and, add/remove STARTTLS where needed
 
+            # an error occurred in response the HELO/EHLO command - pass through to the client
+            if not str_data.startswith('250'):
+                super().process_data(byte_data)
+                return
+
             # a space after 250 signifies the final response to HELO (single line) or EHLO (multiline)
             ehlo_end = str_data.split('\r\n')[-1].startswith('250 ')
             updated_response = re.sub(r'250([ -])AUTH(?: [A-Z\d_-]{1,20})+', r'250\1AUTH PLAIN LOGIN', str_data,
@@ -2072,7 +2075,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     split_response = self.ehlo_response.split('\r\n')
                     split_response[-1] = split_response[-1].replace('250-', '250 ')  # fix last item if modified
                     super().process_data('\r\n'.join(split_response).encode('utf-8'))
-                    self.ehlo = None # only clear on completion - we need to use for any repeat calls
+                    self.ehlo = None  # only clear on completion - we need to use for any repeat calls
                 self.ehlo_response = ''
 
         elif self.starttls_state is self.STARTTLS.NEGOTIATING:
@@ -2153,7 +2156,9 @@ class OAuth2Proxy(asyncore.dispatcher):
     def info_string(self):
         return '%s server at %s (%s) proxying %s (%s)' % (
             self.proxy_type, Log.format_host_port(self.local_address),
-            'TLS' if self.ssl_connection else 'unsecured', Log.format_host_port(self.server_address),
+            'STARTTLS' if self.custom_configuration[
+                'local_starttls'] else 'SSL/TLS' if self.ssl_connection else 'unsecured',
+            Log.format_host_port(self.server_address),
             'STARTTLS' if self.custom_configuration['server_starttls'] else 'SSL/TLS')
 
     def handle_accept(self):
