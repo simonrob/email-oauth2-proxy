@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-13'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-03-14'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1755,14 +1755,27 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
-        self.create_socket()
-        self.connect(self.server_address)
+        self.create_connection()
 
-    def create_socket(self, socket_family=socket.AF_UNSPEC, socket_type=socket.SOCK_STREAM):
-        # connect to whichever resolved IPv4 or IPv6 address is returned first by the system
-        for a in socket.getaddrinfo(self.server_address[0], self.server_address[1], socket_family, socket.SOCK_STREAM):
-            super().create_socket(a[0], socket.SOCK_STREAM)
-            return
+    def create_connection(self):
+        # resolve the given address, then create a socket and connect to each result in turn until one succeeds
+        # noinspection PyTypeChecker
+        for result in socket.getaddrinfo(*self.server_address, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            family, socket_type, _protocol, _canonical_name, socket_address = result
+            try:
+                self.create_socket(family, socket_type)
+                self.connect(socket_address)
+                return
+
+            except OSError as e:
+                self.del_channel()
+                if self.socket is not None:
+                    self.socket.close()
+                socket_type = ' IPv4' if family == socket.AF_INET else ' IPv6' if family == socket.AF_INET6 else ''
+                Log.debug(self.info_string(), 'Unable to create%s socket' % socket_type, 'from getaddrinfo result',
+                          result, '-', Log.error_string(e))
+
+        raise socket.gaierror(8, 'All socket creation attempts failed - unable to resolve host')
 
     def info_string(self):
         debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
