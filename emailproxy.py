@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-14'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-03-15'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1114,7 +1114,11 @@ class OAuth2Helper:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
                                        headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
-            return json.loads(response)
+            token = json.loads(response)
+            if 'expires_in' in token:  # some servers return integer values as strings - fix expiry values (GitHub #237)
+                token['expires_in'] = int(token['expires_in'])
+            return token
+
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
             Log.debug('Error refreshing access token - received invalid response:', e.message)
