@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-13'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-03-15'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1123,7 +1123,11 @@ class OAuth2Helper:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
                                        headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
-            return json.loads(response)
+            token = json.loads(response)
+            if 'expires_in' in token:  # some servers return integer values as strings - fix expiry values (GitHub #237)
+                token['expires_in'] = int(token['expires_in'])
+            return token
+
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
             Log.debug('Error refreshing access token - received invalid response:', e.message)
@@ -1776,14 +1780,27 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
-        self.create_socket()
-        self.connect(self.server_address)
+        self.create_connection()
 
-    def create_socket(self, socket_family=socket.AF_UNSPEC, socket_type=socket.SOCK_STREAM):
-        # connect to whichever resolved IPv4 or IPv6 address is returned first by the system
-        for a in socket.getaddrinfo(self.server_address[0], self.server_address[1], socket_family, socket.SOCK_STREAM):
-            super().create_socket(a[0], socket.SOCK_STREAM)
-            return
+    def create_connection(self):
+        # resolve the given address, then create a socket and connect to each result in turn until one succeeds
+        # noinspection PyTypeChecker
+        for result in socket.getaddrinfo(*self.server_address, socket.AF_UNSPEC, socket.SOCK_STREAM):
+            family, socket_type, _protocol, _canonical_name, socket_address = result
+            try:
+                self.create_socket(family, socket_type)
+                self.connect(socket_address)
+                return
+
+            except OSError as e:
+                self.del_channel()
+                if self.socket is not None:
+                    self.socket.close()
+                socket_type = ' IPv4' if family == socket.AF_INET else ' IPv6' if family == socket.AF_INET6 else ''
+                Log.debug(self.info_string(), 'Unable to create%s socket' % socket_type, 'from getaddrinfo result',
+                          result, '-', Log.error_string(e))
+
+        raise socket.gaierror(8, 'All socket creation attempts failed - unable to resolve host')
 
     def info_string(self):
         debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
@@ -3168,15 +3185,24 @@ class App:
                  'from config file', CONFIG_FILE_PATH)
         if reload:
             AppConfig.unload()
-        config = AppConfig.get()
+
+        config_parse_error = False
+        try:
+            config = AppConfig.get()
+            servers = AppConfig.servers()
+        except configparser.Error as e:
+            Log.error('Unable to load configuration file:', e)
+            config_parse_error = True
+            servers = []
 
         # load server types and configurations
         server_load_error = False
         server_start_error = False
-        for section in AppConfig.servers():
+        for section in servers:
             match = CONFIG_SERVER_MATCHER.match(section)
             server_type = match.group('type')
 
+            # noinspection PyUnboundLocalVariable
             local_address = config.get(section, 'local_address', fallback='::')
             str_local_port = match.group('port')
             local_port = -1
@@ -3253,15 +3279,15 @@ class App:
                     Log.error('Error: unable to start', match.string, 'server:', Log.error_string(e))
                     server_start_error = True
 
-        if server_start_error or server_load_error or len(self.proxies) <= 0:
+        if config_parse_error or server_start_error or server_load_error or len(self.proxies) <= 0:
             if server_start_error:
                 Log.error('Abandoning setup as one or more servers failed to start - is the proxy already running?')
             else:
-                error_text = 'Invalid' if len(AppConfig.servers()) > 0 else 'No'
-                Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
                 if not os.path.exists(CONFIG_FILE_PATH):
                     Log.error(APP_NAME, 'config file not found - see https://github.com/simonrob/email-oauth2-proxy',
                               'for full documentation and example configurations to help get started')
+                error_text = 'Invalid' if len(servers) > 0 else 'Unparsable' if config_parse_error else 'No'
+                Log.error(error_text, 'server configuration(s) found in', CONFIG_FILE_PATH, '- exiting')
                 self.notify(APP_NAME, error_text + ' server configuration(s) found. ' +
                             'Please verify your account and server details in %s' % CONFIG_FILE_PATH)
             AppConfig.unload()  # so we don't overwrite the invalid file with a blank configuration
