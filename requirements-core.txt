@@ -4,6 +4,7 @@
 
 # 2.2 or later required for MultiFernet support
 cryptography>=2.2
+pyjwt[crypto]>=2.5
 
 # provide the previously standard library module `asyncore`, removed in Python 3.12 (https://peps.python.org/pep-0594/)
 pyasyncore; python_version >= '3.12'

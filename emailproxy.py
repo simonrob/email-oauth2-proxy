@@ -713,6 +713,8 @@ class OAuth2Helper:
         client_secret = AppConfig.get_option_with_catch_all_fallback(config, username, 'client_secret')
         client_secret_encrypted = AppConfig.get_option_with_catch_all_fallback(config, username,
                                                                                'client_secret_encrypted')
+        jwt_cert = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_cert')
+        jwt_private_key = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_private_key')
 
         # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
         # and likewise for client_secret here because it can be optional for Office 365 configurations
@@ -773,11 +775,43 @@ class OAuth2Helper:
                 else:
                     Log.info('Warning: found both `client_secret_encrypted` and `client_secret` for account', username,
                              ' - the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+            
+            jwt_token_assertion = None
+            if jwt_cert and jwt_private_key:
+                if not client_secret and not client_secret_encrypted:
+                    from cryptography import x509
+                    from cryptography.hazmat.primitives import serialization
+                    import jwt
+                    import uuid
+                    
+                    with open(jwt_cert, "rb") as certfile:
+                        cert = x509.load_pem_x509_certificate(certfile.read(), backend=default_backend())
+                        cert_fingerprint = cert.fingerprint(hashes.SHA256())
+                    
+                    with open(jwt_private_key, "rb") as keyfile:
+                        private_key = serialization.load_pem_private_key(keyfile.read(), password=None, backend=default_backend())
+
+                    now = datetime.datetime.now(tz=datetime.timezone.utc)
+
+                    jwt_token_assertion = jwt.encode({
+                        "exp": now + datetime.timedelta(0, 120),
+                        "aud": token_url,
+                        "iss": client_id,
+                        "jti": str(uuid.uuid4()),
+                        "nbf": now,
+                        "sub": client_id,
+                        "iat": now
+                    }, private_key, algorithm="RS256", headers={
+                        "x5t#S256": base64.urlsafe_b64encode(cert_fingerprint).decode("ascii")
+                    })
+                else:
+                    Log.info('Warning: found both `cert`/`private_key` and `client_secret[_encrypted]` for account', username,
+                             ' - the client secret value will be used. Removing the certificate/private key is recommended')
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
-                        response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
+                        response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret, jwt_token_assertion,
                                                                             cryptographer.decrypt(refresh_token))
 
                         access_token = response['access_token']
@@ -821,7 +855,7 @@ class OAuth2Helper:
                                    '`permission_url`' % (APP_NAME, username))
 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_result, oauth2_scope,
+                                                                        client_secret, jwt_token_assertion, auth_result, oauth2_scope,
                                                                         oauth2_flow, username, password)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
@@ -1044,7 +1078,7 @@ class OAuth2Helper:
                 time.sleep(1)
 
     @staticmethod
-    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code,
+    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_assertion, authorisation_code,
                                         oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
@@ -1057,6 +1091,11 @@ class OAuth2Helper:
                   'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+        if jwt_assertion:
+            params['client_assertion_type'] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            params['client_assertion'] = jwt_assertion
+
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
@@ -1103,13 +1142,18 @@ class OAuth2Helper:
         return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
 
     @staticmethod
-    def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
+    def refresh_oauth2_access_token(token_url, client_id, client_secret, jwt_assertion, refresh_token):
         """Obtains a new access token from token_url using the given client_id, client_secret and refresh token,
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+        if jwt_assertion:
+            params['client_assertion_type'] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            params['client_assertion'] = jwt_assertion
+
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
