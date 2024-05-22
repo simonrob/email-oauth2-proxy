@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-15'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-05-22'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2631,7 +2631,7 @@ class App:
             pillow_version = pkg_resources.get_distribution('pillow').version
             if pkg_resources.parse_version(pystray_version) <= pkg_resources.parse_version('0.19.4') and \
                     pkg_resources.parse_version(pillow_version) >= pkg_resources.parse_version('10.0.0'):
-                Image.ANTIALIAS = Image.LANCZOS
+                Image.ANTIALIAS = Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.Resampling.LANCZOS
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
