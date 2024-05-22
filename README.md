@@ -69,13 +69,13 @@ In all cases, when registering, make sure your client is set up to use an OAuth 
 It is also highly recommended to use a scope that will grant "offline" access (i.e., a way to [refresh the OAuth 2.0 authentication token](https://oauth.net/2/refresh-tokens/) without user intervention).
 The [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) provides example scope values for several common providers.
 
-- Office 365: register a new [Microsoft identity application](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app)
+- Office 365: register a new [Microsoft identity application](https://learn.microsoft.com/entra/identity-platform/quickstart-register-app)
 - Gmail / Google Workspace: register a [Google API desktop app client](https://developers.google.com/identity/protocols/oauth2/native-app)
 - AOL and Yahoo Mail (and subproviders such as AT&T) are not currently allowing new client registrations with the OAuth email scope – the only option here is to reuse the credentials from an existing client that does have this permission.
 
 The proxy supports [Google Cloud service accounts](https://cloud.google.com/iam/docs/service-account-overview) for access to Google Workspace Gmail.
-It also supports the [client credentials grant (CCG)](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant (ROPCG)](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth-ropc) OAuth 2.0 flows.
-Please note that currently only Office 365 is known to support the CCG and ROPCG methods.
+It also supports the [client credentials grant (CCG)](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-client-creds-grant-flow) and [resource owner password credentials grant (ROPCG)](https://learn.microsoft.com/entra/identity-platform/v2-oauth-ropc) OAuth 2.0 flows, and [certificate credentials (JWT)](https://learn.microsoft.com/entra/identity-platform/certificate-credentials).
+Please note that currently only Office 365 is known to support the CCG, ROPCG and certificate credentials methods.
 See the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for further details.
 
 
