@@ -13,13 +13,13 @@ import re
 import plugins.BasePlugin
 
 # note: these patterns operate on byte-strings to avoid having to parse (and potentially cache) message part encodings
-IMAP_RESPONSE_MATCHER = re.compile(br'^\* \d+ FETCH ', flags=re.IGNORECASE)
+IMAP_RESPONSE_MATCHER = re.compile(br'(?:\r\n)?\* \d+ FETCH ', flags=re.IGNORECASE)
 
 # handle both full message requests and single (text) parts - note: the 1-part regex intentionally matches full messages
 # note also that the part pattern is a trade-off between detecting all text parts (when we don't have the full header)
 # and unintentionally replacing the content of text attachments - it is based on observed real-world message parts
 IMAP_PART_PATTERN = br'(?:TEXT|1(?:\.[12])*|2(?:\.1)*)?'  # see https://stackoverflow.com/a/37794152
-IMAP_FETCH_PATTERN = br'^\* \d+ FETCH \((?:UID \d+ )?BODY\[%s] {(?P<length>\d+)}\r\n'
+IMAP_FETCH_PATTERN = br'(?:\r\n)?\* \d+ FETCH \((?:UID \d+ )?BODY\[%s] {(?P<length>\d+)}\r\n'
 IMAP_FETCH_PART_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % IMAP_PART_PATTERN, flags=re.IGNORECASE)  # single part
 IMAP_FETCH_ALL_REQUEST_MATCHER = re.compile(IMAP_FETCH_PATTERN % br'', flags=re.IGNORECASE)  # full message
 
@@ -102,10 +102,9 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
                 message_edited, new_message = self._decode_and_edit_message_part(original_message)
 
             if message_edited:
-                edited_command = self.fetch_command.replace(b'{%d}' % self.expected_message_length,
-                                                            b'{%d}' % len(new_message))
+                command_start, _, command_end = self.fetch_command.rpartition(b'{%d}' % self.expected_message_length)
                 self._reset()
-                return edited_command + new_message + original_buffer_end
+                return command_start + b'{%d}' % len(new_message) + command_end + new_message + original_buffer_end
 
             # no editing - return the original message
             original_fetch_response = self.fetch_command + self.fetched_message
