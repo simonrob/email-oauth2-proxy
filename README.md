@@ -115,6 +115,7 @@ This option overrides the proxy's default behaviour, which varies by platform (s
 
 - `--debug` enables debug mode, printing more verbose output to the log as [discussed below](#troubleshooting).
 This argument is identical to enabling debug mode from the proxy's menu bar icon.
+If needed, debug mode can also be toggled at runtime by sending the signal `SIGUSR1` (e.g.: `pkill -SIGUSR1 -f emailproxy`).
 
 ### Advanced configuration<a id="advanced-configuration"></a>
 The [example configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) contains further documentation for various additional features of the proxy, including catch-all (wildcard) accounts, locally-encrypted connections and advanced Office 365 OAuth 2.0 flows.
