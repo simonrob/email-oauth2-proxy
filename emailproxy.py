@@ -766,8 +766,8 @@ class OAuth2Helper:
                     try:
                         client_secret = cryptographer.decrypt(client_secret_encrypted)
                     except InvalidToken as e:  # needed to avoid looping (we don't remove secrets on decryption failure)
-                        Log.error('Invalid password to decrypt', username, 'secret - aborting login:',
-                                  Log.error_string(e))
+                        Log.error('Invalid password to decrypt `client_secret_encrypted` for account', username,
+                                  '- aborting login:', Log.error_string(e))
                         return False, '%s: Login failed - the password for account %s is incorrect' % (
                             APP_NAME, username)
                 else:
@@ -778,6 +778,7 @@ class OAuth2Helper:
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
+                                                                            username,
                                                                             cryptographer.decrypt(refresh_token))
 
                         access_token = response['access_token']
@@ -811,11 +812,11 @@ class OAuth2Helper:
                                                                                       redirect_listen_address, username)
 
                     if not success:
-                        Log.info('Authorisation result error for', username, '- aborting login.', auth_result)
+                        Log.info('Authorisation result error for account', username, '- aborting login.', auth_result)
                         return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
-                    Log.error('No `oauth2_flow` value specified for', username, '- aborting login')
+                    Log.error('No `oauth2_flow` value specified for account', username, '- aborting login')
                     return (False, '%s: Incomplete config file entry found for account %s - please make sure an '
                                    '`oauth2_flow` value is specified when using a method that does not require a '
                                    '`permission_url`' % (APP_NAME, username))
@@ -843,8 +844,9 @@ class OAuth2Helper:
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                 elif permission_url:  # ignore this situation with CCG/ROPCG/service account flows - it is expected
-                    Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
-                             'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
+                    Log.info('Warning: no refresh token returned for account', username, '- you will need to',
+                             're-authenticate each time the access token expires (does your `oauth2_scope` value allow',
+                             '`offline` use?)')
 
                 AppConfig.save()
 
@@ -867,7 +869,7 @@ class OAuth2Helper:
 
             AppConfig.save()
 
-            Log.info('Retrying login due to exception while refreshing OAuth 2.0 tokens for', username,
+            Log.info('Retrying login due to exception while refreshing access token for account', username,
                      '(attempt %d):' % (1 if has_access_token else 2), Log.error_string(e))
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
@@ -884,11 +886,12 @@ class OAuth2Helper:
                 config.remove_option(username, 'refresh_token')
                 AppConfig.save()
 
-                Log.info('Retrying login due to exception while decrypting OAuth 2.0 credentials for', username,
+                Log.info('Retrying login due to exception while decrypting OAuth 2.0 credentials for account', username,
                          '(invalid password):', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
-            Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+            Log.error('Invalid password to decrypt credentials for account', username, '- aborting login:',
+                      Log.error_string(e))
             return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
@@ -897,7 +900,8 @@ class OAuth2Helper:
             # errors: URLError(OSError(50, 'Network is down'))) - access token 400 Bad Request HTTPErrors with messages
             # such as 'authorisation code was already redeemed' are caused by our support for simultaneous requests,
             # and will work from the next request; however, please report an issue if you encounter problems here
-            Log.info('Caught exception while requesting OAuth 2.0 credentials for %s:' % username, Log.error_string(e))
+            Log.info('Caught exception while requesting OAuth 2.0 credentials for account %s:' % username,
+                     Log.error_string(e))
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
@@ -1014,7 +1018,7 @@ class OAuth2Helper:
                 # to improve no-GUI mode we also support the use of a local redirection receiver server or terminal
                 # entry to authenticate; this result is a timeout, wsgi request error/failure, or terminal auth ctrl+c
                 if 'expired' in data and data['expired']:
-                    return False, 'No-GUI authorisation request failed or timed out'
+                    return False, 'No-GUI authorisation request failed or timed out for account %s' % data['username']
 
                 if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
@@ -1031,13 +1035,16 @@ class OAuth2Helper:
                             authorisation_code = OAuth2Helper.oauth2_url_unescape(response['code'])
                             if authorisation_code:
                                 return True, authorisation_code
-                            return False, 'No OAuth 2.0 authorisation code returned'
+                            return False, 'No OAuth 2.0 authorisation code returned for account %s' % data['username']
                         if 'error' in response:
-                            message = 'OAuth 2.0 authorisation error: %s' % response['error']
+                            message = 'OAuth 2.0 authorisation error for account %s: ' % data['username']
+                            message += response['error']
                             message += '; %s' % response['error_description'] if 'error_description' in response else ''
                             return False, message
-                        return False, 'OAuth 2.0 authorisation response has no code or error message'
-                    return False, 'OAuth 2.0 authorisation response is missing or does not match `redirect_uri`'
+                        return (False, 'OAuth 2.0 authorisation response for account %s has neither code nor error '
+                                       'message' % data['username'])
+                    return (False, 'OAuth 2.0 authorisation response for account %s is missing or does not match'
+                                   '`redirect_uri`' % data['username'])
 
             else:  # not for this thread - put back into queue
                 response_queue_reference.put(data)
@@ -1070,7 +1077,7 @@ class OAuth2Helper:
             return json.loads(response)
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
-            Log.debug('Error requesting access token - received invalid response:', e.message)
+            Log.debug('Error requesting access token for account', username, '- received invalid response:', e.message)
             raise e
 
     # noinspection PyUnresolvedReferences
@@ -1087,12 +1094,17 @@ class OAuth2Helper:
                             '`python -m pip install requests google-auth`')
 
         if key_type == 'file':
-            with open(key_path_or_contents) as key_file:
-                service_account = json.load(key_file)
+            try:
+                with open(key_path_or_contents) as key_file:
+                    service_account = json.load(key_file)
+            except IOError as e:
+                raise FileNotFoundError('Unable to open service account key file %s for account %s',
+                                        (key_path_or_contents, username)) from e
         elif key_type == 'key':
             service_account = json.loads(key_path_or_contents)
         else:
-            raise Exception('Service account key type not specified - `client_id` must be set to `file` or `key`')
+            raise Exception('Service account key type not specified for account %s - `client_id` must be set to '
+                            '`file` or `key`' % username)
 
         credentials = google.oauth2.service_account.Credentials.from_service_account_info(service_account)
         credentials = credentials.with_scopes(oauth2_scope.split(' '))
@@ -1103,7 +1115,7 @@ class OAuth2Helper:
         return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
 
     @staticmethod
-    def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
+    def refresh_oauth2_access_token(token_url, client_id, client_secret, username, refresh_token):
         """Obtains a new access token from token_url using the given client_id, client_secret and refresh token,
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
@@ -1121,7 +1133,7 @@ class OAuth2Helper:
 
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
-            Log.debug('Error refreshing access token - received invalid response:', e.message)
+            Log.debug('Error refreshing access token for account', username, '- received invalid response:', e.message)
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (token expired)
                 raise OAuth2Helper.TokenRefreshError from e
             raise e
