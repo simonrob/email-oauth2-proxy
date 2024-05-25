@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-05-23'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-05-25'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -176,6 +176,7 @@ LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
+JWT_LIFETIME = 300  # seconds to add to the current time and use for the `exp` value in JWT certificate credentials
 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
 LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
@@ -792,17 +793,21 @@ class OAuth2Helper:
                     except ImportError:
                         return False, ('Unable to load jwt, which is a requirement when using certificate credentials '
                                        '(`jwt_` options). Please run `python -m pip install -r requirements-core.txt`')
+                    import uuid
                     from cryptography import x509
                     from cryptography.hazmat.primitives import serialization
 
                     try:
+                        jwt_now = datetime.datetime.now(datetime.timezone.utc)
                         jwt_certificate_fingerprint = x509.load_pem_x509_certificate(
                             pathlib.Path(jwt_certificate_path).read_bytes()).fingerprint(hashes.SHA256())
                         jwt_client_assertion = jwt.encode(
                             {
                                 'aud': token_url,
-                                'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
+                                'exp': jwt_now + datetime.timedelta(seconds=JWT_LIFETIME),
                                 'iss': client_id,
+                                'jti': str(uuid.uuid4()),
+                                'nbf': jwt_now,
                                 'sub': client_id
                             },
                             serialization.load_pem_private_key(pathlib.Path(jwt_key_path).read_bytes(), password=None),
