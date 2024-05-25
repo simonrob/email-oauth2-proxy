@@ -50,7 +50,7 @@ jobs:
           skip-existing: true  # avoid failing when repeating this action
 
       # sign the built packages
-      - uses: sigstore/gh-action-sigstore-python@v2
+      - uses: sigstore/gh-action-sigstore-python@v2.1.1
         with:
           inputs: >-
             ./dist/*.tar.gz
