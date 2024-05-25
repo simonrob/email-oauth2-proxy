@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-05-23'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-05-25'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -176,6 +176,7 @@ LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
+JWT_LIFETIME = 300  # seconds to add to the current time and use for the `exp` value in JWT certificate credentials
 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
 LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
@@ -713,6 +714,8 @@ class OAuth2Helper:
         client_secret = AppConfig.get_option_with_catch_all_fallback(config, username, 'client_secret')
         client_secret_encrypted = AppConfig.get_option_with_catch_all_fallback(config, username,
                                                                                'client_secret_encrypted')
+        jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
+        jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
         # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
         # and likewise for client_secret here because it can be optional for Office 365 configurations
@@ -772,13 +775,55 @@ class OAuth2Helper:
                             APP_NAME, username)
                 else:
                     Log.info('Warning: found both `client_secret_encrypted` and `client_secret` for account', username,
-                             ' - the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+                             '- the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+
+            # O365 certificate credentials - see: learn.microsoft.com/entra/identity-platform/certificate-credentials
+            jwt_client_assertion = None
+            if jwt_certificate_path and jwt_key_path:
+                if client_secret or client_secret_encrypted:
+                    client_secret_type = '`client_secret%s`' % ('_encrypted' if client_secret_encrypted else '')
+                    Log.info('Warning: found both certificate credentials and', client_secret_type, 'for account',
+                             username, '- the', client_secret_type, 'value will be used. To use certificate',
+                             'credentials, remove the client secret value')
+
+                else:
+                    try:
+                        # noinspection PyUnresolvedReferences
+                        import jwt
+                    except ImportError:
+                        return False, ('Unable to load jwt, which is a requirement when using certificate credentials '
+                                       '(`jwt_` options). Please run `python -m pip install -r requirements-core.txt`')
+                    import uuid
+                    from cryptography import x509
+                    from cryptography.hazmat.primitives import serialization
+
+                    try:
+                        jwt_now = datetime.datetime.now(datetime.timezone.utc)
+                        jwt_certificate_fingerprint = x509.load_pem_x509_certificate(
+                            pathlib.Path(jwt_certificate_path).read_bytes()).fingerprint(hashes.SHA256())
+                        jwt_client_assertion = jwt.encode(
+                            {
+                                'aud': token_url,
+                                'exp': jwt_now + datetime.timedelta(seconds=JWT_LIFETIME),
+                                'iss': client_id,
+                                'jti': str(uuid.uuid4()),
+                                'nbf': jwt_now,
+                                'sub': client_id
+                            },
+                            serialization.load_pem_private_key(pathlib.Path(jwt_key_path).read_bytes(), password=None),
+                            algorithm='RS256',
+                            headers={
+                                'x5t#S256': base64.urlsafe_b64encode(jwt_certificate_fingerprint).decode('utf-8')
+                            })
+                    except FileNotFoundError:
+                        return (False, 'Unable to create credentials assertion for account %s - please check that the '
+                                       '`jwt_certificate_path` and `jwt_key_path` values are correct' % username)
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
-                                                                            username,
+                                                                            jwt_client_assertion, username,
                                                                             cryptographer.decrypt(refresh_token))
 
                         access_token = response['access_token']
@@ -822,8 +867,9 @@ class OAuth2Helper:
                                    '`permission_url`' % (APP_NAME, username))
 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_result, oauth2_scope,
-                                                                        oauth2_flow, username, password)
+                                                                        client_secret, jwt_client_assertion,
+                                                                        auth_result, oauth2_scope, oauth2_flow,
+                                                                        username, password)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -1051,8 +1097,8 @@ class OAuth2Helper:
                 time.sleep(1)
 
     @staticmethod
-    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code,
-                                        oauth2_scope, oauth2_flow, username, password):
+    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
+                                        authorisation_code, oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
@@ -1064,6 +1110,12 @@ class OAuth2Helper:
                   'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+            # certificate credentials are only used when no client secret is provided
+            if jwt_client_assertion:
+                params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+                params['client_assertion'] = jwt_client_assertion
+
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
@@ -1115,13 +1167,19 @@ class OAuth2Helper:
         return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
 
     @staticmethod
-    def refresh_oauth2_access_token(token_url, client_id, client_secret, username, refresh_token):
+    def refresh_oauth2_access_token(token_url, client_id, client_secret, jwt_client_assertion, username, refresh_token):
         """Obtains a new access token from token_url using the given client_id, client_secret and refresh token,
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+            # certificate credentials are only used when no client secret is provided
+            if jwt_client_assertion:
+                params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+                params['client_assertion'] = jwt_client_assertion
+
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
