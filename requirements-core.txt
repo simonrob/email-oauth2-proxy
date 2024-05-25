@@ -13,3 +13,6 @@ pyoslog>=0.3.0; sys_platform == 'darwin'
 
 # required only if using the --external-auth option in --no-gui mode
 prompt_toolkit
+
+# required only if using JWT certificate credentials (O365)
+pyjwt>=2.4

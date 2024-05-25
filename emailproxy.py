@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-03-15'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-05-25'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -179,6 +179,7 @@ LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
+JWT_LIFETIME = 300  # seconds to add to the current time and use for the `exp` value in JWT certificate credentials
 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
 LOG_FILE_MAX_BACKUPS = 10  # the number of log files to keep when LOG_FILE_MAX_SIZE is exceeded (0 = disable rollover)
@@ -722,6 +723,8 @@ class OAuth2Helper:
         client_secret = AppConfig.get_option_with_catch_all_fallback(config, username, 'client_secret')
         client_secret_encrypted = AppConfig.get_option_with_catch_all_fallback(config, username,
                                                                                'client_secret_encrypted')
+        jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
+        jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
         # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
         # and likewise for client_secret here because it can be optional for Office 365 configurations
@@ -775,18 +778,61 @@ class OAuth2Helper:
                     try:
                         client_secret = cryptographer.decrypt(client_secret_encrypted)
                     except InvalidToken as e:  # needed to avoid looping (we don't remove secrets on decryption failure)
-                        Log.error('Invalid password to decrypt', username, 'secret - aborting login:',
-                                  Log.error_string(e))
+                        Log.error('Invalid password to decrypt `client_secret_encrypted` for account', username,
+                                  '- aborting login:', Log.error_string(e))
                         return False, '%s: Login failed - the password for account %s is incorrect' % (
                             APP_NAME, username)
                 else:
                     Log.info('Warning: found both `client_secret_encrypted` and `client_secret` for account', username,
-                             ' - the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+                             '- the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+
+            # O365 certificate credentials - see: learn.microsoft.com/entra/identity-platform/certificate-credentials
+            jwt_client_assertion = None
+            if jwt_certificate_path and jwt_key_path:
+                if client_secret or client_secret_encrypted:
+                    client_secret_type = '`client_secret%s`' % ('_encrypted' if client_secret_encrypted else '')
+                    Log.info('Warning: found both certificate credentials and', client_secret_type, 'for account',
+                             username, '- the', client_secret_type, 'value will be used. To use certificate',
+                             'credentials, remove the client secret value')
+
+                else:
+                    try:
+                        # noinspection PyUnresolvedReferences
+                        import jwt
+                    except ImportError:
+                        return False, ('Unable to load jwt, which is a requirement when using certificate credentials '
+                                       '(`jwt_` options). Please run `python -m pip install -r requirements-core.txt`')
+                    import uuid
+                    from cryptography import x509
+                    from cryptography.hazmat.primitives import serialization
+
+                    try:
+                        jwt_now = datetime.datetime.now(datetime.timezone.utc)
+                        jwt_certificate_fingerprint = x509.load_pem_x509_certificate(
+                            pathlib.Path(jwt_certificate_path).read_bytes()).fingerprint(hashes.SHA256())
+                        jwt_client_assertion = jwt.encode(
+                            {
+                                'aud': token_url,
+                                'exp': jwt_now + datetime.timedelta(seconds=JWT_LIFETIME),
+                                'iss': client_id,
+                                'jti': str(uuid.uuid4()),
+                                'nbf': jwt_now,
+                                'sub': client_id
+                            },
+                            serialization.load_pem_private_key(pathlib.Path(jwt_key_path).read_bytes(), password=None),
+                            algorithm='RS256',
+                            headers={
+                                'x5t#S256': base64.urlsafe_b64encode(jwt_certificate_fingerprint).decode('utf-8')
+                            })
+                    except FileNotFoundError:
+                        return (False, 'Unable to create credentials assertion for account %s - please check that the '
+                                       '`jwt_certificate_path` and `jwt_key_path` values are correct' % username)
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
                     if refresh_token:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
+                                                                            jwt_client_assertion, username,
                                                                             cryptographer.decrypt(refresh_token))
 
                         access_token = response['access_token']
@@ -820,18 +866,19 @@ class OAuth2Helper:
                                                                                       redirect_listen_address, username)
 
                     if not success:
-                        Log.info('Authorisation result error for', username, '- aborting login.', auth_result)
+                        Log.info('Authorisation result error for account', username, '- aborting login.', auth_result)
                         return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
 
                 if not oauth2_flow:
-                    Log.error('No `oauth2_flow` value specified for', username, '- aborting login')
+                    Log.error('No `oauth2_flow` value specified for account', username, '- aborting login')
                     return (False, '%s: Incomplete config file entry found for account %s - please make sure an '
                                    '`oauth2_flow` value is specified when using a method that does not require a '
                                    '`permission_url`' % (APP_NAME, username))
 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
-                                                                        client_secret, auth_result, oauth2_scope,
-                                                                        oauth2_flow, username, password)
+                                                                        client_secret, jwt_client_assertion,
+                                                                        auth_result, oauth2_scope, oauth2_flow,
+                                                                        username, password)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -852,8 +899,9 @@ class OAuth2Helper:
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                 elif permission_url:  # ignore this situation with CCG/ROPCG/service account flows - it is expected
-                    Log.info('Warning: no refresh token returned for', username, '- you will need to re-authenticate',
-                             'each time the access token expires (does your `oauth2_scope` value allow `offline` use?)')
+                    Log.info('Warning: no refresh token returned for account', username, '- you will need to',
+                             're-authenticate each time the access token expires (does your `oauth2_scope` value allow',
+                             '`offline` use?)')
 
                 AppConfig.save()
 
@@ -876,7 +924,7 @@ class OAuth2Helper:
 
             AppConfig.save()
 
-            Log.info('Retrying login due to exception while refreshing OAuth 2.0 tokens for', username,
+            Log.info('Retrying login due to exception while refreshing access token for account', username,
                      '(attempt %d):' % (1 if has_access_token else 2), Log.error_string(e))
             return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
@@ -893,11 +941,12 @@ class OAuth2Helper:
                 config.remove_option(username, 'refresh_token')
                 AppConfig.save()
 
-                Log.info('Retrying login due to exception while decrypting OAuth 2.0 credentials for', username,
+                Log.info('Retrying login due to exception while decrypting OAuth 2.0 credentials for account', username,
                          '(invalid password):', Log.error_string(e))
                 return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
 
-            Log.error('Invalid password to decrypt', username, 'credentials - aborting login:', Log.error_string(e))
+            Log.error('Invalid password to decrypt credentials for account', username, '- aborting login:',
+                      Log.error_string(e))
             return False, '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
 
         except Exception as e:
@@ -906,7 +955,8 @@ class OAuth2Helper:
             # errors: URLError(OSError(50, 'Network is down'))) - access token 400 Bad Request HTTPErrors with messages
             # such as 'authorisation code was already redeemed' are caused by our support for simultaneous requests,
             # and will work from the next request; however, please report an issue if you encounter problems here
-            Log.info('Caught exception while requesting OAuth 2.0 credentials for %s:' % username, Log.error_string(e))
+            Log.info('Caught exception while requesting OAuth 2.0 credentials for account %s:' % username,
+                     Log.error_string(e))
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
@@ -1023,7 +1073,7 @@ class OAuth2Helper:
                 # to improve no-GUI mode we also support the use of a local redirection receiver server or terminal
                 # entry to authenticate; this result is a timeout, wsgi request error/failure, or terminal auth ctrl+c
                 if 'expired' in data and data['expired']:
-                    return False, 'No-GUI authorisation request failed or timed out'
+                    return False, 'No-GUI authorisation request failed or timed out for account %s' % data['username']
 
                 if 'local_server_auth' in data:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
@@ -1040,21 +1090,24 @@ class OAuth2Helper:
                             authorisation_code = OAuth2Helper.oauth2_url_unescape(response['code'])
                             if authorisation_code:
                                 return True, authorisation_code
-                            return False, 'No OAuth 2.0 authorisation code returned'
+                            return False, 'No OAuth 2.0 authorisation code returned for account %s' % data['username']
                         if 'error' in response:
-                            message = 'OAuth 2.0 authorisation error: %s' % response['error']
+                            message = 'OAuth 2.0 authorisation error for account %s: ' % data['username']
+                            message += response['error']
                             message += '; %s' % response['error_description'] if 'error_description' in response else ''
                             return False, message
-                        return False, 'OAuth 2.0 authorisation response has no code or error message'
-                    return False, 'OAuth 2.0 authorisation response is missing or does not match `redirect_uri`'
+                        return (False, 'OAuth 2.0 authorisation response for account %s has neither code nor error '
+                                       'message' % data['username'])
+                    return (False, 'OAuth 2.0 authorisation response for account %s is missing or does not match'
+                                   '`redirect_uri`' % data['username'])
 
             else:  # not for this thread - put back into queue
                 response_queue_reference.put(data)
                 time.sleep(1)
 
     @staticmethod
-    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, authorisation_code,
-                                        oauth2_scope, oauth2_flow, username, password):
+    def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
+                                        authorisation_code, oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
@@ -1066,6 +1119,12 @@ class OAuth2Helper:
                   'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+            # certificate credentials are only used when no client secret is provided
+            if jwt_client_assertion:
+                params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+                params['client_assertion'] = jwt_client_assertion
+
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
@@ -1079,7 +1138,7 @@ class OAuth2Helper:
             return json.loads(response)
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
-            Log.debug('Error requesting access token - received invalid response:', e.message)
+            Log.debug('Error requesting access token for account', username, '- received invalid response:', e.message)
             raise e
 
     # noinspection PyUnresolvedReferences
@@ -1096,12 +1155,17 @@ class OAuth2Helper:
                             '`python -m pip install requests google-auth`')
 
         if key_type == 'file':
-            with open(key_path_or_contents) as key_file:
-                service_account = json.load(key_file)
+            try:
+                with open(key_path_or_contents) as key_file:
+                    service_account = json.load(key_file)
+            except IOError as e:
+                raise FileNotFoundError('Unable to open service account key file %s for account %s',
+                                        (key_path_or_contents, username)) from e
         elif key_type == 'key':
             service_account = json.loads(key_path_or_contents)
         else:
-            raise Exception('Service account key type not specified - `client_id` must be set to `file` or `key`')
+            raise Exception('Service account key type not specified for account %s - `client_id` must be set to '
+                            '`file` or `key`' % username)
 
         credentials = google.oauth2.service_account.Credentials.from_service_account_info(service_account)
         credentials = credentials.with_scopes(oauth2_scope.split(' '))
@@ -1112,13 +1176,19 @@ class OAuth2Helper:
         return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
 
     @staticmethod
-    def refresh_oauth2_access_token(token_url, client_id, client_secret, refresh_token):
+    def refresh_oauth2_access_token(token_url, client_id, client_secret, jwt_client_assertion, username, refresh_token):
         """Obtains a new access token from token_url using the given client_id, client_secret and refresh token,
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
         params = {'client_id': client_id, 'client_secret': client_secret, 'refresh_token': refresh_token,
                   'grant_type': 'refresh_token'}
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+            # certificate credentials are only used when no client secret is provided
+            if jwt_client_assertion:
+                params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
+                params['client_assertion'] = jwt_client_assertion
+
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
@@ -1130,7 +1200,7 @@ class OAuth2Helper:
 
         except urllib.error.HTTPError as e:
             e.message = json.loads(e.read())
-            Log.debug('Error refreshing access token - received invalid response:', e.message)
+            Log.debug('Error refreshing access token for account', username, '- received invalid response:', e.message)
             if e.code == 400:  # 400 Bad Request typically means re-authentication is required (token expired)
                 raise OAuth2Helper.TokenRefreshError from e
             raise e
@@ -2697,7 +2767,7 @@ class App:
             pillow_version = pkg_resources.get_distribution('pillow').version
             if pkg_resources.parse_version(pystray_version) <= pkg_resources.parse_version('0.19.4') and \
                     pkg_resources.parse_version(pillow_version) >= pkg_resources.parse_version('10.0.0'):
-                Image.ANTIALIAS = Image.LANCZOS
+                Image.ANTIALIAS = Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.Resampling.LANCZOS
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
@@ -2906,8 +2976,10 @@ class App:
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
         # noinspection PyDeprecation
-        if pkg_resources.parse_version(
-                pkg_resources.get_distribution('pywebview').version) < pkg_resources.parse_version('3.6'):
+        pywebview_version = pkg_resources.parse_version(pkg_resources.get_distribution('pywebview').version)
+        # the version zero check is due to a bug in the Ubuntu 22.04 python-pywebview package - see GitHub #242
+        # noinspection PyDeprecation
+        if pkg_resources.parse_version('0') < pywebview_version < pkg_resources.parse_version('3.6'):
             # noinspection PyUnresolvedReferences
             authorisation_window.loaded += self.authorisation_window_loaded
         else:
