@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -24,7 +24,7 @@ jobs:
           python -m pip install build
           python -m build
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions
           path: dist/
@@ -38,7 +38,7 @@ jobs:
       url: https://pypi.org/p/emailproxy
 
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
         with:
           name: python-package-distributions
           path: dist/
@@ -50,14 +50,14 @@ jobs:
           skip-existing: true  # avoid failing when repeating this action
 
       # sign the built packages
-      - uses: sigstore/gh-action-sigstore-python@v1.2.3
+      - uses: sigstore/gh-action-sigstore-python@v2
         with:
           inputs: >-
             ./dist/*.tar.gz
             ./dist/*.whl
 
       # append the built packages to the latest release
-      - uses: xresloader/upload-to-github-release@v1.3.12
+      - uses: xresloader/upload-to-github-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

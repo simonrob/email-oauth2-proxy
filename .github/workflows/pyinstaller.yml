@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -73,7 +73,7 @@ jobs:
           filename: emailproxy-${{ needs.get_tag.outputs.output }}_pyinstaller-${{ runner.os }}.zip
 
       # append the zip to the latest release
-      - uses: xresloader/upload-to-github-release@v1.3.12
+      - uses: xresloader/upload-to-github-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
