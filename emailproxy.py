@@ -2907,7 +2907,7 @@ class App:
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
         # noinspection PyDeprecation
         pywebview_version = pkg_resources.parse_version(pkg_resources.get_distribution('pywebview').version)
-        # the version zero check is due to a bug in the Ubuntu 22.04 python-pywebview package - see GitHub #242
+        # the version zero check is due to a bug in the Ubuntu 24.04 python-pywebview package - see GitHub #242
         # noinspection PyDeprecation
         if pkg_resources.parse_version('0') < pywebview_version < pkg_resources.parse_version('3.6'):
             # noinspection PyUnresolvedReferences
