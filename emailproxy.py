@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-05-25'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-06-04'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2907,7 +2907,7 @@ class App:
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
         # noinspection PyDeprecation
         pywebview_version = pkg_resources.parse_version(pkg_resources.get_distribution('pywebview').version)
-        # the version zero check is due to a bug in the Ubuntu 22.04 python-pywebview package - see GitHub #242
+        # the version zero check is due to a bug in the Ubuntu 24.04 python-pywebview package - see GitHub #242
         # noinspection PyDeprecation
         if pkg_resources.parse_version('0') < pywebview_version < pkg_resources.parse_version('3.6'):
             # noinspection PyUnresolvedReferences
