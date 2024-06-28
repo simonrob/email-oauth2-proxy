@@ -172,6 +172,7 @@ It is often helpful to be able to view the raw connection details when debugging
 This can be achieved using `telnet`, [PuTTY](https://www.chiark.greenend.org.uk/~sgtatham/putty/) or similar.
 For example, to test the Office 365 IMAP server from the [example configuration](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config), first open a connection using `telnet 127.0.0.1 1993`, and then send a login command: `a1 login e@mail.com password`, replacing `e@mail.com` with your email address, and `password` with any value you like during testing (see above for why the password is irrelevant).
 If you have already authorised your account with the proxy you should see a response starting with `a1 OK`; if not, this command should trigger a notification from the proxy about authorising your account.
+Note that POP and SMTP are different protocols, and while they can be tested in this way, they require different commands to be sent – see [this issue comment](https://github.com/simonrob/email-oauth2-proxy/issues/251#issuecomment-2133976839) for further details.
 
 If you are using a [secure local connection](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) the interaction with the remote email server is the same as above, but you will need to use a local debugging tool that supports encryption.
 The easiest approach here is to use [OpenSSL](https://www.openssl.org/): `openssl s_client -crlf -connect 127.0.0.1:1993`.

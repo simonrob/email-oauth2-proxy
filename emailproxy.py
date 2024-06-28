@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-05-25'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-06-28'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -322,7 +322,7 @@ class Log:
         host, port, *_ = address
         with contextlib.suppress(ValueError):
             ip = ipaddress.ip_address(host)
-            host = '[%s]' % host if type(ip) is ipaddress.IPv6Address else host
+            host = '[%s]' % host if isinstance(ip, ipaddress.IPv6Address) else host
         return '%s:%d' % (host, port)
 
     @staticmethod
@@ -365,13 +365,13 @@ class AWSSecretsManagerCacheStore(CacheStore):
         except ModuleNotFoundError:
             Log.error('Unable to load AWS SDK - please install the `boto3` module: `python -m pip install boto3`')
             return None, None
-        else:
-            # allow a profile to be chosen by prefixing the store_id - the separator used (`||`) will not be in an ARN
-            # or secret name (see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html)
-            split_id = store_id.split('||', maxsplit=1)
-            if '||' in store_id:
-                return split_id[1], boto3.session.Session(profile_name=split_id[0]).client('secretsmanager')
-            return store_id, boto3.client(service_name='secretsmanager')
+
+        # allow a profile to be chosen by prefixing the store_id - the separator used (`||`) will not be in an ARN
+        # or secret name (see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html)
+        split_id = store_id.split('||', maxsplit=1)
+        if '||' in store_id:
+            return split_id[1], boto3.session.Session(profile_name=split_id[0]).client('secretsmanager')
+        return store_id, boto3.client(service_name='secretsmanager')
 
     @staticmethod
     def _create_secret(aws_client, store_id):
@@ -824,7 +824,7 @@ class OAuth2Helper:
                             headers={
                                 'x5t#S256': base64.urlsafe_b64encode(jwt_certificate_fingerprint).decode('utf-8')
                             })
-                    except FileNotFoundError:
+                    except (FileNotFoundError, OSError):  # catch OSError due to GitHub issue 257 (quoted paths)
                         return (False, 'Unable to create credentials assertion for account %s - please check that the '
                                        '`jwt_certificate_path` and `jwt_key_path` values are correct' % username)
 
@@ -912,7 +912,7 @@ class OAuth2Helper:
 
         except OAuth2Helper.TokenRefreshError as e:
             # always clear access tokens - can easily request another via the refresh token (with no user interaction)
-            has_access_token = True if config.get(username, 'access_token', fallback=None) else False
+            has_access_token = bool(config.get(username, 'access_token', fallback=None))
             config.remove_option(username, 'access_token')
             config.remove_option(username, 'access_token_expiry')
 
@@ -986,6 +986,7 @@ class OAuth2Helper:
                   Log.format_host_port((parsed_uri.hostname, parsed_port)))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
+            # pylint: disable=arguments-differ
             def log_message(self, _format_string, *args):
                 Log.debug('Local server auth mode (%s): received authentication response' % Log.format_host_port(
                     (parsed_uri.hostname, parsed_port)), *args)
@@ -1150,22 +1151,22 @@ class OAuth2Helper:
             import requests
             import google.oauth2.service_account
             import google.auth.transport.requests
-        except ModuleNotFoundError:
-            raise Exception('Unable to load Google Auth SDK - please install the `requests` and `google-auth` modules: '
-                            '`python -m pip install requests google-auth`')
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError('Unable to load Google Auth SDK - please install the `requests` and '
+                                      '`google-auth` modules: `python -m pip install requests google-auth`') from e
 
         if key_type == 'file':
             try:
-                with open(key_path_or_contents) as key_file:
+                with open(key_path_or_contents, mode='r', encoding='utf-8') as key_file:
                     service_account = json.load(key_file)
             except IOError as e:
-                raise FileNotFoundError('Unable to open service account key file %s for account %s',
+                raise FileNotFoundError('Unable to open service account key file %s for account %s' %
                                         (key_path_or_contents, username)) from e
         elif key_type == 'key':
             service_account = json.loads(key_path_or_contents)
         else:
-            raise Exception('Service account key type not specified for account %s - `client_id` must be set to '
-                            '`file` or `key`' % username)
+            raise KeyError('Service account key type not specified for account %s - `client_id` must be set to '
+                           '`file` or `key`' % username)
 
         credentials = google.oauth2.service_account.Credentials.from_service_account_info(service_account)
         credentials = credentials.with_scopes(oauth2_scope.split(' '))
@@ -2044,7 +2045,7 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
             if not re.search(' SASL-IR', updated_response, re.IGNORECASE):
                 updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
             updated_response = re.sub(' LOGINDISABLED', '', updated_response, count=1, flags=re.IGNORECASE)
-            byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
+            byte_data = b'%s\r\n' % updated_response.encode('utf-8')
 
         super().process_data(byte_data)
 
@@ -2842,9 +2843,9 @@ class App:
         if len(self.proxies) <= 0:
             # note that we don't actually allow no servers when loading the config, so no need to generate a menu
             return items  # (avoids creating and then immediately regenerating the menu when servers are loaded)
-        else:
-            for server_type in ['IMAP', 'POP', 'SMTP']:
-                items.extend(App.get_config_menu_servers(self.proxies, server_type))
+
+        for server_type in ['IMAP', 'POP', 'SMTP']:
+            items.extend(App.get_config_menu_servers(self.proxies, server_type))
 
         config_accounts = AppConfig.accounts()
         items.append(pystray.MenuItem('Accounts (+ last authenticated activity):', None, enabled=False))
@@ -2977,7 +2978,7 @@ class App:
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
         # noinspection PyDeprecation
         pywebview_version = pkg_resources.parse_version(pkg_resources.get_distribution('pywebview').version)
-        # the version zero check is due to a bug in the Ubuntu 22.04 python-pywebview package - see GitHub #242
+        # the version zero check is due to a bug in the Ubuntu 24.04 python-pywebview package - see GitHub #242
         # noinspection PyDeprecation
         if pkg_resources.parse_version('0') < pywebview_version < pkg_resources.parse_version('3.6'):
             # noinspection PyUnresolvedReferences
@@ -3174,10 +3175,10 @@ class App:
             output = subprocess.check_output(['/bin/launchctl', command, proxy_command], stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError:
             return False
-        else:
-            if output and command != 'list':
-                return False  # load/unload gives no output unless unsuccessful (return code is always 0 regardless)
-            return True
+
+        if output and command != 'list':
+            return False  # load/unload gives no output unless unsuccessful (return code is always 0 regardless)
+        return True
 
     @staticmethod
     def started_at_login(_):
