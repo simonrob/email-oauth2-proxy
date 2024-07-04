@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-06-28'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-07-04'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1428,8 +1428,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                     if not byte_data:
                         plugin.log_debug('--> [ Message consumed by plugin ]')
                         break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
-                    else:
-                        plugin.log_debug('-->', byte_data)  # message transformed by plugin
+                    plugin.log_debug('-->', byte_data)  # message transformed by plugin
             if byte_data:
                 OAuth2ClientConnection.process_data(self, byte_data)
 
@@ -1911,8 +1910,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
                     if not byte_data:
                         current_plugin.log_debug('<-- [ Message consumed by plugin ]')
                         break  # this plugin has consumed the message; nothing to pass to any subsequent plugins
-                    else:
-                        current_plugin.log_debug('<--', byte_data)  # transformed by plugin
+                    current_plugin.log_debug('<--', byte_data)  # message transformed by plugin
             if byte_data:
                 OAuth2ServerConnection.process_data(self, byte_data)
 
