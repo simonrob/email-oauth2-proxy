@@ -66,6 +66,7 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
             else:
                 return byte_data  # pass through all other messages unedited
 
+        # pylint: disable-next=too-many-nested-blocks
         if self.fetching:
             self.fetched_message += byte_data
             if len(self.fetched_message) < self.expected_message_length:
@@ -86,7 +87,7 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
                     parsed_message_bytes = parsed_message.as_bytes()
                     for part in parsed_message.walk():
                         if part.get_content_type().startswith('text/') and part.get_filename() is None:
-                            part_header, original_part_body = part.as_bytes().split(b'\r\n\r\n', maxsplit=1)
+                            _part_header, original_part_body = part.as_bytes().split(b'\r\n\r\n', maxsplit=1)
                             cte = part['content-transfer-encoding'] if 'content-transfer-encoding' in part else None
                             part_body_edited, new_part_body = self._decode_and_edit_message_part(original_part_body,
                                                                                                  encoding=cte)

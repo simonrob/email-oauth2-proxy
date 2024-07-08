@@ -35,6 +35,7 @@ class IMAPCleanO365ATPLinks(plugins.IMAPMessageEditor.IMAPMessageEditor):
             try:
                 # parse_qsl not parse_qs because we only ever care about non-array values; extra dict formatting
                 # as IntelliJ has a bug incorrectly detecting parse_qs/l as returning a dict with string-type keys
+                # pylint: disable-next=unnecessary-comprehension
                 atp_url_parts = {key: value for key, value in urllib.parse.parse_qsl(atp_url_query)}
             except UnicodeEncodeError:
                 # the encoding and errors parameters for parse_qsl are not actually passed to _encode_result, so invalid
@@ -42,6 +43,7 @@ class IMAPCleanO365ATPLinks(plugins.IMAPMessageEditor.IMAPMessageEditor):
                 # noinspection PyUnresolvedReferences,PyProtectedMember
                 original_encode_result = urllib.parse._encode_result
                 urllib.parse._encode_result = lambda obj, encoding='utf-8', err='replace': obj.encode(encoding, err)
+                # pylint: disable-next=unnecessary-comprehension
                 atp_url_parts = {key: value for key, value in urllib.parse.parse_qsl(atp_url_query)}
                 urllib.parse._encode_result = original_encode_result
             if b'url' in atp_url_parts:
@@ -56,6 +58,6 @@ class IMAPCleanO365ATPLinks(plugins.IMAPMessageEditor.IMAPMessageEditor):
         if link_count > 0:
             self.log_debug('Removed', link_count, 'O365 ATP links from message requested via', self.fetch_command)
             return edited_message
-        else:
-            # no links to replace (or potentially some encoding not handled by IMAPMessageEditor)
-            return byte_message
+
+        # no links to replace (or potentially some encoding not handled by IMAPMessageEditor)
+        return byte_message

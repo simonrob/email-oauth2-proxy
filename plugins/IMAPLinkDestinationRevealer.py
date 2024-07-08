@@ -52,9 +52,9 @@ class IMAPLinkDestinationRevealer(plugins.IMAPMessageEditor.IMAPMessageEditor):
         if link_count > 0:
             self.log_debug('Expanded target for', link_count, 'links from message requested via', self.fetch_command)
             return edited_message
-        else:
-            # no links to replace (or potentially some encoding not handled by IMAPMessageEditor)
-            return byte_message
+
+        # no links to replace (or potentially some encoding not handled by IMAPMessageEditor)
+        return byte_message
 
     @staticmethod
     def normalise_url(url):
