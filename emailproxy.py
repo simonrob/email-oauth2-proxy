@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-06-28'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-07-08'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -977,7 +977,7 @@ class OAuth2Helper:
                   Log.format_host_port((parsed_uri.hostname, parsed_port)))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
-            # pylint: disable=arguments-differ
+            # pylint: disable-next=arguments-differ
             def log_message(self, _format_string, *args):
                 Log.debug('Local server auth mode (%s): received authentication response' % Log.format_host_port(
                     (parsed_uri.hostname, parsed_port)), *args)
