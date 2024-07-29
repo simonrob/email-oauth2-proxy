@@ -29,7 +29,8 @@ class IMAPRegexContentReplacer(plugins.IMAPMessageEditor.IMAPMessageEditor):
     @staticmethod
     def parse_replacements(replacements_file=None):
         config_parser = configparser.ConfigParser(delimiters=('{=rcr=}',), interpolation=None, allow_no_value=True)
-        config_parser.read(replacements_file)
+        if replacements_file:
+            config_parser.read(replacements_file)
 
         def decode_string(original):
             # we need the original string as entered, not the backslash-escaped version

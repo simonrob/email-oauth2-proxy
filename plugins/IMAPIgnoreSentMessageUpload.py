@@ -17,7 +17,7 @@ IMAP_APPEND_REQUEST_MATCHER = re.compile(br'^%s (?P<command>APPEND) "(?P<mailbox
 class IMAPIgnoreSentMessageUpload(plugins.BasePlugin.BasePlugin):
     def __init__(self, target_mailboxes=None):
         super().__init__()
-        self.target_mailboxes = [m.encode('utf-8') for m in target_mailboxes]
+        self.target_mailboxes = [m.encode('utf-8') for m in target_mailboxes] if target_mailboxes else []
         self.appending, self.append_tag, self.expected_message_length, self.received_message_length = self.reset()
 
     def reset(self):

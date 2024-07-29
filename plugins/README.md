@@ -42,6 +42,9 @@ Please note that this is a relatively simplistic example of how such a plugin co
 - [`SMTPBlackHole`](plugins/SMTPBlackHole.py): An example SMTP plugin that accepts incoming email messages but silently discards them without passing to the remote server.
 Useful for testing email sending tools with no risk of actually delivering messages.
 
+- [`SMTPDisableO365Reactions`](plugins/SMTPDisableO365Reactions.py): An example SMTP plugin that adds the [`x-ms-reactions: disallow`](https://techcommunity.microsoft.com/t5/outlook-blog/reactions-in-outlook-public-usability-update-september-2023/ba-p/3928103) header to outgoing messages to disable Outlook reactions.
+An optional `domain_whitelist` parameter allows specific domains to be whitelisted (such as your own internal domain(s)).
+
 - [`SMTPSimpleMailingList`](plugins/SMTPSimpleMailingList.py): An example SMTP plugin that replaces specified recipient addresses in outgoing emails with one or more different recipients.
 Please note that this is a relatively simplistic example of how such a plugin could work, and if you try to confuse or break it you will likely succeed (please use a real mailing list if you need to handle this).
 However, this approach works well for basic cases - for example, when you often find yourself sending an email to the same addresses, you can consolidate the group into a single address and never forget any recipients.
