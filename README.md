@@ -137,7 +137,7 @@ If your network requires connections to use an existing proxy, you can instruct 
 After installing its requirements, the proxy script can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
 If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en_short` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
 
-Python 3.6 or later is required to run the proxy.
+Python 3.7 or later is required to run the proxy.
 The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with python 2.7, but with a limited feature set, and no ongoing maintenance.
 See [issue 38](https://github.com/simonrob/email-oauth2-proxy/issues/38) for further discussion.
 
