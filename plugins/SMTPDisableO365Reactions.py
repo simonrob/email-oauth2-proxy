@@ -3,8 +3,7 @@ that disables message reactions. An additional optional parameter 'domain_whitel
 domains (for example, ['your-domain.com', 'example.com']). If any of these domains are present in the recipient list,
 the ability to react to this message will be retained. Note that this functionality applies to all recipients - i.e.,
 if a single whitelisted recipient is present, all recipients will be able to react to the message. For further details
-about disabling reactions, see the Microsoft article: https://techcommunity.microsoft.com/t5/outlook/r/ba-p/3928103.
-"""
+about disabling reactions, see the Microsoft article: https://techcommunity.microsoft.com/t5/outlook/r/ba-p/3928103."""
 
 import enum
 import re
@@ -62,8 +61,6 @@ class SMTPDisableO365Reactions(plugins.BasePlugin.BasePlugin):
 
         elif self.sending_state == self.STATE.DATA:  # message contents
             if not self.header_processed:
-                self.header_processed = True
-
                 if self.whitelist_domain:
                     self.log_debug('Found whitelisted domain `%s`' % self.whitelist_domain.decode('utf-8'),
                                    '- skipping adding `x-ms-reactions: disallow` header to outgoing message')
@@ -72,6 +69,8 @@ class SMTPDisableO365Reactions(plugins.BasePlugin.BasePlugin):
                     byte_data_parts[0] += b'\r\nx-ms-reactions: disallow'
                     byte_data = CONTENT_TYPE_HEADER.join(byte_data_parts)
                     self.log_debug('Added `x-ms-reactions: disallow` header to outgoing message')
+
+                self.header_processed = True
 
             if byte_data.endswith(b'\r\n.\r\n') or (self.previous_line_ended and byte_data == b'.\r\n'):  # end of email
                 self.reset()
