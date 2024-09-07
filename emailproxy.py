@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-07-29'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-09-07'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1124,6 +1124,11 @@ class OAuth2Helper:
             if jwt_client_assertion:
                 params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
                 params['client_assertion'] = jwt_client_assertion
+
+            # CCG flow can fall back to the login password as the client secret (see GitHub #271 discussion)
+            elif oauth2_flow == 'client_credentials' and AppConfig.get_global(
+                    'use_login_password_as_client_credentials_secret', fallback=False):
+                params['client_secret'] = password
 
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
