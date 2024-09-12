@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-07-29'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-09-12'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2771,6 +2771,7 @@ class App:
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
         if packaging.version.Version(importlib_metadata.version('pillow')) < packaging.version.Version('9.2.0'):
+            # noinspection PyUnresolvedReferences
             font_width, font_height = font.getsize(text)
             return font, font_width, font_height
 
