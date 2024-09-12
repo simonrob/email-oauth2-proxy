@@ -10,7 +10,7 @@ The proxy works in the background with a menu bar/taskbar helper or as a headles
 
 ### Example use-cases<a id="example-use-cases"></a>
 - You need to use an Office 365 email account, but don't get on with Outlook.
-The email client you like doesn't support OAuth 2.0, which became mandatory [in January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437).
+The email client you like doesn't support OAuth 2.0, which became mandatory [in January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437) ([September 2025 for SMTP](https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-online-to-retire-basic-auth-for-client-submission-smtp/ba-p/4114750)).
 - You used to use Gmail via IMAP/POP/SMTP with your raw account credentials (i.e., your real password), but cannot do this now that Google has disabled this method, and don't want to use an [App Password](https://support.google.com/accounts/answer/185833) (or cannot enable this option).
 - You have an account already set up in an email client, and you need to switch it to OAuth 2.0 authentication.
 You can edit the server details, but the client forces you to delete and re-add the account to enable OAuth 2.0, and you don't want to do this.
@@ -52,7 +52,7 @@ It will notify you if this is the case.
 As part of the proxy setup process you need to provide an OAuth 2.0 `client_id` and `client_secret` to allow it to authenticate with email servers on your behalf.
 
 If you have an existing client ID and secret for a desktop app, you can use these directly in the proxy.
-If this is not possible, you can also reuse the client ID and secret from any email client that supports IMAP/POP/SMTP OAuth 2.0 authentication with the email server you would like to connect to (such as [the](https://github.com/mozilla/releases-comm-central/blob/812b7c9068ca5cac0580b0ddbea8e34c141cd441/mailnews/base/src/OAuth2Providers.jsm) [various](https://github.com/Foundry376/Mailspring/blob/master/app/internal_packages/onboarding/lib/onboarding-constants.ts) [open](https://gitlab.gnome.org/GNOME/evolution-data-server/-/blob/master/CMakeLists.txt) [source](https://gitlab.gnome.org/GNOME/gnome-online-accounts/-/blob/master/meson_options.txt) [clients](https://github.com/M66B/FairEmail/blob/master/app/src/main/res/xml/providers.xml) with OAuth 2.0 support), but please do this with care and restraint as access through reused tokens will be associated with the token owner rather than your own client.
+If this is not possible, you can also reuse the client ID and secret from any email client that supports IMAP/POP/SMTP OAuth 2.0 authentication with the email server you would like to connect to (such as [the](https://github.com/mozilla/releases-comm-central/blob/812b7c9068ca5cac0580b0ddbea8e34c141cd441/mailnews/base/src/OAuth2Providers.jsm) [many](https://github.com/mozilla/releases-comm-central/blob/master/mailnews/base/src/OAuth2Providers.sys.mjs) [existing](https://github.com/Foundry376/Mailspring/blob/master/app/internal_packages/onboarding/lib/onboarding-constants.ts) [open](https://gitlab.gnome.org/GNOME/evolution-data-server/-/blob/master/CMakeLists.txt) [source](https://gitlab.gnome.org/GNOME/gnome-online-accounts/-/blob/master/meson_options.txt) [clients](https://github.com/M66B/FairEmail/blob/master/app/src/main/res/xml/providers.xml) with OAuth 2.0 support), but please do this with care and restraint as access through reused tokens will be associated with the token owner rather than your own client.
 
 If you do not have access to credentials for an existing client you will need to register your own.
 The process to do this is different for each provider, but the registration guides for several common ones are linked here.
@@ -128,7 +128,7 @@ If your network requires connections to use an existing proxy, you can instruct 
 After installing its requirements, the proxy script can be packaged as a single self-contained executable using [pyinstaller](https://pyinstaller.org/) if desired: `pyinstaller --onefile emailproxy.py`.
 If you are using the GUI version of the proxy, you may need to add `--hidden-import timeago.locales.en_short` until [this `timeago` issue](https://github.com/hustcc/timeago/issues/40) is resolved.
 
-Python 3.6 or later is required to run the proxy.
+Python 3.7 or later is required to run the proxy.
 The [python2 branch](https://github.com/simonrob/email-oauth2-proxy/tree/python2) provides minimal compatibility with python 2.7, but with a limited feature set, and no ongoing maintenance.
 See [issue 38](https://github.com/simonrob/email-oauth2-proxy/issues/38) for further discussion.
 

@@ -1,8 +1,9 @@
 # the standard way to install the proxy and dependencies is `python -m pip install emailproxy` (i.e., direct from PyPI)
 # to install requirements directly, use: `python -m pip install -r requirements-core.txt -r requirements-gui.txt`
 
+importlib_metadata; python_version < '3.8'  # to get dependency versions (available in stdlib from 3.8 onwards)
+packaging  # for dependency version comparisons
 pillow  # to create the menu bar icon image from a TTF icon
-setuptools  # for pkg_resources (checking dependency versions)
 timeago  # for displaying the last authenticated activity hint
 
 # force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)

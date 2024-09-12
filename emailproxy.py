@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-07-08'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-09-12'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -102,13 +102,21 @@ try:
 except ImportError as gui_requirement_import_error:
     MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore', DeprecationWarning)
+try:
+    # pylint: disable-next=ungrouped-imports
+    import importlib.metadata as importlib_metadata  # get package version numbers - available in stdlib from python 3.8
+except ImportError:
     try:
-        # noinspection PyDeprecation,PyUnresolvedReferences
-        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
+        # noinspection PyUnresolvedReferences
+        import importlib_metadata
     except ImportError as gui_requirement_import_error:
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+try:
+    # noinspection PyUnresolvedReferences
+    import packaging.version  # parse package version numbers - used to work around various GUI-only package issues
+except ImportError as gui_requirement_import_error:
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
@@ -726,13 +734,12 @@ class OAuth2Helper:
         jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
-        # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
-        # and likewise for client_secret here because it can be optional for Office 365 configurations
-        if not (token_url and oauth2_scope and redirect_uri and client_id):
+        # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
+        # core parameters that are required by all methods: oauth2_scope and client_id
+        if not (token_url and oauth2_scope and client_id):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
-                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
-                           'and client_secret)' % (APP_NAME, username))
+                           'fields are added (at least token_url, oauth2_scope and client_id)' % (APP_NAME, username))
 
         # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
         example_client_value = '*** your'
@@ -1126,12 +1133,19 @@ class OAuth2Helper:
                 params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
                 params['client_assertion'] = jwt_client_assertion
 
+            # CCG flow can fall back to the login password as the client secret (see GitHub #271 discussion)
+            elif oauth2_flow == 'client_credentials' and AppConfig.get_global(
+                    'use_login_password_as_client_credentials_secret', fallback=False):
+                params['client_secret'] = password
+
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
             if oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+            if not redirect_uri:
+                del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
@@ -2760,13 +2774,12 @@ class App:
     # noinspection PyDeprecation
     def create_icon(self):
         # fix pystray <= 0.19.4 incompatibility with PIL 10.0.0+; resolved in 0.19.5 and later via pystray PR #147
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', DeprecationWarning)
-            pystray_version = pkg_resources.get_distribution('pystray').version
-            pillow_version = pkg_resources.get_distribution('pillow').version
-            if pkg_resources.parse_version(pystray_version) <= pkg_resources.parse_version('0.19.4') and \
-                    pkg_resources.parse_version(pillow_version) >= pkg_resources.parse_version('10.0.0'):
-                Image.ANTIALIAS = Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.Resampling.LANCZOS
+        pystray_version = packaging.version.Version(importlib_metadata.version('pystray'))
+        pillow_version = packaging.version.Version(importlib_metadata.version('pillow'))
+        if pystray_version <= packaging.version.Version('0.19.4') and \
+                pillow_version >= packaging.version.Version('10.0.0'):
+            Image.ANTIALIAS = Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.Resampling.LANCZOS
+
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
@@ -2827,9 +2840,8 @@ class App:
         font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
-        # noinspection PyDeprecation
-        if pkg_resources.parse_version(
-                pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
+        if packaging.version.Version(importlib_metadata.version('pillow')) < packaging.version.Version('9.2.0'):
+            # noinspection PyUnresolvedReferences
             font_width, font_height = font.getsize(text)
             return font, font_width, font_height
 
@@ -2974,11 +2986,9 @@ class App:
         setattr(authorisation_window, 'get_title', lambda window: window.title)  # add missing get_title method
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
-        # noinspection PyDeprecation
-        pywebview_version = pkg_resources.parse_version(pkg_resources.get_distribution('pywebview').version)
+        pywebview_version = packaging.version.Version(importlib_metadata.version('pywebview'))
         # the version zero check is due to a bug in the Ubuntu 24.04 python-pywebview package - see GitHub #242
-        # noinspection PyDeprecation
-        if pkg_resources.parse_version('0') < pywebview_version < pkg_resources.parse_version('3.6'):
+        if packaging.version.Version('0') < pywebview_version < packaging.version.Version('3.6'):
             # noinspection PyUnresolvedReferences
             authorisation_window.loaded += self.authorisation_window_loaded
         else:
