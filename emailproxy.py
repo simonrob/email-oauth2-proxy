@@ -725,13 +725,12 @@ class OAuth2Helper:
         jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
-        # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
-        # and likewise for client_secret here because it can be optional for Office 365 configurations
-        if not (token_url and oauth2_scope and redirect_uri and client_id):
+        # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
+        # core parameters that are required by all methods: oauth2_scope and client_id
+        if not (token_url and oauth2_scope and client_id):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
-                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
-                           'and client_secret)' % (APP_NAME, username))
+                           'fields are added (at least token_url, oauth2_scope and client_id)' % (APP_NAME, username))
 
         # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
         example_client_value = '*** your'
@@ -1125,12 +1124,19 @@ class OAuth2Helper:
                 params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
                 params['client_assertion'] = jwt_client_assertion
 
+            # CCG flow can fall back to the login password as the client secret (see GitHub #271 discussion)
+            elif oauth2_flow == 'client_credentials' and AppConfig.get_global(
+                    'use_login_password_as_client_credentials_secret', fallback=False):
+                params['client_secret'] = password
+
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
             if oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+            if not redirect_uri:
+                del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
