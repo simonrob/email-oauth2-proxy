@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-05-25'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-09-12'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -99,13 +99,21 @@ try:
 except ImportError as gui_requirement_import_error:
     MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore', DeprecationWarning)
+try:
+    # pylint: disable-next=ungrouped-imports
+    import importlib.metadata as importlib_metadata  # get package version numbers - available in stdlib from python 3.8
+except ImportError:
     try:
-        # noinspection PyDeprecation,PyUnresolvedReferences
-        import pkg_resources  # from setuptools - to change to importlib.metadata and packaging.version once min. is 3.8
+        # noinspection PyUnresolvedReferences
+        import importlib_metadata
     except ImportError as gui_requirement_import_error:
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+
+try:
+    # noinspection PyUnresolvedReferences
+    import packaging.version  # parse package version numbers - used to work around various GUI-only package issues
+except ImportError as gui_requirement_import_error:
+    MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
 # for macOS-specific functionality
 if sys.platform == 'darwin':
@@ -319,7 +327,7 @@ class Log:
         host, port, *_ = address
         with contextlib.suppress(ValueError):
             ip = ipaddress.ip_address(host)
-            host = '[%s]' % host if type(ip) is ipaddress.IPv6Address else host
+            host = '[%s]' % host if isinstance(ip, ipaddress.IPv6Address) else host
         return '%s:%d' % (host, port)
 
     @staticmethod
@@ -356,13 +364,13 @@ class AWSSecretsManagerCacheStore(CacheStore):
         except ModuleNotFoundError:
             Log.error('Unable to load AWS SDK - please install the `boto3` module: `python -m pip install boto3`')
             return None, None
-        else:
-            # allow a profile to be chosen by prefixing the store_id - the separator used (`||`) will not be in an ARN
-            # or secret name (see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html)
-            split_id = store_id.split('||', maxsplit=1)
-            if '||' in store_id:
-                return split_id[1], boto3.session.Session(profile_name=split_id[0]).client('secretsmanager')
-            return store_id, boto3.client(service_name='secretsmanager')
+
+        # allow a profile to be chosen by prefixing the store_id - the separator used (`||`) will not be in an ARN
+        # or secret name (see: https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_CreateSecret.html)
+        split_id = store_id.split('||', maxsplit=1)
+        if '||' in store_id:
+            return split_id[1], boto3.session.Session(profile_name=split_id[0]).client('secretsmanager')
+        return store_id, boto3.client(service_name='secretsmanager')
 
     @staticmethod
     def _create_secret(aws_client, store_id):
@@ -717,13 +725,12 @@ class OAuth2Helper:
         jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
-        # note that we don't require permission_url here because it is not needed for the client credentials grant flow,
-        # and likewise for client_secret here because it can be optional for Office 365 configurations
-        if not (token_url and oauth2_scope and redirect_uri and client_id):
+        # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
+        # core parameters that are required by all methods: oauth2_scope and client_id
+        if not (token_url and oauth2_scope and client_id):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
-                           'fields are added (permission_url, token_url, oauth2_scope, redirect_uri, client_id '
-                           'and client_secret)' % (APP_NAME, username))
+                           'fields are added (at least token_url, oauth2_scope and client_id)' % (APP_NAME, username))
 
         # while not technically forbidden (RFC 6749, A.1 and A.2), it is highly unlikely the example value is valid
         example_client_value = '*** your'
@@ -815,7 +822,7 @@ class OAuth2Helper:
                             headers={
                                 'x5t#S256': base64.urlsafe_b64encode(jwt_certificate_fingerprint).decode('utf-8')
                             })
-                    except FileNotFoundError:
+                    except (FileNotFoundError, OSError):  # catch OSError due to GitHub issue 257 (quoted paths)
                         return (False, 'Unable to create credentials assertion for account %s - please check that the '
                                        '`jwt_certificate_path` and `jwt_key_path` values are correct' % username)
 
@@ -903,7 +910,7 @@ class OAuth2Helper:
 
         except OAuth2Helper.TokenRefreshError as e:
             # always clear access tokens - can easily request another via the refresh token (with no user interaction)
-            has_access_token = True if config.get(username, 'access_token', fallback=None) else False
+            has_access_token = bool(config.get(username, 'access_token', fallback=None))
             config.remove_option(username, 'access_token')
             config.remove_option(username, 'access_token_expiry')
 
@@ -977,6 +984,7 @@ class OAuth2Helper:
                   Log.format_host_port((parsed_uri.hostname, parsed_port)))
 
         class LoggingWSGIRequestHandler(wsgiref.simple_server.WSGIRequestHandler):
+            # pylint: disable-next=arguments-differ
             def log_message(self, _format_string, *args):
                 Log.debug('Local server auth mode (%s): received authentication response' % Log.format_host_port(
                     (parsed_uri.hostname, parsed_port)), *args)
@@ -1116,12 +1124,19 @@ class OAuth2Helper:
                 params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer'
                 params['client_assertion'] = jwt_client_assertion
 
+            # CCG flow can fall back to the login password as the client secret (see GitHub #271 discussion)
+            elif oauth2_flow == 'client_credentials' and AppConfig.get_global(
+                    'use_login_password_as_client_credentials_secret', fallback=False):
+                params['client_secret'] = password
+
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
             if oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+            if not redirect_uri:
+                del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
         try:
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
@@ -1141,22 +1156,22 @@ class OAuth2Helper:
             import requests
             import google.oauth2.service_account
             import google.auth.transport.requests
-        except ModuleNotFoundError:
-            raise Exception('Unable to load Google Auth SDK - please install the `requests` and `google-auth` modules: '
-                            '`python -m pip install requests google-auth`')
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError('Unable to load Google Auth SDK - please install the `requests` and '
+                                      '`google-auth` modules: `python -m pip install requests google-auth`') from e
 
         if key_type == 'file':
             try:
-                with open(key_path_or_contents) as key_file:
+                with open(key_path_or_contents, mode='r', encoding='utf-8') as key_file:
                     service_account = json.load(key_file)
             except IOError as e:
-                raise FileNotFoundError('Unable to open service account key file %s for account %s',
+                raise FileNotFoundError('Unable to open service account key file %s for account %s' %
                                         (key_path_or_contents, username)) from e
         elif key_type == 'key':
             service_account = json.loads(key_path_or_contents)
         else:
-            raise Exception('Service account key type not specified for account %s - `client_id` must be set to '
-                            '`file` or `key`' % username)
+            raise KeyError('Service account key type not specified for account %s - `client_id` must be set to '
+                           '`file` or `key`' % username)
 
         credentials = google.oauth2.service_account.Credentials.from_service_account_info(service_account)
         credentials = credentials.with_scopes(oauth2_scope.split(' '))
@@ -2003,7 +2018,7 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
             if not re.search(' SASL-IR', updated_response, re.IGNORECASE):
                 updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
             updated_response = re.sub(' LOGINDISABLED', '', updated_response, count=1, flags=re.IGNORECASE)
-            byte_data = (b'%s\r\n' % updated_response.encode('utf-8'))
+            byte_data = b'%s\r\n' % updated_response.encode('utf-8')
 
         super().process_data(byte_data)
 
@@ -2695,13 +2710,12 @@ class App:
     # noinspection PyDeprecation
     def create_icon(self):
         # fix pystray <= 0.19.4 incompatibility with PIL 10.0.0+; resolved in 0.19.5 and later via pystray PR #147
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', DeprecationWarning)
-            pystray_version = pkg_resources.get_distribution('pystray').version
-            pillow_version = pkg_resources.get_distribution('pillow').version
-            if pkg_resources.parse_version(pystray_version) <= pkg_resources.parse_version('0.19.4') and \
-                    pkg_resources.parse_version(pillow_version) >= pkg_resources.parse_version('10.0.0'):
-                Image.ANTIALIAS = Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.Resampling.LANCZOS
+        pystray_version = packaging.version.Version(importlib_metadata.version('pystray'))
+        pillow_version = packaging.version.Version(importlib_metadata.version('pillow'))
+        if pystray_version <= packaging.version.Version('0.19.4') and \
+                pillow_version >= packaging.version.Version('10.0.0'):
+            Image.ANTIALIAS = Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.Resampling.LANCZOS
+
         icon_class = RetinaIcon if sys.platform == 'darwin' else pystray.Icon
         return icon_class(APP_NAME, App.get_image(), APP_NAME, menu=pystray.Menu(
             pystray.MenuItem('Servers and accounts', pystray.Menu(self.create_config_menu)),
@@ -2762,9 +2776,8 @@ class App:
         font = ImageFont.truetype(io.BytesIO(zlib.decompress(base64.b64decode(APP_ICON))), size=font_size)
 
         # pillow's getsize method was deprecated in 9.2.0 (see docs for PIL.ImageFont.ImageFont.getsize)
-        # noinspection PyDeprecation
-        if pkg_resources.parse_version(
-                pkg_resources.get_distribution('pillow').version) < pkg_resources.parse_version('9.2.0'):
+        if packaging.version.Version(importlib_metadata.version('pillow')) < packaging.version.Version('9.2.0'):
+            # noinspection PyUnresolvedReferences
             font_width, font_height = font.getsize(text)
             return font, font_width, font_height
 
@@ -2776,9 +2789,9 @@ class App:
         if len(self.proxies) <= 0:
             # note that we don't actually allow no servers when loading the config, so no need to generate a menu
             return items  # (avoids creating and then immediately regenerating the menu when servers are loaded)
-        else:
-            for server_type in ['IMAP', 'POP', 'SMTP']:
-                items.extend(App.get_config_menu_servers(self.proxies, server_type))
+
+        for server_type in ['IMAP', 'POP', 'SMTP']:
+            items.extend(App.get_config_menu_servers(self.proxies, server_type))
 
         config_accounts = AppConfig.accounts()
         items.append(pystray.MenuItem('Accounts (+ last authenticated activity):', None, enabled=False))
@@ -2905,11 +2918,9 @@ class App:
         setattr(authorisation_window, 'get_title', lambda window: window.title)  # add missing get_title method
 
         # pywebview 3.6+ moved window events to a separate namespace in a non-backwards-compatible way
-        # noinspection PyDeprecation
-        pywebview_version = pkg_resources.parse_version(pkg_resources.get_distribution('pywebview').version)
-        # the version zero check is due to a bug in the Ubuntu 22.04 python-pywebview package - see GitHub #242
-        # noinspection PyDeprecation
-        if pkg_resources.parse_version('0') < pywebview_version < pkg_resources.parse_version('3.6'):
+        pywebview_version = packaging.version.Version(importlib_metadata.version('pywebview'))
+        # the version zero check is due to a bug in the Ubuntu 24.04 python-pywebview package - see GitHub #242
+        if packaging.version.Version('0') < pywebview_version < packaging.version.Version('3.6'):
             # noinspection PyUnresolvedReferences
             authorisation_window.loaded += self.authorisation_window_loaded
         else:
@@ -3104,10 +3115,10 @@ class App:
             output = subprocess.check_output(['/bin/launchctl', command, proxy_command], stderr=subprocess.STDOUT)
         except subprocess.CalledProcessError:
             return False
-        else:
-            if output and command != 'list':
-                return False  # load/unload gives no output unless unsuccessful (return code is always 0 regardless)
-            return True
+
+        if output and command != 'list':
+            return False  # load/unload gives no output unless unsuccessful (return code is always 0 regardless)
+        return True
 
     @staticmethod
     def started_at_login(_):
