@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-09-12'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-09-24'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2601,7 +2601,8 @@ class App:
 
         if self.args.gui and len(MISSING_GUI_REQUIREMENTS) > 0:
             Log.error('Unable to load all GUI requirements:', MISSING_GUI_REQUIREMENTS, '- did you mean to run in',
-                      '`--no-gui` mode? If not, please run `python -m pip install -r requirements-gui.txt`')
+                      '`--no-gui` mode? If not, please run `python -m pip install -r requirements-gui.txt` or install',
+                      'from PyPI with GUI requirements included: `python -m pip install emailproxy[gui]`')
             self.exit(None)
             return
 
@@ -2622,6 +2623,9 @@ class App:
     # noinspection PyUnresolvedReferences,PyAttributeOutsideInit
     def init_platforms(self):
         if sys.platform == 'darwin' and self.args.gui:
+            if len(MISSING_GUI_REQUIREMENTS) > 0:
+                return  # skip - we will exit anyway due to missing requirements (with a more helpful error message)
+
             # hide dock icon (but not LSBackgroundOnly as we need input via webview)
             info = AppKit.NSBundle.mainBundle().infoDictionary()
             info['LSUIElement'] = '1'
@@ -3417,7 +3421,8 @@ class App:
 
         AppConfig.save()
 
-        if sys.platform == 'darwin' and self.args.gui:
+        # attribute existence check is needed here and below because we may exit before init_platforms() has run
+        if sys.platform == 'darwin' and self.args.gui and hasattr(self, 'macos_reachability_target'):
             # noinspection PyUnresolvedReferences
             SystemConfiguration.SCNetworkReachabilityUnscheduleFromRunLoop(self.macos_reachability_target,
                                                                            SystemConfiguration.CFRunLoopGetCurrent(),
@@ -3451,7 +3456,8 @@ class App:
             restart_callback()
 
         # macOS Launch Agents need reloading when changed; unloading exits immediately so this must be our final action
-        if sys.platform == 'darwin' and self.args.gui and self.macos_unload_plist_on_exit:
+        if sys.platform == 'darwin' and self.args.gui and (
+                hasattr(self, 'macos_unload_plist_on_exit') and self.macos_unload_plist_on_exit):
             self.macos_launchctl('unload')
 
 
