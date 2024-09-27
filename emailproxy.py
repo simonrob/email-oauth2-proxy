@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-09-24'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-09-27'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1239,6 +1239,12 @@ class OAuth2Helper:
         return output_bytes
 
     @staticmethod
+    def wrap_line(line, max_length, joiner=b'\n'):
+        """SMTP AUTH has a loosely-specified max line length that encoded OAuth 2.0 tokens may reach - see RFC 4954"""
+        max_length -= len(joiner)
+        return joiner.join([line[i:i + max_length] for i in range(0, len(line), max_length)])
+
+    @staticmethod
     def strip_quotes(text):
         """Remove double quotes (i.e., "" characters) around a string - used for IMAP LOGIN command"""
         if text.startswith('"') and text.endswith('"'):
@@ -2207,7 +2213,11 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                         self.client_connection.connection_state = (
                             SMTPOAuth2ClientConnection.STATE.XOAUTH2_CREDENTIALS_SENT)
                     self.authenticated_username = self.username
-                    self.send(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_log=True)
+
+                    # see GitHub #287 and SMTP line length issues - here, 510 = SMTP command max of 512 - len(b'\r\n')
+                    # (because of wrap_line joining on \n, we end up with 511 for all except potentially the last line)
+                    self.send(b'%s\r\n' % OAuth2Helper.wrap_line(OAuth2Helper.encode_oauth2_string(result), 510),
+                              censor_log=True)
 
                 self.username = None
                 self.password = None
