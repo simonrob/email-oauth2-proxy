@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-09-24'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-10-04'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1153,7 +1153,7 @@ class OAuth2Helper:
         """Requests an authorisation token via a Service Account key (currently Google Cloud only)"""
         import json
         try:
-            import requests
+            import requests  # noqa: F401 - requests is required as the default transport for google-auth
             import google.oauth2.service_account
             import google.auth.transport.requests
         except ModuleNotFoundError as e:
@@ -1359,8 +1359,8 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                           'CERTIFICATE_VERIFY_FAILED', 'TLSV1_ALERT_PROTOCOL_VERSION', 'TLSV1_ALERT_UNKNOWN_CA',
                           'UNSUPPORTED_PROTOCOL', 'record layer failure', APP_PACKAGE]
             error_type, value = Log.get_last_error()
-            if error_type == OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
-                    any(i in value.args[1] for i in ssl_errors) or error_type == FileNotFoundError:
+            if error_type is OSError and value.errno == 0 or issubclass(error_type, ssl.SSLError) and \
+                    any(i in value.args[1] for i in ssl_errors) or error_type is FileNotFoundError:
                 Log.error('Caught connection error in', self.info_string(), ':', error_type, 'with message:', value)
                 if hasattr(self, 'custom_configuration') and hasattr(self, 'proxy_type'):
                     if self.proxy_type == 'SMTP':
@@ -1485,7 +1485,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
         error_type, value = Log.get_last_error()
         if error_type and value:
             message = 'Caught connection error (client)'
-            if error_type == ConnectionResetError:
+            if error_type is ConnectionResetError:
                 message = '%s [ Are you attempting an encrypted connection to a non-encrypted server? ]' % message
             Log.info(self.info_string(), message, '-', error_type.__name__, ':', value)
         self.close()
@@ -1943,9 +1943,9 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def handle_error(self):
         error_type, value = Log.get_last_error()
-        if error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
+        if error_type is TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
-                error_type == OSError and value.errno in [0, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTDOWN,
+                error_type is OSError and value.errno in [0, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTDOWN,
                                                           errno.EHOSTUNREACH]:
             # TimeoutError 60 = 'Operation timed out'; ConnectionError 54 = 'Connection reset by peer', 61 = 'Connection
             # refused;  OSError 0 = 'Error' (typically network failure), 50 = 'Network is down', 51 = 'Network is
@@ -1965,7 +1965,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         error_type, value = Log.get_last_error()
         if error_type and value:
             message = 'Caught connection error (server)'
-            if error_type == OSError and value.errno in [errno.ENOTCONN, 10057]:
+            if error_type is OSError and value.errno in [errno.ENOTCONN, 10057]:
                 # OSError 57 or 10057 = 'Socket is not connected'
                 message = '%s [ Client attempted to send command without waiting for server greeting ]' % message
             Log.info(self.info_string(), message, '-', error_type.__name__, ':', value)
@@ -2382,9 +2382,9 @@ class OAuth2Proxy(asyncore.dispatcher):
     def handle_error(self):
         error_type, value = Log.get_last_error()
         if error_type == socket.gaierror and value.errno in [-2, 8, 11001] or \
-                error_type == TimeoutError and value.errno == errno.ETIMEDOUT or \
+                error_type is TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
-                error_type == OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
+                error_type is OSError and value.errno in [0, errno.EINVAL, errno.ENETDOWN, errno.EHOSTUNREACH]:
             # gaierror -2 or 8 = 'nodename nor servname provided, or not known' / 11001 = 'getaddrinfo failed' (caused
             # by getpeername() failing due to no connection); TimeoutError 60 = 'Operation timed out'; ConnectionError
             # 54 = 'Connection reset by peer', 61 = 'Connection refused; OSError 0 = 'Error' (local SSL failure),
@@ -2874,7 +2874,7 @@ class App:
         else:
             usernames = []
             for request in self.authorisation_requests:
-                if not request['username'] in usernames:
+                if request['username'] not in usernames:
                     items.append(pystray.MenuItem(request['username'], self.authorise_account))
                     usernames.append(request['username'])
         items.append(pystray.Menu.SEPARATOR)
