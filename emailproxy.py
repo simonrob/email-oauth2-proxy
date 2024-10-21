@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-10-04'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-10-21'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1105,6 +1105,7 @@ class OAuth2Helper:
                 time.sleep(1)
 
     @staticmethod
+    # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
                                         authorisation_code, oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
@@ -1182,6 +1183,7 @@ class OAuth2Helper:
         return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
 
     @staticmethod
+    # pylint: disable-next=too-many-positional-arguments
     def refresh_oauth2_access_token(token_url, client_id, client_secret, jwt_client_assertion, username, refresh_token):
         """Obtains a new access token from token_url using the given client_id, client_secret and refresh token,
         returning a dict with 'access_token', 'expires_in', and 'refresh_token' on success; exception on failure"""
@@ -1385,6 +1387,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     """The base client-side connection that is subclassed to handle IMAP/POP/SMTP client interaction (note that there
     is some protocol-specific code in here, but it is not essential, and only used to avoid logging credentials)"""
 
+    # pylint: disable-next=too-many-positional-arguments
     def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
         SSLAsyncoreDispatcher.__init__(self, connection_socket=connection_socket, socket_map=socket_map)
         self.receive_buffer = b''
@@ -1829,6 +1832,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
 class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     """The base server-side connection that is subclassed to handle IMAP/POP/SMTP server interaction"""
 
+    # pylint: disable-next=too-many-positional-arguments
     def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
         SSLAsyncoreDispatcher.__init__(self, socket_map=socket_map)  # note: establish connection later due to STARTTLS
         self.receive_buffer = b''
