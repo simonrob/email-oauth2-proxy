@@ -18,7 +18,8 @@ You can edit the server details, but the client forces you to delete and re-add 
 - You work with multiple services or applications that use IMAP/POP/SMTP, and you don't want to have to set up OAuth 2.0 independently for each one.
 
 In all of these cases and more, this proxy can help.
-Follow the instructions here to get started, and please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) with any problems or suggestions.
+For support requests or problems getting the proxy set up, visit the [Discussions pages](https://github.com/simonrob/email-oauth2-proxy/discussions).
+Please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) to report bugs or suggest features.
 For commercial support or feature requests, please also consider [sponsoring this project](https://github.com/sponsors/simonrob?frequency=one-time).
 
 
