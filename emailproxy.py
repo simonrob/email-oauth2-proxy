@@ -183,6 +183,9 @@ LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 # disconnect after login completes; however, the login credentials will still be saved and used for future requests
 AUTHENTICATION_TIMEOUT = 600
 
+# seconds to wait between repetitive requests for tokens for the device flow, unless provided by the service
+DEVICE_FLOW_TOKEN_PULL_INTERVAL = 5
+
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
 JWT_LIFETIME = 300  # seconds to add to the current time and use for the `exp` value in JWT certificate credentials
 
@@ -854,7 +857,20 @@ class OAuth2Helper:
 
             if not access_token:
                 auth_result = None
-                if permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
+                expires_in = None
+                pull_interval = None
+
+                if oauth2_flow == 'device':
+                    # note: get_oauth2_device_authorization is a short-blocking call (requesting a service to provide
+                    # device code)
+                    success, auth_result, expires_in, pull_interval = OAuth2Helper.get_oauth2_device_authorization_code(
+                        permission_url, client_id, oauth2_scope, username)
+
+                    if not success:
+                        Log.info('Authorisation result error for account', username, '- aborting login.', auth_result)
+                        return False, '%s: Login failed for account %s: %s' % (APP_NAME, username, auth_result)
+
+                elif permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
                     oauth2_flow = 'authorization_code'
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
@@ -873,10 +889,12 @@ class OAuth2Helper:
                                    '`oauth2_flow` value is specified when using a method that does not require a '
                                    '`permission_url`' % (APP_NAME, username))
 
+                # note: get_oauth2_authorisation_tokens may be a blocking call (waiting on user to authorize
+                # the application in the device flow)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, jwt_client_assertion,
                                                                         auth_result, oauth2_scope, oauth2_flow,
-                                                                        username, password)
+                                                                        username, password, expires_in, pull_interval)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -1048,7 +1066,8 @@ class OAuth2Helper:
     def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username):
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
         token_request = {'permission_url': permission_url, 'redirect_uri': redirect_uri,
-                         'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
+                         'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False,
+                         'need_response': True}
         REQUEST_QUEUE.put(token_request)
         response_queue_reference = RESPONSE_QUEUE  # referenced locally to avoid inserting into the new queue on restart
         wait_time = 0
@@ -1105,9 +1124,61 @@ class OAuth2Helper:
                 time.sleep(1)
 
     @staticmethod
+    def get_oauth2_device_authorization_code(permission_url, client_id, scope, username):
+        """
+        Receive the verification URI from the permission URL, and submit an authorisation request to the parent app
+        This implements https://datatracker.ietf.org/doc/html/rfc8628
+        """
+        params = {'client_id': client_id, 'scope': scope, 'access_type': 'offline', 'login_hint': username}
+
+        try:
+            response = urllib.request.urlopen(
+                urllib.request.Request(permission_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
+            device_auth = json.loads(response)
+        except urllib.error.HTTPError as e:
+            e.message = json.loads(e.read())
+            Log.debug('Error requesting device authorization for account', username, '- received invalid response:', e.message)
+            raise e
+
+        if 'verification_uri' not in device_auth: # rfc: mandatory field
+            return (False, 'OAuth 2.0 device authorisation response for account %s does not have verification_uri'
+                           % username, None, None)
+
+        if 'user_code' not in device_auth: # rfc: mandatory field
+            return (False, 'OAuth 2.0 device authorisation response for account %s does not have user_code'
+                           % username, None, None)
+
+        if 'expires_in' not in device_auth: # rfc: mandatory field
+            return (False, 'OAuth 2.0 device authorisation response for account %s does not have expires_in'
+                           % username, None, None)
+        expires_in = int(device_auth['expires_in'])
+
+        if 'device_code' not in device_auth: # rfc: mandatory field
+            return (False, 'OAuth 2.0 device authorisation response for account %s does not have device_code'
+                           % username, None, None)
+        device_code = device_auth['device_code']
+
+        verification_request = {'username': username, 'expired': False, 'need_response': False}
+
+        # permission_url property name is referenced in the UI, so keep the name
+        if 'verification_uri_complete' in device_auth:
+            verification_request['permission_url'] = device_auth['verification_uri_complete']
+        else:
+            verification_request['permission_url'] = device_auth['verification_uri']
+            verification_request['user_code'] = device_auth['user_code']
+
+        REQUEST_QUEUE.put(verification_request)
+
+        pull_interval = int(device_auth['interval']) if 'interval' in device_auth else DEVICE_FLOW_TOKEN_PULL_INTERVAL
+
+        return True, device_code, expires_in, pull_interval
+
+    @staticmethod
     # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
-                                        authorisation_code, oauth2_scope, oauth2_flow, username, password):
+                                        authorisation_code, oauth2_scope, oauth2_flow, username, password, expires_in,
+                                        pull_interval):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
@@ -1136,17 +1207,35 @@ class OAuth2Helper:
             if oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+            if oauth2_flow == 'device':
+                params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
+                params['device_code'] = authorisation_code
             if not redirect_uri:
                 del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
-        try:
-            response = urllib.request.urlopen(
-                urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
-                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
-            return json.loads(response)
-        except urllib.error.HTTPError as e:
-            e.message = json.loads(e.read())
-            Log.debug('Error requesting access token for account', username, '- received invalid response:', e.message)
-            raise e
+
+        # repeatedly poll the authorization status
+        if expires_in is None:
+            expires_in = AUTHENTICATION_TIMEOUT
+        expires_at = expires_in + time.time()
+        while time.time() < expires_at and not EXITING:
+            try:
+                response = urllib.request.urlopen(
+                    urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                        headers={'User-Agent': APP_NAME}), timeout=expires_in).read()
+                return json.loads(response)
+            except urllib.error.HTTPError as e:
+                e.message = json.loads(e.read())
+                Log.debug('Error requesting access token for account', username, '- received invalid response:', e.message)
+
+                if oauth2_flow == 'device':
+                    # the device flow requires repeatedly polling the service while the result is pending
+                    if e.code == 400 and e.message['error'] == 'authorization_pending':
+                        time.sleep(pull_interval)
+                        continue
+                raise e
+
+        if not EXITING:
+            raise TimeoutError('Token request timeout.')
 
     # noinspection PyUnresolvedReferences
     @staticmethod
@@ -2917,6 +3006,9 @@ class App:
     def create_authorisation_window(self, request):
         # note that the webview title *must* end with a space and then the email address/username
         window_title = 'Authorise your account: %s' % request['username']
+        if 'user_code' in request:
+            window_title += ' with user code: %s' % request['user_code']
+
         if self.args.external_auth:
             auth_page = EXTERNAL_AUTH_HTML % (request['username'], request['permission_url'], request['permission_url'],
                                               request['permission_url'], APP_NAME, request['redirect_uri'])
@@ -3307,8 +3399,6 @@ class App:
         with prompt_toolkit.patch_stdout.patch_stdout():
             open_time = 0
             response_url = None
-            Log.info('Please visit the following URL to authenticate account %s: %s' % (
-                data['username'], data['permission_url']))
             # noinspection PyUnresolvedReferences
             style = prompt_toolkit.styles.Style.from_dict({'url': 'underline'})
             prompt = [('', '\nCopy+paste or press [↵ Return] to visit the following URL and authenticate account %s: ' %
@@ -3351,13 +3441,29 @@ class App:
                 time.sleep(1)  # seems to be needed to allow prompt_toolkit to clean up between prompts
 
     def terminal_external_auth_prompt(self, data):
-        # noinspection PyUnresolvedReferences
-        prompt_session = prompt_toolkit.PromptSession()
-        prompt_stop_event = threading.Event()
-        threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
-                         daemon=True).start()
-        threading.Thread(target=self.terminal_external_auth_timeout, args=(prompt_session, prompt_stop_event),
-                         daemon=True).start()
+        Log.info('Please visit the following URL to authenticate account %s%s: %s' % (
+                data['username'], (', code "%s"' % data['user_code']) if 'user_code' in data else '',
+                data['permission_url']))
+
+        if data['need_response']:
+            # noinspection PyUnresolvedReferences
+            prompt_session = prompt_toolkit.PromptSession()
+            prompt_stop_event = threading.Event()
+            threading.Thread(target=self.terminal_external_auth_input, args=(prompt_session, prompt_stop_event, data),
+                            daemon=True).start()
+            threading.Thread(target=self.terminal_external_auth_timeout, args=(prompt_session, prompt_stop_event),
+                            daemon=True).start()
+        else:
+            # noinspection PyUnresolvedReferences
+            style = prompt_toolkit.styles.Style.from_dict({'url': 'underline', 'code': 'underline'})
+            text = [('', '\nCopy+paste or press [↵ Return] to visit the following URL and authenticate account %s: ' %
+                         data['username']),
+                    ('class:url', data['permission_url'])]
+            if 'user_code' in data:
+                text += [('', '\nEnter the following code on the web page: '), ('class:code', data['user_code'])]
+
+            # noinspection PyUnresolvedReferences
+            prompt_toolkit.print_formatted_text(prompt_toolkit.formatted_text.FormattedText(text), style=style)
 
     def post_create(self, icon):
         if EXITING:
@@ -3382,12 +3488,17 @@ class App:
                          '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
                          self.args.external_auth else '(interactive mode)')
                 if self.args.local_server_auth:
-                    self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
-                                data['username'])
-                    data['local_server_auth'] = True
-                    RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                    if data['need_response']:
+                        self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
+                                    data['username'])
+                        data['local_server_auth'] = True
+                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                    else:
+                        Log.info('Please visit the following URL to authenticate account %s%s: %s' % (
+                                 data['username'], (', code "%s"' % data['user_code']) if 'user_code' in data else '',
+                                 data['permission_url']))
                 elif self.args.external_auth and not self.args.gui:
-                    if sys.stdin and sys.stdin.isatty():
+                    if sys.stdin and sys.stdin.isatty() or not data['need_response']:
                         self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
                                               '%s' % data['username'])
                         self.terminal_external_auth_prompt(data)
