@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-10-21'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-11-06'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2424,13 +2424,15 @@ if sys.platform == 'darwin':
         # callbacks, but using that means that window.get_current_url() returns None when the loaded handler is called
         def webView_didStartProvisionalNavigation_(self, web_view, _nav):
             # called when a user action (i.e., clicking our external authorisation mode submit button) redirects locally
-            browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
+            browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance(
+                ProvisionalNavigationBrowserDelegate.pywebview_attr, web_view)
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
         def webView_didReceiveServerRedirectForProvisionalNavigation_(self, web_view, _nav):
             # called when the server initiates a local redirect
-            browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance('webkit', web_view)
+            browser_view_instance = webview.platforms.cocoa.BrowserView.get_instance(
+                ProvisionalNavigationBrowserDelegate.pywebview_attr, web_view)
             if browser_view_instance:
                 browser_view_instance.loaded.set()
 
@@ -2440,7 +2442,7 @@ if sys.platform == 'darwin':
                     event.keyCode() == 12 and self.window().firstResponder():
                 self.window().performClose_(event)
                 return True
-            return webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalentBase_(self, event)
+            return False
 
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences
@@ -2942,18 +2944,16 @@ class App:
         # pywebview window can get into a state in which http://localhost navigation, rather than failing, just hangs
         # noinspection PyPackageRequirements
         import webview.platforms.cocoa
+        pywebview_version = packaging.version.Version(importlib_metadata.version('pywebview'))
+        ProvisionalNavigationBrowserDelegate.pywebview_attr = 'webkit' if pywebview_version < packaging.version.Version(
+            '5.3') else 'webview'
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didStartProvisionalNavigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didStartProvisionalNavigation_)
         setattr(webview.platforms.cocoa.BrowserView.BrowserDelegate, 'webView_didReceiveServerRedirectForProvisional'
                                                                      'Navigation_',
                 ProvisionalNavigationBrowserDelegate.webView_didReceiveServerRedirectForProvisionalNavigation_)
-        try:
-            setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalentBase_',
-                    webview.platforms.cocoa.BrowserView.WebKitHost.performKeyEquivalent_)
-            setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
-                    ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
-        except TypeError:
-            pass
+        setattr(webview.platforms.cocoa.BrowserView.WebKitHost, 'performKeyEquivalent_',
+                ProvisionalNavigationBrowserDelegate.performKeyEquivalent_)
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
