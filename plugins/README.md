@@ -1,7 +1,10 @@
 # Email OAuth 2.0 Proxy plugins
 Plugins are an advanced Email OAuth 2.0 Proxy feature that enable the use of separate scripts to modify IMAP/POP/SMTP commands when they are received from the client or server before passing through to the other side of the connection.
 This allows a wide range of additional capabilities or triggers to be added the proxy, as demonstrated in the examples below.
-See the [sample configuration file](../emailproxy.config#L42) for further application examples and documentation.
+
+Currently, this version of the proxy is only available by cloning or or [downloading](https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/plugins.zip) the [plugins branch](https://github.com/simonrob/email-oauth2-proxy/tree/plugins), then running `python -m pip install -r requirements-core.txt -r requirements-gui.txt` to install requirements, and `python emailproxy.py` to launch.
+
+See the [sample configuration file](../emailproxy.config) for further application examples and documentation about integrating plugins into IMAP/POP/SMTP servers.
 
 
 ## Sample plugins
