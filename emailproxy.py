@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-05'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-11-11'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -1176,6 +1176,7 @@ class OAuth2Helper:
                 params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
                 params['device_code'] = authorisation_result['device_code']
                 expires_in = authorisation_result['expires_in']
+                authorisation_result['interval'] = authorisation_result.get('interval', 5)  # see RFC 8628, Section 3.2
             elif oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
