@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-06'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-11-11'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -210,31 +210,37 @@ SECURE_SERVER_ICON = '''iVBORw0KGgoAAAANSUhEUgAAABYAAAAWCAYAAADEtGw7AAAApElEQVR4
     Ovp0yY9EkQZ8XELHSa+x0S9OAm75cT+F+UFm+vhbmClQLCtF+SnMNAji11lcz5orzCQopo21KJIn3FB37iuaJ9yRd+4zuicsSINViSesyEgbMtQcZgIE
     TyNBsIQrXgdVS3h2hGdf+Apf4eIIF+ub16FYBhQd4ci3IiAOBP8/z+kNGUS6hBN6UlIAAAAASUVORK5CYII='''  # 22px SF Symbols lock.fill
 
-EXTERNAL_AUTH_HTML = '''<html><head><script type="text/javascript">function copyLink(targetLink){
-    var copySource=document.createElement('textarea');copySource.value=targetLink;copySource.style.position='absolute';
+EXTERNAL_AUTH_HTML_BASE = '''<html><head><script type="text/javascript">function copy(content,source){
+    let copySource=document.createElement('textarea');copySource.value=content;copySource.style.position='absolute';
     copySource.style.left='-9999px';document.body.appendChild(copySource);copySource.select();
-    document.execCommand('copy');document.body.removeChild(copySource);
-    document.getElementById('copy').innerText='✔'}</script><style type="text/css">body{margin:20px auto;line-height:1.3;
-    font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}</style></head><body>
-    <h3 style="margin:0.3em 0;">Login authorisation request for %s</h3>
+    document.execCommand('copy');document.body.removeChild(copySource);source.innerText='✔';
+    window.setTimeout(()=>source.innerText='⧉',1000)}</script><style type="text/css">body{
+    margin:20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}</style></head>
+    <body><h3 style="margin:0.3em 0;">Login authorisation request for %s</h3>
     <p style="margin-top:0">Click the following link to open your browser and approve the request:</p>
     <p><a href="%s" target="_blank" style="word-wrap:break-word;word-break:break-all">%s</a>
-    <a id="copy" onclick="copyLink('%s')" style="margin-left:0.5em;margin-top:0.1em;font-weight:bold;font-size:150%%;
-    text-decoration:none;cursor:pointer;float:right" title="Copy link">⧉</a></p>
-    <p style="margin-top:2em">After logging in and successfully authorising your account, paste and submit the
-    resulting URL from the browser's address bar using the box at the bottom of this page to allow the %s script to
-    transparently handle login requests on your behalf in future.</p>
-    <p>Note that your browser may show a navigation error (e.g., <em>"localhost refused to connect"</em>) after
+    <a onclick="copy('%s',this)" style="margin-left:0.5em;margin-top:0.1em;font-weight:bold;font-size:150%%;
+    text-decoration:none;cursor:pointer;float:right" title="Copy link">⧉</a></p>'''
+
+EXTERNAL_AUTH_HTML = EXTERNAL_AUTH_HTML_BASE + '''<p style="margin-top:2em">After logging in and successfully
+    authorising your account, paste and submit the resulting URL from the browser's address bar using the box at the
+    bottom of this page to allow the %s script to transparently handle login requests on your behalf in future.</p>
+    <p>Note that your browser may show a navigation error (e.g., <em>“localhost refused to connect”</em>) after
     successfully logging in, but the final URL is the only important part, and as long as this begins with the
     correct redirection URI and contains a valid authorisation code your email client's request will succeed.''' + (
     ' If you are using Windows, submitting can take a few seconds.' if sys.platform == 'win32' else '') + '''</p>
     <p style="margin-top:2em">According to your proxy configuration file, the expected URL will be of the form:</p>
-    <p><pre>%s <em>[...]</em> code=<em><strong>[code]</strong> [...]</em></em></pre></p>
-    <form name="auth" onsubmit="window.location.assign(document.forms.auth.url.value);
-    document.auth.submit.value='Submitting...'; document.auth.submit.disabled=true; return false">
+    <p><pre>%s <em>[…]</em> code=<em><strong>[code]</strong> […]</em></em></pre></p>
+    <form name="auth" onsubmit="window.location.replace(document.forms.auth.url.value);
+    document.auth.submit.value='Submitting…'; document.auth.submit.disabled=true; return false">
     <div style="display:flex;flex-direction:row;margin-top:4em"><label for="url">Authorisation success URL:
     </label><input type="text" name="url" id="url" style="flex:1;margin:0 5px;width:65%%"><input type="submit"
     id="submit" value="Submit"></div></form></body></html>'''
+
+EXTERNAL_AUTH_DAG_HTML = EXTERNAL_AUTH_HTML_BASE + '''<p style="margin-top:2em">Enter the following code when
+    prompted:</p><p><pre style="display:inline">%s</pre><a onclick="copy('%s',this)" style="margin-left:0.5em;margin-
+    top:0.1em;font-weight:bold;font-size:150%%;text-decoration:none;cursor:pointer;float:right" title="Copy code">⧉</a>
+    </p><p style="margin-top:2em">You can close this window once authorisation is complete.</p></body></html>'''
 
 EXITING = False  # used to check whether to restart failed threads - is set to True if the user has requested to exit
 
@@ -855,13 +861,16 @@ class OAuth2Helper:
             if not access_token:
                 auth_result = None
                 if permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
-                    oauth2_flow = 'authorization_code'
+                    if oauth2_flow != 'device':  # the device flow is a poll-based method with asynchronous interaction
+                        oauth2_flow = 'authorization_code'
+
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
 
                     # note: get_oauth2_authorisation_code is a blocking call (waiting on user to provide code)
                     success, auth_result = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
-                                                                                      redirect_listen_address, username)
+                                                                                      redirect_listen_address, username,
+                                                                                      oauth2_flow)
 
                     if not success:
                         Log.info('Authorisation result error for account', username, '- aborting login.', auth_result)
@@ -873,6 +882,7 @@ class OAuth2Helper:
                                    '`oauth2_flow` value is specified when using a method that does not require a '
                                    '`permission_url`' % (APP_NAME, username))
 
+                # note: get_oauth2_authorisation_tokens may be a blocking call (DAG flow retries until user code entry)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, jwt_client_assertion,
                                                                         auth_result, oauth2_scope, oauth2_flow,
@@ -1041,13 +1051,38 @@ class OAuth2Helper:
         'Sign in with another account' option)"""
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
                   'access_type': 'offline', 'login_hint': username}
+        if not redirect_uri:  # unlike other interactive flows, DAG doesn't involve a (known) final redirect
+            del params['redirect_uri']
         param_pairs = ['%s=%s' % (param, OAuth2Helper.oauth2_url_escape(value)) for param, value in params.items()]
         return '%s?%s' % (permission_url, '&'.join(param_pairs))
 
     @staticmethod
-    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username):
+    def start_device_authorisation_grant(permission_url):
+        """Requests the device authorisation grant flow URI and user code - see https://tools.ietf.org/html/rfc8628"""
+        try:
+            response = urllib.request.urlopen(
+                urllib.request.Request(permission_url, headers={'User-Agent': APP_NAME}),
+                timeout=AUTHENTICATION_TIMEOUT).read()
+            parsed_result = json.loads(response)
+            verification_uri = parsed_result.get('verification_uri_complete', parsed_result['verification_uri'])
+            user_code = parsed_result['user_code']
+            return True, parsed_result, verification_uri, user_code
+        except urllib.error.HTTPError as e:
+            return False, json.loads(e.read()), None, None
+
+    @staticmethod
+    def get_oauth2_authorisation_code(permission_url, redirect_uri, redirect_listen_address, username, oauth2_flow):
         """Submit an authorisation request to the parent app and block until it is provided (or the request fails)"""
-        token_request = {'permission_url': permission_url, 'redirect_uri': redirect_uri,
+
+        # the device authorisation grant flow requires a bit of pre-precessing to get the actual permission URL
+        user_code, device_grant_result = None, None
+        if oauth2_flow == 'device':
+            success, device_grant_result, permission_url, user_code = OAuth2Helper.start_device_authorisation_grant(
+                permission_url)
+            if not success:
+                return device_grant_result
+
+        token_request = {'permission_url': permission_url, 'user_code': user_code, 'redirect_uri': redirect_uri,
                          'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
         REQUEST_QUEUE.put(token_request)
         response_queue_reference = RESPONSE_QUEUE  # referenced locally to avoid inserting into the new queue on restart
@@ -1078,6 +1113,9 @@ class OAuth2Helper:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
+                if oauth2_flow == 'device':
+                    return True, device_grant_result
+
                 else:
                     if 'response_url' in data and OAuth2Helper.match_redirect_uri(token_request['redirect_uri'],
                                                                                   data['response_url']):
@@ -1093,7 +1131,7 @@ class OAuth2Helper:
                         if 'error' in response:
                             message = 'OAuth 2.0 authorisation error for account %s: ' % data['username']
                             message += response['error']
-                            message += '; %s' % response['error_description'] if 'error_description' in response else ''
+                            message += '; %s' % response.get('error_description', '')
                             return False, message
                         return (False, 'OAuth 2.0 authorisation response for account %s has neither code nor error '
                                        'message' % data['username'])
@@ -1107,7 +1145,7 @@ class OAuth2Helper:
     @staticmethod
     # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
-                                        authorisation_code, oauth2_scope, oauth2_flow, username, password):
+                                        authorisation_result, oauth2_scope, oauth2_flow, username, password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
@@ -1115,8 +1153,9 @@ class OAuth2Helper:
             return OAuth2Helper.get_service_account_authorisation_token(client_id, client_secret, oauth2_scope,
                                                                         username)
 
-        params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_code,
+        params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_result,
                   'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
+        expires_in = AUTHENTICATION_TIMEOUT
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
 
@@ -1133,20 +1172,45 @@ class OAuth2Helper:
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
             params['scope'] = oauth2_scope
-            if oauth2_flow == 'password':
+            if oauth2_flow == 'device':
+                params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
+                params['device_code'] = authorisation_result['device_code']
+                expires_in = authorisation_result['expires_in']
+                authorisation_result['interval'] = authorisation_result.get('interval', 5)  # see RFC 8628, Section 3.2
+            elif oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
             if not redirect_uri:
                 del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
-        try:
-            response = urllib.request.urlopen(
-                urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
-                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
-            return json.loads(response)
-        except urllib.error.HTTPError as e:
-            e.message = json.loads(e.read())
-            Log.debug('Error requesting access token for account', username, '- received invalid response:', e.message)
-            raise e
+
+        # the device flow requires repeatedly polling the service while the result is pending
+        expires_at = time.time() + expires_in
+        while time.time() < expires_at and not EXITING:
+            try:
+                # in all flows except DAG, we make one attempt only
+                response = urllib.request.urlopen(
+                    urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                           headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
+                return json.loads(response)
+
+            except urllib.error.HTTPError as e:
+                e.message = json.loads(e.read())
+                if oauth2_flow == 'device' and e.code == 400:
+                    if e.message['error'] == 'slow_down':
+                        authorisation_result['interval'] *= 2
+                        continue
+                    if e.message['error'] == 'authorization_pending':
+                        Log.debug('Waiting for device flow confirmation for account', username, '- retrying in',
+                                  '%ds; timeout in %ds' % (authorisation_result['interval'], expires_at - time.time()))
+                        time.sleep(authorisation_result['interval'])
+                        continue
+
+                Log.debug('Error requesting access token for account', username, '- received invalid response:',
+                          e.message)
+                raise e
+
+        if oauth2_flow == 'device' and not EXITING:
+            raise TimeoutError('The device authorisation grant flow request timed out')
 
     # noinspection PyUnresolvedReferences
     @staticmethod
@@ -2917,11 +2981,18 @@ class App:
         self.notify(APP_NAME, 'There are no pending authorisation requests')
 
     def create_authorisation_window(self, request):
-        # note that the webview title *must* end with a space and then the email address/username
+        # note that the webview title *must* contain the email address/username as it is used to confirm success
         window_title = 'Authorise your account: %s' % request['username']
+        if request['user_code']:
+            window_title += ' with code: %s' % request['user_code']
+
         if self.args.external_auth:
-            auth_page = EXTERNAL_AUTH_HTML % (request['username'], request['permission_url'], request['permission_url'],
-                                              request['permission_url'], APP_NAME, request['redirect_uri'])
+            if request['user_code']:
+                auth_page = EXTERNAL_AUTH_DAG_HTML % (
+                    request['username'], *[request['permission_url']] * 3, *[request['user_code']] * 2)
+            else:
+                auth_page = EXTERNAL_AUTH_HTML % (
+                    request['username'], *[request['permission_url']] * 3, APP_NAME, request['redirect_uri'])
             authorisation_window = webview.create_window(window_title, html=auth_page, on_top=True, text_select=True)
         else:
             authorisation_window = webview.create_window(window_title, request['permission_url'], on_top=True)
@@ -2972,8 +3043,8 @@ class App:
 
             url = window.get_current_url()
             # noinspection PyUnresolvedReferences
-            username = window.get_title(window).split(' ')[-1]  # see note above: title *must* match this format
-            if not url or not username:
+            username = next((a for a in window.get_title(window).split(' ') if '@' in a), None)
+            if not url or not username:  # see note in create_authorisation_window: title *must* match username format
                 continue  # skip any invalid windows
 
             # respond to both the original request and any duplicates in the list
@@ -2981,8 +3052,9 @@ class App:
             for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
                 if request['username'] == username and OAuth2Helper.match_redirect_uri(request['redirect_uri'], url):
                     Log.info('Returning authorisation request result for', request['username'])
-                    RESPONSE_QUEUE.put(
-                        {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
+                    if not request['user_code']:  # the device authorisation grant flow does not require a response
+                        RESPONSE_QUEUE.put(
+                            {'permission_url': request['permission_url'], 'response_url': url, 'username': username})
                     self.authorisation_requests.remove(request)
                     completed_request = request
                 else:
@@ -2992,7 +3064,9 @@ class App:
             if completed_request is None:
                 continue  # no requests processed for this window - nothing to do yet
 
-            window.destroy()
+            # the device authorisation grant flow will not normally have a matching `redirect_uri`
+            elif not completed_request['user_code']:
+                window.destroy()
             self.icon.update_menu()
 
             # note that in this part of the interaction we don't actually check the *use* of the authorisation code,
@@ -3178,10 +3252,9 @@ class App:
                 self.icon.remove_notification()
                 self.icon.notify('%s: %s' % (title, text))
 
-            else:
-                Log.info(title, text)  # last resort
+            Log.info(text)  # duplicate to log for, e.g., local server auth mode when GUI is present
         else:
-            Log.info(title, text)
+            Log.info(text)
 
     def stop_servers(self):
         global RESPONSE_QUEUE
@@ -3381,22 +3454,40 @@ class App:
                 Log.info('Authorisation request received for', data['username'],
                          '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
                          self.args.external_auth else '(interactive mode)')
+
+                user_code_notification = None
+                if data['user_code']:
+                    RESPONSE_QUEUE.put(data)  # device flow does not require a user response; here we only notify
+                    user_code_notification = 'Visit %s and use code %s' % (data['permission_url'], data['user_code'])
+
                 if self.args.local_server_auth:
                     self.notify(APP_NAME, 'Local server auth mode: please authorise a request for account %s' %
                                 data['username'])
-                    data['local_server_auth'] = True
-                    RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+                    if user_code_notification:
+                        # note: local server auth mode doesn't make any sense with the device flow as it is poll-based,
+                        # so here we notify and return the request as normal, but don't actually start the local server
+                        self.notify(APP_NAME, user_code_notification)
+                    else:
+                        data['local_server_auth'] = True
+                        RESPONSE_QUEUE.put(data)  # local server auth is handled by the client/server connections
+
                 elif self.args.external_auth and not self.args.gui:
-                    if sys.stdin and sys.stdin.isatty():
+                    can_auth_interactively = sys.stdin and sys.stdin.isatty()
+                    if can_auth_interactively:
                         self.notify(APP_NAME, 'No-GUI external auth mode: please authorise a request for account '
                                               '%s' % data['username'])
-                        self.terminal_external_auth_prompt(data)
+                    if user_code_notification:
+                        self.notify(APP_NAME, user_code_notification)
                     else:
+                        self.terminal_external_auth_prompt(data)
+                    if not can_auth_interactively:
                         Log.error('Not running interactively; unable to handle no-GUI external auth request')
+
                 elif icon:
                     self.authorisation_requests.append(data)
                     icon.update_menu()  # force refresh the menu
                     self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
+
             else:
                 for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
                     if request['permission_url'] == data['permission_url']:
