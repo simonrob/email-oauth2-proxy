@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-11-13'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2519,8 +2519,9 @@ if sys.platform == 'darwin':
         # noinspection PyPep8Naming
         def userNotificationCenter_didActivateNotification_(self, _notification_centre, notification):
             notification_text = notification.informativeText()
-            if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
-                self._click(notification_text.split('account ')[-1].split(' ')[0])
+            username = next((a for a in notification_text.split(' ') if '@' in a), None)
+            if username and 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
+                self._click(username)
 
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences,PyProtectedMember
