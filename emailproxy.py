@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-11'  # ISO 8601 (YYYY-MM-DD)
+__version__ = '2024-11-13'  # ISO 8601 (YYYY-MM-DD)
 __package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
 
 import abc
@@ -2065,14 +2065,18 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
         # if authentication succeeds (or fails), remove our proxy from the client and ignore all further communication
         # don't use a regex here as the tag must match exactly; RFC 3501 specifies uppercase 'OK', so startswith is fine
-        if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
-            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
-            self.client_connection.authenticated = True
-            self.client_connection.authentication_tag = None
-        elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
-            super().process_data(byte_data)  # an error occurred - just send to the client and exit
-            self.close()
-            return
+        if self.client_connection.authentication_tag:
+            if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
+                Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
+                self.client_connection.authenticated = True
+                self.client_connection.authentication_tag = None
+            elif str_response.startswith('+'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
+                pass
+            elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.close()
+                return
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
@@ -2173,6 +2177,9 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('+OK'):
                 Log.info(self.info_string(), '[ Successfully authenticated POP connection - releasing session ]')
                 self.client_connection.authenticated = True
+                super().process_data(byte_data)
+            elif str_data.startswith('+'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
                 super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -2302,9 +2309,13 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
+            elif str_data.startswith('334'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
+                super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.close()
+                if len(str_data) >= 4 and str_data[3] == ' ':  # responses may be multiline - wait for last part
+                    self.close()
 
         else:
             super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
@@ -2519,8 +2530,9 @@ if sys.platform == 'darwin':
         # noinspection PyPep8Naming
         def userNotificationCenter_didActivateNotification_(self, _notification_centre, notification):
             notification_text = notification.informativeText()
-            if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
-                self._click(notification_text.split('account ')[-1].split(' ')[0])
+            username = next((a for a in notification_text.split(' ') if '@' in a), None)
+            if username and 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
+                self._click(username)
 
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences,PyProtectedMember
