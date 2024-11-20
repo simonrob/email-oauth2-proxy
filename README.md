@@ -187,9 +187,6 @@ If you remove this value and do not provide your own, the proxy defaults to `::`
 If you are unable to connect to the proxy from your email client, first try specifying this value explicitly – see the [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/blob/main/emailproxy.config) for further details about how to do this.
 Please try setting and connecting to both IPv4 (i.e., `127.0.0.1`) and IPv6 (i.e., `::1`) loopback addresses before reporting any connection issues with the proxy.
 
-If the webview fails to render due to a bug with hardware acceleration (example: `MESA: error: ZINK: failed to choose pdev`) then you can try disabling hardware rendering by setting the environment variables `LIBGL_ALWAYS_SOFTWARE=1`.
-You may also wish to try disabling the DMABUF renderer in WebKit with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
-
 ### Dependencies and setup<a id="dependencies-and-setup"></a>
 On macOS the proxy's setup and installation instructions should automatically bundle or install all required dependencies.
 Any error messages you may encounter (for example, with your `pip` version and `cryptography`, or `pillow` and `imagingft` dependencies, or [macOS SSL failures](https://github.com/simonrob/email-oauth2-proxy/issues/14#issuecomment-1077379254)) normally give clear explanations of the issues and point to instructions for resolving these problems.
@@ -208,6 +205,9 @@ Note that the public releases of pythonnet can take some time to be compatible w
 On Windows this is normally limited to keyboard shortcuts (i.e., copy/paste), but in some virtual environments on macOS the entire keyboard may not work.
 As a workaround, the proxy will enable pywebview's debug mode when you run the proxy itself in debug mode, which should allow you to use the right-click context menu to copy/paste to enter text.
 If you are unable to proceed with popup-based authentication even with this workaround, it is worth trying the proxy's `--external-auth` or `--local-server-auth` options.
+
+- If the authorisation window fails to render due to an issue with hardware acceleration (for example: `MESA: error: ZINK: failed to choose pdev`), you can try disabling hardware rendering by setting the environment variable `LIBGL_ALWAYS_SOFTWARE=1`.
+You may also wish to try disabling the DMABUF renderer in WebKit with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 - On macOS (10.14 and later), you may find that when first running the proxy as a service you need to manually load its launch agent in order to trigger a file access permission prompt.
 You will know intervention is necessary if the proxy exits (rather than restarts) the first time you click `Start at login` from its menu bar icon.
