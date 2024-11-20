@@ -206,6 +206,9 @@ On Windows this is normally limited to keyboard shortcuts (i.e., copy/paste), bu
 As a workaround, the proxy will enable pywebview's debug mode when you run the proxy itself in debug mode, which should allow you to use the right-click context menu to copy/paste to enter text.
 If you are unable to proceed with popup-based authentication even with this workaround, it is worth trying the proxy's `--external-auth` or `--local-server-auth` options.
 
+- If the authorisation window fails to render due to an issue with hardware acceleration (for example: `MESA: error: ZINK: failed to choose pdev`), you can try disabling hardware rendering by setting the environment variable `LIBGL_ALWAYS_SOFTWARE=1`.
+You may also wish to try disabling the DMABUF renderer in WebKit with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
 - On macOS (10.14 and later), you may find that when first running the proxy as a service you need to manually load its launch agent in order to trigger a file access permission prompt.
 You will know intervention is necessary if the proxy exits (rather than restarts) the first time you click `Start at login` from its menu bar icon.
 To resolve this, exit the proxy and then run `launchctl load ~/Library/LaunchAgents/ac.robinson.email-oauth2-proxy.plist` from a terminal.
