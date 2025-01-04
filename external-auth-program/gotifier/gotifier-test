@@ -1,0 +1,17 @@
+#!/bin/bash
+#
+# This is a test script for verification of the `gotifier.conf` configuration.
+#
+# Configure the required parameters as specified in `gotifier.conf` file,
+# and run this script to check whether the messages are properly delivered to the gotify server.
+#
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+
+echo '{"username": "name.surname@test.com", "permission_url": "https://google.com", "timeout": 600, "user_code": "ABCDE"}' |
+  "${SCRIPT_DIR}/gotifier"
+
+echo '{"username": "name.surname@test.com", "permission_url": "https://microsoft.com", "timeout": 600}' |
+  "${SCRIPT_DIR}/gotifier"

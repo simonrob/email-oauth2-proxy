@@ -96,6 +96,70 @@ In no-GUI mode this option allows you to authenticate accounts entirely external
 You should ignore any browser error message that is shown (e.g., `unable to connect`); the important part is the URL itself.
 This argument is identical to enabling external authorisation mode from the `Authorise account` submenu of the proxy's menu bar icon.
 
+- `--external-auth-program` configures the proxy to execute an external program for authentication. This option is intended for usage on headless systems without an interactive user interface.
+The parameters required for the authentication are passed to the external program via standard input stream and the result is expected from the standard output stream. Input and output parameters should be encoded as JSON objects.
+The external program should report errors to the standard error stream.
+With the device authorisation grant (DAG) flow no output from the external program is expected.
+
+JSON scheme for the input authentication parameters:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E-Mail OAUTH2 Proxy External Auth Program Input",
+  "type": "object",
+  "properties": {
+    "username": {
+      "description": "Username for the account to be authenticated",
+      "type": "string"
+    },
+    "permission_url": {
+      "description": "URL to be called for authentication",
+      "type": "string"
+    },
+    "redirect_uri": {
+      "description": "Expected redirect URI from the authentication server",
+      "type": "string"
+    },
+    "user_code": {
+      "description": "User code to be presented to the authentication server",
+      "type": "string"
+    },
+    "timeout": {
+      "description": "Timeout for the authentication process in seconds",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "username",
+    "permission_url",
+    "timeout"
+  ]
+}
+```
+
+After authentication attempt the external program should print the result as JSON object to the standard output. This output is optional for the device authorisation grant flow.
+JSON scheme for the external authentication program output:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E-Mail OAUTH2 Proxy External Auth Program Result",
+  "type": "object",
+  "properties": {
+    "response_url": {
+      "description": "Response URL from the authentication server",
+      "type": "string"
+    }
+  },
+  "required": [
+  ]
+}
+```
+
+An example of an external authentication program for DAG flow is `gotifier` script, located within `external-auth-program/gotifier` directory.
+In order to use `gotifier` script, check `gotifier.conf` file for additional required configuration. It can be passed to the proxy command line as follows: `--external-auth-program=external-auth-program/gotifier/gotifier`.
+
 - `--local-server-auth` is similar to `--external-auth`, but instead instructs the proxy to temporarily start an internal web server to receive authentication responses.
 The `--external-auth` option is ignored in this mode.
 To authorise your account, visit the link that is provided, authenticate, and proceed until you are presented with a success webpage from the proxy.

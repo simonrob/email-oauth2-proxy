@@ -2630,6 +2630,10 @@ class App:
                                 help='handle authorisation externally: rather than intercepting `redirect_uri`, the '
                                      'proxy will wait for you to paste the result into either its popup window (GUI '
                                      'mode) or the terminal (no-GUI mode; requires `prompt_toolkit`)')
+        group_auth.add_argument('--external-auth-program', default=None,
+                                help='handle authorisation externally: rather than intercepting `redirect_uri`, the '
+                                     'proxy will execute the provided program passing the authorization data over '
+                                     'standard stdin and stdout files (requires no-GUI mode)')
         group_auth.add_argument('--local-server-auth', action='store_true',
                                 help='handle authorisation by printing request URLs to the log and starting a local '
                                      'web server on demand to receive responses')
@@ -2678,6 +2682,17 @@ class App:
             except ImportError:
                 Log.error('Unable to load prompt_toolkit, which is a requirement when using `--external-auth` in',
                           '`--no-gui` mode. Please run `python -m pip install -r requirements-core.txt`')
+                self.exit(None)
+                return
+
+        if self.args.external_auth_program:
+            if self.args.gui:
+                Log.error('Incompatible options: --external-auth-program works only with --no-gui')
+                self.exit(None)
+                return
+            # check that the specified file exists and can be executed
+            if not os.access(self.args.external_auth_program, os.X_OK):
+                Log.error('Wrong argument: --external-auth-program should specify a path to executable program')
                 self.exit(None)
                 return
 
@@ -3190,6 +3205,8 @@ class App:
             script_command.append('--debug')
         if self.args.external_auth:
             script_command.append('--external-auth')
+        if self.args.external_auth_program:
+            script_command.append('--external-auth-program')
 
         return ['"%s"' % arg.replace('"', r'\"') if quote_args and ' ' in arg else arg for arg in script_command]
 
@@ -3444,6 +3461,44 @@ class App:
         threading.Thread(target=self.terminal_external_auth_timeout, args=(prompt_session, prompt_stop_event),
                          daemon=True).start()
 
+    @staticmethod
+    def auth_via_external_program(exe_path, data):
+        """Call the external program for authentication, exchanging JSONs via stdin and stdout"""
+        # sanitize input
+        input = {'username': data['username'], 'permission_url': data['permission_url'],
+                 'timeout': AUTHENTICATION_TIMEOUT}
+        if 'redirect_uri' in data:
+            input['redirect_uri'] = data['redirect_uri']
+        if 'user_code' in data:
+            input['user_code'] = data['user_code']
+
+        try:
+            process = subprocess.run(exe_path, input=json.dumps(input), capture_output=True, text=True, check=True,
+                                     timeout=AUTHENTICATION_TIMEOUT)
+            if len(process.stderr) > 0:
+                Log.info('No-GUI external auth program: stderr: %s' % process.stderr)
+        except subprocess.CalledProcessError as e:
+            Log.error('No-GUI external auth program: error: external program returned non-zero exit code: %d out: %s err: %s'
+                      % (e.returncode, e.stdout, e.stderr))
+        except subprocess.TimeoutExpired:
+            Log.error('No-GUI external auth program: error: external program timed out')
+
+        if not 'user_code' in data:
+            try:
+                completed = json.loads(process.stdout)
+            except json.JSONDecodeError as e:
+                Log.error('No-GUI external auth program: error: external program returned malformed JSON: %s "%s"'
+                          % (e, process.stdout))
+
+            result = {'permission_url': data['permission_url'], 'username': data['username']}
+            if 'response_url' in completed:
+                Log.debug('No-GUI external auth program: returning response', completed['response_url'])
+                result['response_url'] = completed['response_url']
+            else:
+                Log.debug('No-GUI external auth program: no response provided; cancelling authorisation request')
+                result['expired'] = True
+            RESPONSE_QUEUE.put(result)
+
     def post_create(self, icon):
         if EXITING:
             return  # to handle launch in pystray 'dummy' mode without --no-gui option (partial initialisation failure)
@@ -3465,7 +3520,8 @@ class App:
             if not data['expired']:
                 Log.info('Authorisation request received for', data['username'],
                          '(local server auth mode)' if self.args.local_server_auth else '(external auth mode)' if
-                         self.args.external_auth else '(interactive mode)')
+                         self.args.external_auth else '(external auth program mode)' if self.args.external_auth_program
+                         else '(interactive mode)')
 
                 user_code_notification = None
                 if data['user_code']:
@@ -3499,6 +3555,9 @@ class App:
                     self.authorisation_requests.append(data)
                     icon.update_menu()  # force refresh the menu
                     self.notify(APP_NAME, 'Please authorise your account %s from the menu' % data['username'])
+
+                elif self.args.external_auth_program:
+                    self.auth_via_external_program(self.args.external_auth_program, data)
 
             else:
                 for request in self.authorisation_requests[:]:  # iterate over a copy; remove from original
