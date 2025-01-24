@@ -4,7 +4,7 @@ Transparently add OAuth 2.0 support to IMAP/POP/SMTP client applications, script
 
 ## Motivation and capabilities<a id="motivation-and-capabilities"></a>
 Email services that support IMAP, POP and/or SMTP access are increasingly requiring the use of OAuth 2.0 to authenticate connections, but not all clients support this method.
-This tool creates a simple local proxy that intercepts the traditional IMAP/POP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials.
+This tool creates a local proxy that intercepts the traditional IMAP/POP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials.
 Your email client can continue to use the `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence.
 The proxy works in the background with a menu bar/taskbar helper or as a headless system service, and is compatible with macOS, Windows and Linux.
 
