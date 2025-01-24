@@ -1687,22 +1687,32 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 super().process_data(byte_data)
 
     def authenticate_connection(self, username, password, command='login'):
-        success, result = OAuth2Helper.get_oauth2_credentials(username, password)
-        if success:
-            # send authentication command to server (response checked in ServerConnection)
-            # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
-            super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
-            super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
-
-            # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
-            if self.server_connection:
-                self.server_connection.authenticated_username = username
-
-        self.reset_login_state()
-        if not success:
+        if not password:
+            # we can't actually check credentials here, but if password is missing, it's possible that
+            # the client want to ask for credentials and so tried without password first, in the hope
+            # that the server will handle it, which it won't for XOAUTH2 - intercept that here and mimic old behavior
+            self.reset_login_state()
+            result = '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
             error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
             self.authentication_tag = None
             self.send(error_message.encode('utf-8'))
+        else:
+            success, result = OAuth2Helper.get_oauth2_credentials(username, password)
+            if success:
+                # send authentication command to server (response checked in ServerConnection)
+                # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
+                super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
+                super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
+
+                # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
+                if self.server_connection:
+                    self.server_connection.authenticated_username = username
+
+            self.reset_login_state()
+            if not success:
+                error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
+                self.authentication_tag = None
+                self.send(error_message.encode('utf-8'))
 
 
 class POPOAuth2ClientConnection(OAuth2ClientConnection):
