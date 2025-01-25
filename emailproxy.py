@@ -1060,9 +1060,11 @@ class OAuth2Helper:
     def start_device_authorisation_grant(permission_url):
         """Requests the device authorisation grant flow URI and user code - see https://tools.ietf.org/html/rfc8628"""
         try:
+            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 2
             response = urllib.request.urlopen(
                 urllib.request.Request(permission_url, headers={'User-Agent': APP_NAME}),
-                timeout=AUTHENTICATION_TIMEOUT).read()
+                timeout=AUTHENTICATION_TIMEOUT, context=ssl_context).read()
             parsed_result = json.loads(response)
             verification_uri = parsed_result.get('verification_uri_complete', parsed_result['verification_uri'])
             user_code = parsed_result['user_code']
@@ -1187,10 +1189,14 @@ class OAuth2Helper:
         expires_at = time.time() + expires_in
         while time.time() < expires_at and not EXITING:
             try:
+                ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+                ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 2
+
                 # in all flows except DAG, we make one attempt only
                 response = urllib.request.urlopen(
                     urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
-                                           headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
+                                           headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT,
+                                           context=ssl_context).read()
                 return json.loads(response)
 
             except urllib.error.HTTPError as e:
@@ -1262,9 +1268,12 @@ class OAuth2Helper:
                 params['client_assertion'] = jwt_client_assertion
 
         try:
+            ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2  # GitHub CodeQL issue 2
             response = urllib.request.urlopen(
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
-                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
+                                       headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT,
+                                       context=ssl_context).read()
             token = json.loads(response)
             if 'expires_in' in token:  # some servers return integer values as strings - fix expiry values (GitHub #237)
                 token['expires_in'] = int(token['expires_in'])
@@ -1678,22 +1687,32 @@ class IMAPOAuth2ClientConnection(OAuth2ClientConnection):
                 super().process_data(byte_data)
 
     def authenticate_connection(self, username, password, command='login'):
-        success, result = OAuth2Helper.get_oauth2_credentials(username, password)
-        if success:
-            # send authentication command to server (response checked in ServerConnection)
-            # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
-            super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
-            super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
-
-            # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
-            if self.server_connection:
-                self.server_connection.authenticated_username = username
-
-        self.reset_login_state()
-        if not success:
+        if not password:
+            # we can't actually check credentials here, but if password is missing, it's possible that
+            # the client want to ask for credentials and so tried without password first, in the hope
+            # that the server will handle it, which it won't for XOAUTH2 - intercept that here and mimic old behavior
+            self.reset_login_state()
+            result = '%s: Login failed - the password for account %s is incorrect' % (APP_NAME, username)
             error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
             self.authentication_tag = None
             self.send(error_message.encode('utf-8'))
+        else:
+            success, result = OAuth2Helper.get_oauth2_credentials(username, password)
+            if success:
+                # send authentication command to server (response checked in ServerConnection)
+                # note: we only support single-trip authentication (SASL) without checking server capabilities - improve?
+                super().process_data(b'%s AUTHENTICATE XOAUTH2 ' % self.authentication_tag.encode('utf-8'))
+                super().process_data(b'%s\r\n' % OAuth2Helper.encode_oauth2_string(result), censor_server_log=True)
+
+                # because get_oauth2_credentials blocks, the server could have disconnected, and may no-longer exist
+                if self.server_connection:
+                    self.server_connection.authenticated_username = username
+
+            self.reset_login_state()
+            if not success:
+                error_message = '%s NO %s %s\r\n' % (self.authentication_tag, command.upper(), result)
+                self.authentication_tag = None
+                self.send(error_message.encode('utf-8'))
 
 
 class POPOAuth2ClientConnection(OAuth2ClientConnection):
