@@ -6,8 +6,8 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-13'  # ISO 8601 (YYYY-MM-DD)
-__package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
+__package_version__ = '2024.11.13'  # for pyproject.toml usage only, needs to be ast.literal_eval() compatible
+__version__ = '-'.join(f"{int(part):02}" for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
