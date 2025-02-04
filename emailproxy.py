@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2024.11.13'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.1.27'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -702,6 +702,10 @@ class OAuth2Helper:
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
+
+        if not password:
+            Log.error('No password provided for account', username, '- aborting login')
+            return False, '%s: Login failed - no password provided for account %s' % (APP_NAME, username)
 
         # we support broader catch-all account names (e.g., `@domain.com` / `@`) if enabled
         config_accounts = AppConfig.accounts()
