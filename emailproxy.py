@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.1.27'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.2.4'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -1117,7 +1117,7 @@ class OAuth2Helper:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
-                if oauth2_flow == 'device':
+                elif oauth2_flow == 'device':
                     return True, device_grant_result
 
                 else:
@@ -1213,8 +1213,7 @@ class OAuth2Helper:
                           e.message)
                 raise e
 
-        if oauth2_flow == 'device' and not EXITING:
-            raise TimeoutError('The device authorisation grant flow request timed out')
+        raise TimeoutError('The access token request for account', username, 'timed out')
 
     # noinspection PyUnresolvedReferences
     @staticmethod
@@ -3080,8 +3079,8 @@ class App:
             if completed_request is None:
                 continue  # no requests processed for this window - nothing to do yet
 
-            # the device authorisation grant flow will not normally have a matching `redirect_uri`
-            elif not completed_request['user_code']:
+            # the DAG flow will not normally have a matching `redirect_uri`; wait for users to close the window manually
+            if not completed_request['user_code']:
                 window.destroy()
             self.icon.update_menu()
 
