@@ -6,8 +6,8 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-11'  # ISO 8601 (YYYY-MM-DD)
-__package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
+__package_version__ = '2025.2.4'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -712,6 +712,10 @@ class OAuth2Helper:
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
 
+        if not password:
+            Log.error('No password provided for account', username, '- aborting login')
+            return False, '%s: Login failed - no password provided for account %s' % (APP_NAME, username)
+
         # we support broader catch-all account names (e.g., `@domain.com` / `@`) if enabled
         config_accounts = AppConfig.accounts()
         valid_accounts = [username in config_accounts]
@@ -1122,7 +1126,7 @@ class OAuth2Helper:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
-                if oauth2_flow == 'device':
+                elif oauth2_flow == 'device':
                     return True, device_grant_result
 
                 else:
@@ -1218,8 +1222,7 @@ class OAuth2Helper:
                           e.message)
                 raise e
 
-        if oauth2_flow == 'device' and not EXITING:
-            raise TimeoutError('The device authorisation grant flow request timed out')
+        raise TimeoutError('The access token request for account', username, 'timed out')
 
     # noinspection PyUnresolvedReferences
     @staticmethod
@@ -2104,14 +2107,18 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
         # if authentication succeeds (or fails), remove our proxy from the client and ignore all further communication
         # don't use a regex here as the tag must match exactly; RFC 3501 specifies uppercase 'OK', so startswith is fine
-        if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
-            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
-            self.client_connection.authenticated = True
-            self.client_connection.authentication_tag = None
-        elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
-            super().process_data(byte_data)  # an error occurred - just send to the client and exit
-            self.close()
-            return
+        if self.client_connection.authentication_tag:
+            if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
+                Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
+                self.client_connection.authenticated = True
+                self.client_connection.authentication_tag = None
+            elif str_response.startswith('+'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
+                pass
+            elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.close()
+                return
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
@@ -2212,6 +2219,9 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('+OK'):
                 Log.info(self.info_string(), '[ Successfully authenticated POP connection - releasing session ]')
                 self.client_connection.authenticated = True
+                super().process_data(byte_data)
+            elif str_data.startswith('+'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
                 super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -2341,9 +2351,13 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
+            elif str_data.startswith('334'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
+                super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.close()
+                if len(str_data) >= 4 and str_data[3] == ' ':  # responses may be multiline - wait for last part
+                    self.close()
 
         else:
             super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
@@ -2583,8 +2597,9 @@ if sys.platform == 'darwin':
         # noinspection PyPep8Naming
         def userNotificationCenter_didActivateNotification_(self, _notification_centre, notification):
             notification_text = notification.informativeText()
-            if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
-                self._click(notification_text.split('account ')[-1].split(' ')[0])
+            username = next((a for a in notification_text.split(' ') if '@' in a), None)
+            if username and 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
+                self._click(username)
 
 if sys.platform == 'darwin':
     # noinspection PyUnresolvedReferences,PyProtectedMember
@@ -3132,8 +3147,8 @@ class App:
             if completed_request is None:
                 continue  # no requests processed for this window - nothing to do yet
 
-            # the device authorisation grant flow will not normally have a matching `redirect_uri`
-            elif not completed_request['user_code']:
+            # the DAG flow will not normally have a matching `redirect_uri`; wait for users to close the window manually
+            if not completed_request['user_code']:
                 window.destroy()
             self.icon.update_menu()
 
