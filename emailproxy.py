@@ -66,15 +66,30 @@ no_gui_parser.add_argument('--no-gui', action='store_false', dest='gui')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if no_gui_args.gui:
     try:
+        # noinspection PyUnresolvedReferences
         import pystray  # the menu bar/taskbar GUI
     except Exception as gui_requirement_import_error:  # see #204 - incomplete pystray installation can throw exceptions
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
         no_gui_args.gui = False  # we need the dummy implementation
 
 if not no_gui_args.gui:
-    class DummyPystray:  # dummy implementation allows initialisation to complete
+    class DummyPystray:  # dummy implementation allows initialisation to complete (with skeleton to avoid lint warnings)
         class Icon:
-            pass
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run(self, *args, **kwargs):
+                pass
+
+        class Menu:
+            SEPARATOR = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class MenuItem:
+            def __init__(self, *args, **kwargs):
+                pass
 
 
     pystray = DummyPystray  # this is just to avoid unignorable IntelliJ warnings about naming and spacing
@@ -2523,7 +2538,7 @@ if sys.platform == 'darwin':
             return False
 
 if sys.platform == 'darwin':
-    # noinspection PyUnresolvedReferences
+    # noinspection PyUnresolvedReferences,PyUnboundLocalVariable
     class UserNotificationCentreDelegate(AppKit.NSObject):
         # noinspection PyPep8Naming,PyMethodMayBeStatic
         def userNotificationCenter_shouldPresentNotification_(self, _notification_centre, _notification):
@@ -2538,7 +2553,7 @@ if sys.platform == 'darwin':
                 self._click(username)
 
 if sys.platform == 'darwin':
-    # noinspection PyUnresolvedReferences,PyProtectedMember
+    # noinspection PyUnresolvedReferences,PyProtectedMember,PyUnboundLocalVariable
     class RetinaIcon(pystray.Icon):
         """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
         regeneration of the last activity time for each account every time the icon is clicked"""
@@ -2698,8 +2713,6 @@ class App:
             except NotImplementedError:
                 Log.error('Unable to initialise icon - did you mean to run in `--no-gui` mode?')
                 self.exit(None)
-                # noinspection PyProtectedMember
-                self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
         else:
             self.icon = None
             self.post_create(None)
@@ -3028,7 +3041,7 @@ class App:
 
         # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
         # pywebview window can get into a state in which http://localhost navigation, rather than failing, just hangs
-        # noinspection PyPackageRequirements
+        # noinspection PyUnresolvedReferences
         import webview.platforms.cocoa
         pywebview_version = packaging.version.Version(importlib_metadata.version('pywebview'))
         ProvisionalNavigationBrowserDelegate.pywebview_attr = 'webkit' if pywebview_version < packaging.version.Version(
