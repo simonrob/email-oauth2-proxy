@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# This script sends the provided authentication material to the remote gotify server.
+#
+# Notifications via gotify may be a suitable solution for device authorisation grant scenarios,
+# when the E-Mail OAUTH2 Proxy is running on a headless server.
+#
+# To use this script configure the required parameters as specified in `gotifier.conf` file.
+#
+# The E-Mail OAUTH2 Proxy can be configured to use this script with the `--external-auth-program` option.
+#
+
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/gotifier.conf"
+
+function die() {
+    echo "$1" 1>&2
+    exit 1
+}
+
+# Check requirements
+which curl >/dev/null || die "curl not found"
+which jq >/dev/null || die "jq not found"
+which sed >/dev/null || die "sed not found"
+
+function json_escape() {
+    jq -raRs . </dev/stdin | sed 's/^"//' | sed 's/\n"$//' | sed 's/"$//'
+}
+
+function json_field() {
+    jq -r ".$1 | select(.)" </dev/stdin
+}
+
+# Read input JSON into a variable
+INPUT="$(jq -Rrs . </dev/stdin)"
+
+USER_NAME="$(echo -n "${INPUT}" | json_field username)"
+OAUTH_URL="$(echo -n "${INPUT}" | json_field permission_url)"
+OAUTH_USER_CODE="$(echo -n "${INPUT}" | json_field user_code)"
+
+MESSAGE="Click [here](${OAUTH_URL}) to sign in as \`${USER_NAME}\`."
+
+if [[ -n "${OAUTH_USER_CODE}" ]]; then
+    MESSAGE="${MESSAGE}
+You may need the code: **${OAUTH_USER_CODE}**"
+fi
+
+GOTIFY_MESSAGE="{\
+  \"extras\": {\
+    \"client::display\": {\
+        \"contentType\": \"text/markdown\"\
+    }\
+  },\
+  \"message\": \"$(echo -n "${MESSAGE}" | json_escape)\",\
+  \"priority\": 9,\
+  \"title\": \"E-Mail OAUTH2 Sign-In Required\"\
+}"
+
+curl -s --fail-with-body "${GOTIFY_HOST}/message" \
+    -H "X-Gotify-Key: ${GOTIFY_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -X POST --data \
+    "$(echo -n "${GOTIFY_MESSAGE}" | jq -cr .)" 1>&2
