@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.2.4'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.3.5'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -823,8 +823,9 @@ class OAuth2Helper:
                         # noinspection PyUnresolvedReferences
                         import jwt
                     except ImportError:
-                        return False, ('Unable to load jwt, which is a requirement when using certificate credentials '
-                                       '(`jwt_` options). Please run `python -m pip install -r requirements-core.txt`')
+                        return (False, '%s: Unable to load jwt, which is a requirement when using certificate '
+                                       'credentials (`jwt_` options). Please run `python -m pip install -r '
+                                       'requirements-core.txt`' % APP_NAME)
                     import uuid
                     from cryptography import x509
                     from cryptography.hazmat.primitives import serialization
@@ -848,8 +849,9 @@ class OAuth2Helper:
                                 'x5t#S256': base64.urlsafe_b64encode(jwt_certificate_fingerprint).decode('utf-8')
                             })
                     except (FileNotFoundError, OSError):  # catch OSError due to GitHub issue 257 (quoted paths)
-                        return (False, 'Unable to create credentials assertion for account %s - please check that the '
-                                       '`jwt_certificate_path` and `jwt_key_path` values are correct' % username)
+                        return (False, '%s: Unable to create credentials assertion for account %s - please check that '
+                                       'the config file entry\'s `jwt_certificate_path` and `jwt_key_path` values are '
+                                       'correct' % (APP_NAME, username))
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
