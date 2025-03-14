@@ -1,6 +1,20 @@
 # Email OAuth 2.0 Proxy<a id="email-oauth-20-proxy"></a>
 Transparently add OAuth 2.0 support to IMAP/POP/SMTP client applications, scripts or any other email use-cases that don't support this authentication method.
 
+<div align="center">
+  <br><strong>Email OAuth 2.0 Proxy is sponsored by</strong><br><br>
+  <a href="https://auth-email.com/?ref=emailproxy">
+    <picture>
+      <source width="300" media="(prefers-color-scheme: dark)" srcset="https://auth-email.com/static/img/logo-full-dark.svg">
+      <source width="300" media="(prefers-color-scheme: light)" srcset="https://auth-email.com/static/img/logo-full-light.svg">
+      <img width="300" src="https://auth-email.com/static/img/logo-full.png" alt="Email-Auth logo">
+    </picture><br>
+    <b>Email OAuth made simple</b><br>
+    <sub>Auth-Email.com is a unified proxy for all your OAuth 2.0 email accounts.</sub><br>
+    <sup>Use any app or client to access your accounts with ease.</sup>
+  </a><br><br>
+</div>
+
 
 ## Motivation and capabilities<a id="motivation-and-capabilities"></a>
 Email services that support IMAP, POP and/or SMTP access are increasingly requiring the use of OAuth 2.0 to authenticate connections, but not all clients support this method.
