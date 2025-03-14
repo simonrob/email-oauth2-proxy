@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.3.5'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.3.14'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -643,7 +643,7 @@ class AppConfig:
 
 
 class Cryptographer:
-    ITERATIONS = 1_000_000  # taken from cryptography's suggestion of using Django's defaults (as of January 2025)
+    ITERATIONS = 1_200_000  # taken from cryptography's suggestion of using Django's defaults (as of January 2025)
     LEGACY_ITERATIONS = 100_000  # fallback when the iteration count is not in the config file (versions < 2023-10-17)
 
     def __init__(self, config, username, password):
