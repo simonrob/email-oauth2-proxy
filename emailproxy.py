@@ -6,8 +6,8 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__version__ = '2024-11-11'  # ISO 8601 (YYYY-MM-DD)
-__package_version__ = '.'.join([str(int(i)) for i in __version__.split('-')])  # for pyproject.toml usage only
+__package_version__ = '2025.3.14'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
 import argparse
@@ -66,15 +66,30 @@ no_gui_parser.add_argument('--no-gui', action='store_false', dest='gui')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if no_gui_args.gui:
     try:
+        # noinspection PyUnresolvedReferences
         import pystray  # the menu bar/taskbar GUI
     except Exception as gui_requirement_import_error:  # see #204 - incomplete pystray installation can throw exceptions
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
         no_gui_args.gui = False  # we need the dummy implementation
 
 if not no_gui_args.gui:
-    class DummyPystray:  # dummy implementation allows initialisation to complete
+    class DummyPystray:  # dummy implementation allows initialisation to complete (with skeleton to avoid lint warnings)
         class Icon:
-            pass
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run(self, *args, **kwargs):
+                pass
+
+        class Menu:
+            SEPARATOR = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+        class MenuItem:
+            def __init__(self, *args, **kwargs):
+                pass
 
 
     pystray = DummyPystray  # this is just to avoid unignorable IntelliJ warnings about naming and spacing
@@ -628,7 +643,7 @@ class AppConfig:
 
 
 class Cryptographer:
-    ITERATIONS = 870_000  # taken from cryptography's suggestion of using Django's defaults
+    ITERATIONS = 1_200_000  # taken from cryptography's suggestion of using Django's defaults (as of January 2025)
     LEGACY_ITERATIONS = 100_000  # fallback when the iteration count is not in the config file (versions < 2023-10-17)
 
     def __init__(self, config, username, password):
@@ -702,6 +717,10 @@ class OAuth2Helper:
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
         if invalid). Returns either (True, '[OAuth2 string for authentication]') or (False, '[Error message]')"""
+
+        if not password:
+            Log.error('No password provided for account', username, '- aborting login')
+            return False, '%s: Login failed - no password provided for account %s' % (APP_NAME, username)
 
         # we support broader catch-all account names (e.g., `@domain.com` / `@`) if enabled
         config_accounts = AppConfig.accounts()
@@ -804,8 +823,9 @@ class OAuth2Helper:
                         # noinspection PyUnresolvedReferences
                         import jwt
                     except ImportError:
-                        return False, ('Unable to load jwt, which is a requirement when using certificate credentials '
-                                       '(`jwt_` options). Please run `python -m pip install -r requirements-core.txt`')
+                        return (False, '%s: Unable to load jwt, which is a requirement when using certificate '
+                                       'credentials (`jwt_` options). Please run `python -m pip install -r '
+                                       'requirements-core.txt`' % APP_NAME)
                     import uuid
                     from cryptography import x509
                     from cryptography.hazmat.primitives import serialization
@@ -829,8 +849,9 @@ class OAuth2Helper:
                                 'x5t#S256': base64.urlsafe_b64encode(jwt_certificate_fingerprint).decode('utf-8')
                             })
                     except (FileNotFoundError, OSError):  # catch OSError due to GitHub issue 257 (quoted paths)
-                        return (False, 'Unable to create credentials assertion for account %s - please check that the '
-                                       '`jwt_certificate_path` and `jwt_key_path` values are correct' % username)
+                        return (False, '%s: Unable to create credentials assertion for account %s - please check that '
+                                       'the config file entry\'s `jwt_certificate_path` and `jwt_key_path` values are '
+                                       'correct' % (APP_NAME, username))
 
             if access_token or refresh_token:  # if possible, refresh the existing token(s)
                 if not access_token or access_token_expiry - current_time < TOKEN_EXPIRY_MARGIN:
@@ -1113,7 +1134,7 @@ class OAuth2Helper:
                     threading.Thread(target=OAuth2Helper.start_redirection_receiver_server, args=(data,),
                                      name='EmailOAuth2Proxy-auth-%s' % data['username'], daemon=True).start()
 
-                if oauth2_flow == 'device':
+                elif oauth2_flow == 'device':
                     return True, device_grant_result
 
                 else:
@@ -1209,8 +1230,7 @@ class OAuth2Helper:
                           e.message)
                 raise e
 
-        if oauth2_flow == 'device' and not EXITING:
-            raise TimeoutError('The device authorisation grant flow request timed out')
+        raise TimeoutError('The access token request for account', username, 'timed out')
 
     # noinspection PyUnresolvedReferences
     @staticmethod
@@ -2065,14 +2085,18 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
 
         # if authentication succeeds (or fails), remove our proxy from the client and ignore all further communication
         # don't use a regex here as the tag must match exactly; RFC 3501 specifies uppercase 'OK', so startswith is fine
-        if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
-            Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
-            self.client_connection.authenticated = True
-            self.client_connection.authentication_tag = None
-        elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
-            super().process_data(byte_data)  # an error occurred - just send to the client and exit
-            self.close()
-            return
+        if self.client_connection.authentication_tag:
+            if str_response.startswith('%s OK' % self.client_connection.authentication_tag):
+                Log.info(self.info_string(), '[ Successfully authenticated IMAP connection - releasing session ]')
+                self.client_connection.authenticated = True
+                self.client_connection.authentication_tag = None
+            elif str_response.startswith('+'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
+                pass
+            elif str_response.startswith('%s NO' % self.client_connection.authentication_tag):
+                super().process_data(byte_data)  # an error occurred - just send to the client and exit
+                self.close()
+                return
 
         # intercept pre-auth CAPABILITY response to advertise only AUTH=PLAIN (+SASL-IR) and re-enable LOGIN if required
         if IMAP_CAPABILITY_MATCHER.match(str_response):
@@ -2173,6 +2197,9 @@ class POPOAuth2ServerConnection(OAuth2ServerConnection):
             if str_data.startswith('+OK'):
                 Log.info(self.info_string(), '[ Successfully authenticated POP connection - releasing session ]')
                 self.client_connection.authenticated = True
+                super().process_data(byte_data)
+            elif str_data.startswith('+'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
                 super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
@@ -2302,9 +2329,13 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                 Log.info(self.info_string(), '[ Successfully authenticated SMTP connection - releasing session ]')
                 self.client_connection.authenticated = True
                 super().process_data(byte_data)
+            elif str_data.startswith('334'):
+                # a separate request for error details (SASL additional data challenge) - the client should send b'\r\n'
+                super().process_data(byte_data)
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
-                self.close()
+                if len(str_data) >= 4 and str_data[3] == ' ':  # responses may be multiline - wait for last part
+                    self.close()
 
         else:
             super().process_data(byte_data)  # a server->client interaction we don't handle; ignore
@@ -2509,7 +2540,7 @@ if sys.platform == 'darwin':
             return False
 
 if sys.platform == 'darwin':
-    # noinspection PyUnresolvedReferences
+    # noinspection PyUnresolvedReferences,PyUnboundLocalVariable
     class UserNotificationCentreDelegate(AppKit.NSObject):
         # noinspection PyPep8Naming,PyMethodMayBeStatic
         def userNotificationCenter_shouldPresentNotification_(self, _notification_centre, _notification):
@@ -2519,11 +2550,12 @@ if sys.platform == 'darwin':
         # noinspection PyPep8Naming
         def userNotificationCenter_didActivateNotification_(self, _notification_centre, notification):
             notification_text = notification.informativeText()
-            if 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
-                self._click(notification_text.split('account ')[-1].split(' ')[0])
+            username = next((a for a in notification_text.split(' ') if '@' in a), None)
+            if username and 'Please authorise your account ' in notification_text:  # hacky, but all we have is the text
+                self._click(username)
 
 if sys.platform == 'darwin':
-    # noinspection PyUnresolvedReferences,PyProtectedMember
+    # noinspection PyUnresolvedReferences,PyProtectedMember,PyUnboundLocalVariable
     class RetinaIcon(pystray.Icon):
         """Used to dynamically override the default pystray behaviour on macOS to support high-dpi ('retina') icons and
         regeneration of the last activity time for each account every time the icon is clicked"""
@@ -2683,8 +2715,6 @@ class App:
             except NotImplementedError:
                 Log.error('Unable to initialise icon - did you mean to run in `--no-gui` mode?')
                 self.exit(None)
-                # noinspection PyProtectedMember
-                self.icon._Icon__queue.put(False)  # pystray sets up the icon thread even in dummy mode; need to exit
         else:
             self.icon = None
             self.post_create(None)
@@ -3013,7 +3043,7 @@ class App:
 
         # on macOS we need to add extra webview functions to detect when redirection starts, because otherwise the
         # pywebview window can get into a state in which http://localhost navigation, rather than failing, just hangs
-        # noinspection PyPackageRequirements
+        # noinspection PyUnresolvedReferences
         import webview.platforms.cocoa
         pywebview_version = packaging.version.Version(importlib_metadata.version('pywebview'))
         ProvisionalNavigationBrowserDelegate.pywebview_attr = 'webkit' if pywebview_version < packaging.version.Version(
@@ -3064,8 +3094,8 @@ class App:
             if completed_request is None:
                 continue  # no requests processed for this window - nothing to do yet
 
-            # the device authorisation grant flow will not normally have a matching `redirect_uri`
-            elif not completed_request['user_code']:
+            # the DAG flow will not normally have a matching `redirect_uri`; wait for users to close the window manually
+            if not completed_request['user_code']:
                 window.destroy()
             self.icon.update_menu()
 

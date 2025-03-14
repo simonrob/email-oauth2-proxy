@@ -1,10 +1,24 @@
 # Email OAuth 2.0 Proxy<a id="email-oauth-20-proxy"></a>
 Transparently add OAuth 2.0 support to IMAP/POP/SMTP client applications, scripts or any other email use-cases that don't support this authentication method.
 
+<div align="center">
+  <br><strong>Email OAuth 2.0 Proxy is sponsored by</strong><br><br>
+  <a href="https://auth-email.com/?ref=emailproxy">
+    <picture>
+      <source width="300" media="(prefers-color-scheme: dark)" srcset="https://auth-email.com/static/img/logo-full-dark.svg">
+      <source width="300" media="(prefers-color-scheme: light)" srcset="https://auth-email.com/static/img/logo-full-light.svg">
+      <img width="300" src="https://auth-email.com/static/img/logo-full.png" alt="Email-Auth logo">
+    </picture><br>
+    <b>Email OAuth made simple</b><br>
+    <sub>Auth-Email.com is a unified proxy for all your OAuth 2.0 email accounts.</sub><br>
+    <sup>Use any app or client to access your accounts with ease.</sup>
+  </a><br><br>
+</div>
+
 
 ## Motivation and capabilities<a id="motivation-and-capabilities"></a>
 Email services that support IMAP, POP and/or SMTP access are increasingly requiring the use of OAuth 2.0 to authenticate connections, but not all clients support this method.
-This tool creates a simple local proxy that intercepts the traditional IMAP/POP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials.
+This tool creates a local proxy that intercepts the traditional IMAP/POP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials.
 Your email client can continue to use the `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence.
 The proxy works in the background with a menu bar/taskbar helper or as a headless system service, and is compatible with macOS, Windows and Linux.
 
@@ -194,7 +208,7 @@ Please [open an issue](https://github.com/simonrob/email-oauth2-proxy/issues) if
 
 When first launching on Linux in GUI mode you may encounter errors similar to `Namespace […] not available`, issues with the task bar icon display, or no browser popup when attempting to authorise your accounts.
 This is caused by missing dependencies for [pystray](https://github.com/moses-palmer/pystray/) and [pywebview](https://github.com/r0x0r/pywebview/), which are used to display the menu bar icon and authentication windows.
-See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) and [pystray FAQ](https://pystray.readthedocs.io/en/latest/faq.html) pages and [existing](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) [closed issues](https://github.com/simonrob/email-oauth2-proxy/issues/136#issuecomment-1430417456) in this repository for a summary and suggestions about how to resolve this.
+See the [pywebview dependencies](https://pywebview.flowrl.com/guide/installation.html#dependencies) and [pystray FAQ](https://pystray.readthedocs.io/en/latest/faq.html) pages and [existing](https://github.com/simonrob/email-oauth2-proxy/issues/1#issuecomment-831746642) [closed](https://github.com/simonrob/email-oauth2-proxy/issues/136#issuecomment-1430417456) [issues](https://github.com/simonrob/email-oauth2-proxy/issues/305#issuecomment-2482989955) in this repository for a summary and suggestions about how to resolve this.
 
 A similar issue may occur on Windows with the [pythonnet](https://github.com/pythonnet/pythonnet) package, which is required by [pywebview](https://github.com/r0x0r/pywebview).
 The [pythonnet installation instructions](https://github.com/pythonnet/pythonnet/wiki/Installation) may offer alternative ways to install this package if the default installation fails.
@@ -205,6 +219,9 @@ Note that the public releases of pythonnet can take some time to be compatible w
 On Windows this is normally limited to keyboard shortcuts (i.e., copy/paste), but in some virtual environments on macOS the entire keyboard may not work.
 As a workaround, the proxy will enable pywebview's debug mode when you run the proxy itself in debug mode, which should allow you to use the right-click context menu to copy/paste to enter text.
 If you are unable to proceed with popup-based authentication even with this workaround, it is worth trying the proxy's `--external-auth` or `--local-server-auth` options.
+
+- If the authorisation window fails to render due to an issue with hardware acceleration (for example: `MESA: error: ZINK: failed to choose pdev`), you can try disabling hardware rendering by setting the environment variable `LIBGL_ALWAYS_SOFTWARE=1`.
+You may also wish to try disabling the DMABUF renderer in WebKit with `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 - On macOS (10.14 and later), you may find that when first running the proxy as a service you need to manually load its launch agent in order to trigger a file access permission prompt.
 You will know intervention is necessary if the proxy exits (rather than restarts) the first time you click `Start at login` from its menu bar icon.
