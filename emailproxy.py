@@ -864,7 +864,7 @@ class OAuth2Helper:
 
                         access_token = response['access_token']
                         config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                        config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                        config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
                         if 'refresh_token' in response:
                             config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                         AppConfig.save()
@@ -885,7 +885,7 @@ class OAuth2Helper:
                 auth_result = None
                 if permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
                     if oauth2_flow != 'device':  # the device flow is a poll-based method with asynchronous interaction
-                            oauth2_flow = 'authorization_code'
+                        oauth2_flow = 'authorization_code'
 
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username)
@@ -904,12 +904,12 @@ class OAuth2Helper:
                     return (False, '%s: Incomplete config file entry found for account %s - please make sure an '
                                    '`oauth2_flow` value is specified when using a method that does not require a '
                                    '`permission_url`' % (APP_NAME, username))
+
                 # note: get_oauth2_authorisation_tokens may be a blocking call (DAG flow retries until user code entry)
-                
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, jwt_client_assertion,
-                                                                        auth_result, oauth2_scope, oauth2_resource, oauth2_flow,
-                                                                        username, password)
+                                                                        auth_result, oauth2_scope, oauth2_resource,
+                                                                        oauth2_flow, username, password)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -925,7 +925,7 @@ class OAuth2Helper:
                 config.set(username, 'token_salt', cryptographer.salt)
                 config.set(username, 'token_iterations', str(cryptographer.iterations))
                 config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
 
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
@@ -1170,11 +1170,12 @@ class OAuth2Helper:
     @staticmethod
     # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
-                                        authorisation_result, oauth2_scope, oauth2_resource, oauth2_flow, username, password):
+                                        authorisation_result, oauth2_scope, oauth2_resource, oauth2_flow, username,
+                                        password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
-        
+
         if oauth2_flow == 'service_account':  # service accounts are slightly different, and are handled separately
             return OAuth2Helper.get_service_account_authorisation_token(client_id, client_secret, oauth2_scope,
                                                                         username)
@@ -1201,7 +1202,7 @@ class OAuth2Helper:
             if oauth2_flow == 'device':
                 params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
                 params['device_code'] = authorisation_result['device_code']
-                expires_in = authorisation_result['expires_in']
+                expires_in = int(authorisation_result['expires_in'])
                 authorisation_result['interval'] = authorisation_result.get('interval', 5)  # see RFC 8628, Section 3.2
             elif oauth2_flow == 'password':
                 params['username'] = username
@@ -1216,25 +1217,12 @@ class OAuth2Helper:
         expires_at = time.time() + expires_in
         while time.time() < expires_at and not EXITING:
             try:
-                raw = urllib.request.urlopen(
-                    urllib.request.Request(
-                        token_url,
-                        data=urllib.parse.urlencode(params).encode('utf-8'),
-                        headers={'User-Agent': APP_NAME}
-                    ),
-                    timeout=AUTHENTICATION_TIMEOUT
-                ).read()
-                token = json.loads(raw)
-                # normalize expires_in to int (some endpoints return it as a string)
-                if 'expires_in' in token:
-                    try:
-                        token['expires_in'] = int(token['expires_in'])
-                    except (TypeError, ValueError):
-                        Log.error(
-                            'Invalid expires_in from token endpoint for account', username,':', token.get('expires_in')
-                        )
-                        token['expires_in'] = 0
-                return token
+                # in all flows except DAG, we make one attempt only
+                response = urllib.request.urlopen(
+                    urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
+                                           headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
+                return json.loads(response)
+
             except urllib.error.HTTPError as e:
                 e.message = json.loads(e.read())
                 if oauth2_flow == 'device' and e.code == 400:
