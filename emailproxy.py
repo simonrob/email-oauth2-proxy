@@ -1176,7 +1176,8 @@ class OAuth2Helper:
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
 
-        if oauth2_flow == 'service_account':  # service accounts are slightly different, and are handled separately
+        # service accounts are slightly different, and are handled separately
+        if oauth2_flow == 'service_account':
             return OAuth2Helper.get_service_account_authorisation_token(client_id, client_secret, oauth2_scope,
                                                                         username)
 
