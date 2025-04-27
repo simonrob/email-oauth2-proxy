@@ -739,6 +739,7 @@ class OAuth2Helper:
         permission_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'permission_url')
         token_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'token_url')
         oauth2_scope = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_scope')
+        oauth2_resource = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_resource')
         oauth2_flow = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_flow')
         redirect_uri = AppConfig.get_option_with_catch_all_fallback(config, username, 'redirect_uri')
         redirect_listen_address = AppConfig.get_option_with_catch_all_fallback(config, username,
@@ -751,8 +752,9 @@ class OAuth2Helper:
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
         # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
-        # core parameters that are required by all methods: oauth2_scope and client_id
-        if not (token_url and oauth2_scope and client_id):
+        # core parameters that are required by all methods: client_id and oauth2_scope (or, for non-standard ROPCG,
+        # currently only known to be used by 21Vianet, oauth2_resource instead of oauth2_scope - see GitHub #351)
+        if not (token_url and client_id and ((oauth2_flow == 'password' and oauth2_resource) or oauth2_scope)):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (at least token_url, oauth2_scope and client_id)' % (APP_NAME, username))
@@ -863,7 +865,7 @@ class OAuth2Helper:
 
                         access_token = response['access_token']
                         config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                        config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                        config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
                         if 'refresh_token' in response:
                             config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                         AppConfig.save()
@@ -907,8 +909,8 @@ class OAuth2Helper:
                 # note: get_oauth2_authorisation_tokens may be a blocking call (DAG flow retries until user code entry)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, jwt_client_assertion,
-                                                                        auth_result, oauth2_scope, oauth2_flow,
-                                                                        username, password)
+                                                                        auth_result, oauth2_scope, oauth2_resource,
+                                                                        oauth2_flow, username, password)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -924,7 +926,7 @@ class OAuth2Helper:
                 config.set(username, 'token_salt', cryptographer.salt)
                 config.set(username, 'token_iterations', str(cryptographer.iterations))
                 config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
 
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
@@ -1169,11 +1171,14 @@ class OAuth2Helper:
     @staticmethod
     # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
-                                        authorisation_result, oauth2_scope, oauth2_flow, username, password):
+                                        authorisation_result, oauth2_scope, oauth2_resource, oauth2_flow, username,
+                                        password):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
-        if oauth2_flow == 'service_account':  # service accounts are slightly different, and are handled separately
+
+        # service accounts are slightly different, and are handled separately
+        if oauth2_flow == 'service_account':
             return OAuth2Helper.get_service_account_authorisation_token(client_id, client_secret, oauth2_scope,
                                                                         username)
 
@@ -1199,11 +1204,18 @@ class OAuth2Helper:
             if oauth2_flow == 'device':
                 params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
                 params['device_code'] = authorisation_result['device_code']
-                expires_in = authorisation_result['expires_in']
+                expires_in = int(authorisation_result['expires_in'])
                 authorisation_result['interval'] = authorisation_result.get('interval', 5)  # see RFC 8628, Section 3.2
             elif oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+                # there is at least one non-standard implementation of ROPCG that uses a resource parameter instead of a
+                # scope (e.g., 21Vianet's version of O365; see GitHub #351) - note that it is not known whether this is
+                # always instead of the scope value or potentially in addition to it, so we only remove if not specified
+                if oauth2_resource:
+                    params['resource'] = oauth2_resource
+                    if not oauth2_scope:
+                        del params['scope']
             if not redirect_uri:
                 del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
 
