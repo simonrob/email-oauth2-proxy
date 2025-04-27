@@ -987,6 +987,8 @@ class OAuth2Helper:
             # and will work from the next request; however, please report an issue if you encounter problems here
             Log.info('Caught exception while requesting OAuth 2.0 credentials for account %s:' % username,
                      Log.error_string(e))
+            if isinstance(e, json.JSONDecodeError):
+                Log.debug('JSON string that triggered this exception:', e.doc)
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
