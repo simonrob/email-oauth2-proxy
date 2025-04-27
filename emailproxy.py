@@ -752,7 +752,8 @@ class OAuth2Helper:
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
         # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
-        # core parameters that are required by all methods: oauth2_scope (or, for legacy ROPCG, resource) and client_id
+        # core parameters that are required by all methods: client_id and oauth2_scope (or, for non-standard ROPCG,
+        # currently only known to be used by 21Vianet, oauth2_resource instead of oauth2_scope - see GitHub #351)
         if not (token_url and client_id and ((oauth2_flow == 'password' and oauth2_resource) or oauth2_scope)):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
@@ -1208,9 +1209,13 @@ class OAuth2Helper:
             elif oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+                # there is at least one non-standard implementation of ROPCG that uses a resource parameter instead of a
+                # scope (e.g., 21Vianet's version of O365; see GitHub #351) - note that it is not known whether this is
+                # always instead of the scope value or potentially in addition to it, so we only remove if not specified
                 if oauth2_resource:
                     params['resource'] = oauth2_resource
-                    del params['scope']
+                    if not oauth2_scope:
+                        del params['scope']
             if not redirect_uri:
                 del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
 
