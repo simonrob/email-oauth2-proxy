@@ -752,8 +752,8 @@ class OAuth2Helper:
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
         # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
-        # core parameters that are required by all methods: oauth2_scope and client_id
-        if not (token_url and client_id and (oauth2_scope or oauth2_resource)):
+        # core parameters that are required by all methods: oauth2_scope (or, for legacy ROPCG, resource) and client_id
+        if not (token_url and client_id and ((oauth2_flow == 'password' and oauth2_resource) or oauth2_scope)):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (at least token_url, oauth2_scope and client_id)' % (APP_NAME, username))
