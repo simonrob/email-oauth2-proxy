@@ -739,7 +739,7 @@ class OAuth2Helper:
         permission_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'permission_url')
         token_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'token_url')
         oauth2_scope = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_scope')
-        oauth2_resource = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_resource', fallback=None)
+        oauth2_resource = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_resource')
         oauth2_flow = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_flow')
         redirect_uri = AppConfig.get_option_with_catch_all_fallback(config, username, 'redirect_uri')
         redirect_listen_address = AppConfig.get_option_with_catch_all_fallback(config, username,
@@ -884,7 +884,6 @@ class OAuth2Helper:
                 auth_result = None
                 if permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
                     if oauth2_flow != 'device':  # the device flow is a poll-based method with asynchronous interaction
-                        if oauth2_flow != 'password':
                             oauth2_flow = 'authorization_code'
 
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
@@ -904,7 +903,6 @@ class OAuth2Helper:
                     return (False, '%s: Incomplete config file entry found for account %s - please make sure an '
                                    '`oauth2_flow` value is specified when using a method that does not require a '
                                    '`permission_url`' % (APP_NAME, username))
-
                 # note: get_oauth2_authorisation_tokens may be a blocking call (DAG flow retries until user code entry)
                 
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
@@ -1196,8 +1194,8 @@ class OAuth2Helper:
 
         if oauth2_flow != 'authorization_code':
             del params['code']  # CCG/ROPCG flows have no code, but we need the scope and (for ROPCG) username+password
+            params['scope'] = oauth2_scope
             if oauth2_flow == 'device':
-                params['scope'] = oauth2_scope
                 params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
                 params['device_code'] = authorisation_result['device_code']
                 expires_in = authorisation_result['expires_in']
@@ -1207,8 +1205,7 @@ class OAuth2Helper:
                 params['password'] = password
                 if oauth2_resource:
                     params['resource'] = oauth2_resource
-                else:
-                    params['scope'] = oauth2_scope
+                    del params['scope']
             if not redirect_uri:
                 del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
 
