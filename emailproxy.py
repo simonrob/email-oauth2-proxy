@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.3.14'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.4.27'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -834,7 +834,8 @@ class OAuth2Helper:
                     try:
                         jwt_now = datetime.datetime.now(datetime.timezone.utc)
                         jwt_certificate_fingerprint = x509.load_pem_x509_certificate(
-                            pathlib.Path(jwt_certificate_path).read_bytes()).fingerprint(hashes.SHA256())
+                            pathlib.Path(jwt_certificate_path).read_bytes(),
+                            backend=default_backend()).fingerprint(hashes.SHA256())
                         jwt_client_assertion = jwt.encode(
                             {
                                 'aud': token_url,
@@ -987,6 +988,8 @@ class OAuth2Helper:
             # and will work from the next request; however, please report an issue if you encounter problems here
             Log.info('Caught exception while requesting OAuth 2.0 credentials for account %s:' % username,
                      Log.error_string(e))
+            if isinstance(e, json.JSONDecodeError):
+                Log.debug('JSON string that triggered this exception:', e.doc)
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
@@ -1254,7 +1257,6 @@ class OAuth2Helper:
     @staticmethod
     def get_service_account_authorisation_token(key_type, key_path_or_contents, oauth2_scope, username):
         """Requests an authorisation token via a Service Account key (currently Google Cloud only)"""
-        import json
         try:
             import requests  # noqa: F401 - requests is required as the default transport for google-auth
             import google.oauth2.service_account
