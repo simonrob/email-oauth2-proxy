@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.4.27'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.5.30'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -172,7 +172,8 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
 CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
-script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
+FROZEN_PACKAGE = getattr(sys, 'frozen', False) or '__compiled__' in globals()  # for pyinstaller/nuitka etc
+script_path = sys.executable if FROZEN_PACKAGE else os.path.realpath(__file__)
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     if float('.'.join(platform.mac_ver()[0].split('.')[:2])) >= 10.12:  # need a known path (due to App Translocation)
         script_path = pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser()
@@ -275,7 +276,7 @@ class Log:
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
                 log_file or os.path.join(os.getcwd() if __package__ is not None else
-                                         os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
+                                         os.path.dirname(sys.executable if FROZEN_PACKAGE else
                                                          os.path.realpath(__file__)), '%s.log' % APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
@@ -2800,8 +2801,8 @@ class App:
                 # proxy's handling of this signal may change in future if other actions are seen as more suitable
                 signal.signal(signal.SIGUSR1, lambda _signum, _fr: self.toggle_debug(Log.get_level() == logging.INFO))
 
-        # certificates are not imported automatically when packaged using pyinstaller - we need certifi
-        if getattr(sys, 'frozen', False):
+        # certificates are not imported automatically when packaged using pyinstaller/nuitka - we need certifi
+        if FROZEN_PACKAGE:
             if ssl.get_default_verify_paths().cafile is None and 'SSL_CERT_FILE' not in os.environ:
                 try:
                     import certifi
@@ -3210,7 +3211,7 @@ class App:
             python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
         script_command = [python_command]
-        if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
+        if not FROZEN_PACKAGE:  # no need for the script path if using pyinstaller/nuitka
             if __package__ is not None:
                 script_command.extend(['-m', APP_SHORT_NAME])
             else:
