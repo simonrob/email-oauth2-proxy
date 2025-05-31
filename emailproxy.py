@@ -1364,6 +1364,11 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         self.ssl_handshake_errors = (ssl.SSLWantReadError, ssl.SSLWantWriteError,
                                      ssl.SSLEOFError, ssl.SSLZeroReturnError)
         self.ssl_connection, self.ssl_handshake_attempts, self.ssl_handshake_completed = self._reset()
+        self._ssl_not_ready_send_buffer = []
+
+    @property
+    def is_ssl_ready(self):
+        return True
 
     def _reset(self, is_ssl=False):
         self.ssl_connection = is_ssl
@@ -1411,6 +1416,9 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
                 Log.debug(self.info_string(), '<-> [', self.socket.version(), 'handshake complete ]')
             self.ssl_handshake_attempts = 0
             self.ssl_handshake_completed = True
+            for byte_data in self._ssl_not_ready_send_buffer:
+                self.send(byte_data)
+            self._ssl_not_ready_send_buffer = []
 
     def handle_read_event(self):
         # additional Exceptions are propagated to handle_error(); no need to handle here
@@ -1445,6 +1453,9 @@ class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
         return b''
 
     def send(self, byte_data):
+        if not self.is_ssl_ready:
+            self._ssl_not_ready_send_buffer.append(byte_data)
+            return 0
         # additional Exceptions are propagated to handle_error(); no need to handle here
         try:
             return super().send(byte_data)  # buffers before sending via the socket, so failure is okay; will auto-retry
@@ -1948,6 +1959,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.last_activity = 0
 
         self.create_connection()
+
+    @property
+    def is_ssl_ready(self):
+        return self.ssl_connection and self.ssl_handshake_completed
 
     def create_connection(self):
         # resolve the given address, then create a socket and connect to each result in turn until one succeeds
