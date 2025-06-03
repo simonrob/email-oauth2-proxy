@@ -259,6 +259,7 @@ See the [documentation and examples](https://github.com/simonrob/email-oauth2-pr
 Michael Stepner has created a [Terraform configuration](https://github.com/michaelstepner/email-oauth2-proxy-aws) that helps run this proxy on a lightweight cloud server (AWS EC2).
 Thiago Macieira has provided a [makefile and systemd configuration files](https://github.com/thiagomacieira/email-oauth2-proxy/tree/Add_a_Makefile_and_systemd_configuration_files_to_install_system_wide).
 For Docker, Moriah Morgan has an [example configuration](https://github.com/blacktirion/email-oauth2-proxy-docker).
+For Helm, Patrick Joyce has an [example chart](https://github.com/pjaudiomv/email-oauth2-proxy-helm).
 
 If you already use postfix, the [sasl-xoauth2](https://github.com/tarickb/sasl-xoauth2) plugin is probably a better solution than running this proxy.
 Similarly, if you use an application that is able to handle OAuth 2.0 tokens but just cannot retrieve them itself, then [pizauth](https://github.com/ltratt/pizauth), [mailctl](https://github.com/pdobsan/mailctl) or [oauth-helper-office-365](https://github.com/ahrex/oauth-helper-office-365) may be more appropriate.
