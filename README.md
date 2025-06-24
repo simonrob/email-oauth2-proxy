@@ -7,20 +7,20 @@ Transparently add OAuth 2.0 support to IMAP/POP/SMTP client applications, script
     <picture>
       <source width="300" media="(prefers-color-scheme: dark)" srcset="https://auth-email.com/static/img/logo-full-dark.svg">
       <source width="300" media="(prefers-color-scheme: light)" srcset="https://auth-email.com/static/img/logo-full-light.svg">
-      <img width="300" src="https://auth-email.com/static/img/logo-full.png" alt="Email-Auth logo">
+      <img width="300" src="https://auth-email.com/static/img/logo-full.png" alt="Auth-Email.com logo">
     </picture><br>
     <b>Email OAuth made simple</b><br>
-    <sub>Auth-Email.com is a unified proxy for all your OAuth 2.0 email accounts.</sub><br>
-    <sup>Use any app or client to access your accounts with ease.</sup>
+    <sup>Use any app, client or device to access your OAuth mail accounts with ease.</sup>
   </a><br><br>
 </div>
 
 
 ## Motivation and capabilities<a id="motivation-and-capabilities"></a>
 Email services that support IMAP, POP and/or SMTP access are increasingly requiring the use of OAuth 2.0 to authenticate connections, but not all clients support this method.
-This tool creates a local proxy that intercepts the traditional IMAP/POP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials.
-Your email client can continue to use the `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence.
+This tool is a local proxy that intercepts the traditional IMAP/POP/SMTP authentication commands and transparently replaces them with the appropriate SASL (X)OAuth 2.0 commands and credentials.
+Your email client, app or device can continue to use the `login` or `auth`/`authenticate` options, with no need to make it aware of OAuth's existence.
 The proxy works in the background with a menu bar/taskbar helper or as a headless system service, and is compatible with macOS, Windows and Linux.
+It can be used with any email provider that supports OAuth 2.0 authentication, including Outlook, Office 365, Hotmail, 21Vianet, Gmail, Google Workspace, Fastmail, Yahoo, Comcast, AOL and many others.
 
 ### Example use-cases<a id="example-use-cases"></a>
 - You need to use an Office 365 email account, but don't get on with Outlook.
@@ -29,6 +29,7 @@ The email client you like doesn't support OAuth 2.0, which became mandatory [in 
 - You have an account already set up in an email client, and you need to switch it to OAuth 2.0 authentication.
 You can edit the server details, but the client forces you to delete and re-add the account to enable OAuth 2.0, and you don't want to do this.
 - You have made your own script or application that sends or receives email, but it doesn't support OAuth 2.0, and you don't want to have to modify it to implement this.
+- You use a device or business application that provides functions such as scan to email, email alerts or email to print, but you can't set it up to use the official OAuth 2.0 workarounds from [Microsoft](https://learn.microsoft.com/exchange/mail-flow-best-practices/how-to-set-up-a-multifunction-device-or-application-to-send-email-using-microsoft-365-or-office-365) or [Google](https://support.google.com/a/answer/176600). 
 - You work with multiple services or applications that use IMAP/POP/SMTP, and you don't want to have to set up OAuth 2.0 independently for each one.
 
 In all of these cases and more, this proxy can help – just follow the instructions below to get started.
@@ -41,7 +42,7 @@ Begin by downloading the proxy via one of the following methods:
 
 <ol type="A">
   <li><b>Pick a <a href="https://github.com/simonrob/email-oauth2-proxy/releases/latest">pre-built release</a></b> for your platform (macOS or Windows; no installation needed); <i>or</i>,</li>
-  <li><b>Install from <a href="https://pypi.org/project/emailproxy/">PyPI</a></b>: set up using <code>python -m pip install emailproxy\[gui\]</code>, download the <a href="https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config">sample <code>emailproxy.config</code> file</a>, then <code>python -m emailproxy</code> to run; <i>or</i>,</li>
+  <li><b>Install from <a href="https://pypi.org/project/emailproxy/">PyPI</a></b>: set up using <code>python -m pip install "emailproxy[gui]"</code>, download the <a href="https://github.com/simonrob/email-oauth2-proxy/raw/main/emailproxy.config">sample <code>emailproxy.config</code> file</a>, then <code>python -m emailproxy</code> to run; <i>or</i>,</li>
   <li><b>Clone or <a href="https://github.com/simonrob/email-oauth2-proxy/archive/refs/heads/main.zip">download</a></b> (and star :-) the <a href="https://github.com/simonrob/email-oauth2-proxy/">GitHub repository</a>, then: <code>python -m pip install -r requirements-core.txt -r requirements-gui.txt</code> to install requirements, and <code>python emailproxy.py</code> to run.</li>
 </ol>
 
@@ -87,6 +88,7 @@ The [sample configuration file](https://github.com/simonrob/email-oauth2-proxy/b
 - Gmail / Google Workspace: register a [Google API desktop app client](https://developers.google.com/identity/protocols/oauth2/native-app).
 - Outlook / Hotmail (personal accounts): If you are part of the Microsoft 365 Developer Programme or have an Azure account (including free accounts), you can create your own app registration in the Entra admin centre – see [this discussion](https://github.com/simonrob/email-oauth2-proxy/discussions/301) for a guide.
 If not, you will need to reuse an existing client ID – see, for example, [this sample configuration](https://github.com/simonrob/email-oauth2-proxy/issues/297#issuecomment-2424200404).
+- Fastmail: register a new [Fastmail OAuth client](https://www.fastmail.com/dev/#registration).
 - AOL and Yahoo Mail (and subproviders such as AT&T) are not currently allowing new client registrations with the OAuth email scope – the only option here is to reuse the credentials from an existing client that does have this permission.
 
 The proxy supports [Google Cloud service accounts](https://cloud.google.com/iam/docs/service-account-overview) for access to Google Workspace Gmail.

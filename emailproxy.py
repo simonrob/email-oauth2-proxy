@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.5.30'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.6.24'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -18,6 +18,7 @@ import contextlib
 import datetime
 import enum
 import errno
+import hashlib
 import io
 import ipaddress
 import json
@@ -29,6 +30,7 @@ import platform
 import plistlib
 import queue
 import re
+import secrets
 import select
 import signal
 import socket
@@ -200,6 +202,7 @@ LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
+TOKEN_LIFETIME = 3600  # seconds to add to the current time to use as a token expiration value where not provided
 JWT_LIFETIME = 300  # seconds to add to the current time and use for the `exp` value in JWT certificate credentials
 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
@@ -773,9 +776,17 @@ class OAuth2Helper:
                          'otherwise, if authentication fails, please double-check this value is correct')
 
         current_time = int(time.time())
+        state = secrets.token_urlsafe(16)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
+
+        code_verifier = None
+        code_challenge = None
+        if client_secret == 'pkce':  # special value to enable PKCE code challenge
+            code_verifier = OAuth2Helper.generate_code_verifier()
+            code_challenge = OAuth2Helper.generate_code_challenge(code_verifier)
+            client_secret = None
 
         # try reloading remotely cached tokens if possible
         if not access_token and CACHE_STORE != CONFIG_FILE_PATH and reload_remote_accounts:
@@ -890,7 +901,8 @@ class OAuth2Helper:
                         oauth2_flow = 'authorization_code'
 
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
-                                                                                  client_id, oauth2_scope, username)
+                                                                                  client_id, oauth2_scope, username,
+                                                                                  state, code_challenge)
 
                     # note: get_oauth2_authorisation_code is a blocking call (waiting on user to provide code)
                     success, auth_result = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
@@ -911,7 +923,7 @@ class OAuth2Helper:
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, jwt_client_assertion,
                                                                         auth_result, oauth2_scope, oauth2_resource,
-                                                                        oauth2_flow, username, password)
+                                                                        oauth2_flow, username, password, code_verifier)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -927,7 +939,13 @@ class OAuth2Helper:
                 config.set(username, 'token_salt', cryptographer.salt)
                 config.set(username, 'token_iterations', str(cryptographer.iterations))
                 config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
+
+                if 'expires_in' in response:
+                    config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
+                else:
+                    Log.info('Warning: no token expiry time returned for', username, '- defaulting to',
+                             TOKEN_LIFETIME, 'seconds')
+                    config.set(username, 'access_token_expiry', str(current_time + TOKEN_LIFETIME))
 
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
@@ -1072,12 +1090,18 @@ class OAuth2Helper:
         RESPONSE_QUEUE.put(token_request)
 
     @staticmethod
-    def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username):
+    def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username, state,
+                                        code_challenge):
         """Constructs and returns the URL to request permission for this client to access the given scope, hinting
         the username where possible (note that delegated accounts without direct login enabled will need to select the
         'Sign in with another account' option)"""
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
                   'access_type': 'offline', 'login_hint': username}
+        if state:
+            params['state'] = state
+        if code_challenge:
+            params['code_challenge'] = code_challenge
+            params['code_challenge_method'] = 'S256'
         if not redirect_uri:  # unlike other interactive flows, DAG doesn't involve a (known) final redirect
             del params['redirect_uri']
         param_pairs = ['%s=%s' % (param, OAuth2Helper.oauth2_url_escape(value)) for param, value in params.items()]
@@ -1126,10 +1150,12 @@ class OAuth2Helper:
                 REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
                 return False, 'Authorisation request timed out'
 
+            # noinspection PyUnboundLocalVariable
             if data is QUEUE_SENTINEL:  # app is closing
                 response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, '%s is shutting down' % APP_NAME
 
+            # noinspection PyUnboundLocalVariable
             if data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local redirection receiver server or terminal
                 # entry to authenticate; this result is a timeout, wsgi request error/failure, or terminal auth ctrl+c
@@ -1151,6 +1177,7 @@ class OAuth2Helper:
                         response = {str(key): value for key, value in
                                     urllib.parse.parse_qsl(urllib.parse.urlparse(data['response_url']).query)}
                         if 'code' in response and response['code']:
+                            # note: we don't check `state` as it is embedded in `permission_url` which we *do* check
                             authorisation_code = OAuth2Helper.oauth2_url_unescape(response['code'])
                             if authorisation_code:
                                 return True, authorisation_code
@@ -1173,7 +1200,7 @@ class OAuth2Helper:
     # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
                                         authorisation_result, oauth2_scope, oauth2_resource, oauth2_flow, username,
-                                        password):
+                                        password, code_verifier):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
@@ -1188,6 +1215,10 @@ class OAuth2Helper:
         expires_in = AUTHENTICATION_TIMEOUT
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+            # the code verifier is only used when we don't have a secret (or, rather, the config file secret is `pkce`)
+            if code_verifier:
+                params['code_verifier'] = code_verifier
 
             # certificate credentials are only used when no client secret is provided
             if jwt_client_assertion:
@@ -1205,7 +1236,7 @@ class OAuth2Helper:
             if oauth2_flow == 'device':
                 params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
                 params['device_code'] = authorisation_result['device_code']
-                expires_in = int(authorisation_result['expires_in'])
+                expires_in = int(authorisation_result['expires_in'])  # unlike code requests, DAG *requires* expires_in
                 authorisation_result['interval'] = authorisation_result.get('interval', 5)  # see RFC 8628, Section 3.2
             elif oauth2_flow == 'password':
                 params['username'] = username
@@ -1279,7 +1310,7 @@ class OAuth2Helper:
 
         request = google.auth.transport.requests.Request()
         credentials.refresh(request)
-        return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
+        return {'access_token': credentials.token, 'expires_in': credentials.expiry.timestamp() - time.time()}
 
     @staticmethod
     # pylint: disable-next=too-many-positional-arguments
@@ -1301,8 +1332,10 @@ class OAuth2Helper:
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
                                        headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
             token = json.loads(response)
-            if 'expires_in' in token:  # some servers return integer values as strings - fix expiry values (GitHub #237)
-                token['expires_in'] = int(token['expires_in'])
+
+            # note: some servers return expiry as a string (GitHub #237); others omit this (but we still need to renew)
+            token['expires_in'] = token['expires_in'] if 'expires_in' in token else TOKEN_LIFETIME
+
             return token
 
         except urllib.error.HTTPError as e:
@@ -1356,6 +1389,16 @@ class OAuth2Helper:
         except (ValueError, binascii.Error):
             # ValueError is from incorrect number of arguments; binascii.Error from incorrect encoding
             return '', ''  # no (or invalid) credentials provided
+
+    @staticmethod
+    def generate_code_verifier():
+        # RFC 7636 (4.1): between 43 and 128 characters (inclusive) using only unreserved URI characters (see RFC 3986)
+        return base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b'=').decode('utf-8')
+
+    @staticmethod
+    def generate_code_challenge(verifier):
+        digest = hashlib.sha256(verifier.encode('utf-8')).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('utf-8')
 
 
 class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
@@ -3145,6 +3188,7 @@ class App:
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
             plist['Program'] = start_command[0]
+            # noinspection PyTypeChecker
             plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
