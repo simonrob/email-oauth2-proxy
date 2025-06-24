@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2024 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.3.14'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.6.24'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -18,6 +18,7 @@ import contextlib
 import datetime
 import enum
 import errno
+import hashlib
 import io
 import ipaddress
 import json
@@ -29,6 +30,7 @@ import platform
 import plistlib
 import queue
 import re
+import secrets
 import select
 import signal
 import socket
@@ -172,7 +174,8 @@ APP_ICON = b'''eNp1Uc9rE0EUfjM7u1nyq0m72aQxpnbTbFq0TbJNNkGkNpVKb2mxtgjWsqRJU+jaQ
 CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
-script_path = sys.executable if getattr(sys, 'frozen', False) else os.path.realpath(__file__)  # for pyinstaller etc
+FROZEN_PACKAGE = getattr(sys, 'frozen', False) or '__compiled__' in globals()  # for pyinstaller/nuitka etc
+script_path = sys.executable if FROZEN_PACKAGE else os.path.realpath(__file__)
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     if float('.'.join(platform.mac_ver()[0].split('.')[:2])) >= 10.12:  # need a known path (due to App Translocation)
         script_path = pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser()
@@ -199,6 +202,7 @@ LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
 AUTHENTICATION_TIMEOUT = 600
 
 TOKEN_EXPIRY_MARGIN = 600  # seconds before its expiry to refresh the OAuth 2.0 token
+TOKEN_LIFETIME = 3600  # seconds to add to the current time to use as a token expiration value where not provided
 JWT_LIFETIME = 300  # seconds to add to the current time and use for the `exp` value in JWT certificate credentials
 
 LOG_FILE_MAX_SIZE = 32 * 1024 * 1024  # when using a log file, its maximum size in bytes before rollover (0 = no limit)
@@ -275,7 +279,7 @@ class Log:
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
                 log_file or os.path.join(os.getcwd() if __package__ is not None else
-                                         os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else
+                                         os.path.dirname(sys.executable if FROZEN_PACKAGE else
                                                          os.path.realpath(__file__)), '%s.log' % APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
@@ -739,6 +743,7 @@ class OAuth2Helper:
         permission_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'permission_url')
         token_url = AppConfig.get_option_with_catch_all_fallback(config, username, 'token_url')
         oauth2_scope = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_scope')
+        oauth2_resource = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_resource')
         oauth2_flow = AppConfig.get_option_with_catch_all_fallback(config, username, 'oauth2_flow')
         redirect_uri = AppConfig.get_option_with_catch_all_fallback(config, username, 'redirect_uri')
         redirect_listen_address = AppConfig.get_option_with_catch_all_fallback(config, username,
@@ -751,8 +756,9 @@ class OAuth2Helper:
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
         # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
-        # core parameters that are required by all methods: oauth2_scope and client_id
-        if not (token_url and oauth2_scope and client_id):
+        # core parameters that are required by all methods: client_id and oauth2_scope (or, for non-standard ROPCG,
+        # currently only known to be used by 21Vianet, oauth2_resource instead of oauth2_scope - see GitHub #351)
+        if not (token_url and client_id and ((oauth2_flow == 'password' and oauth2_resource) or oauth2_scope)):
             Log.error('Proxy config file entry incomplete for account', username, '- aborting login')
             return (False, '%s: Incomplete config file entry found for account %s - please make sure all required '
                            'fields are added (at least token_url, oauth2_scope and client_id)' % (APP_NAME, username))
@@ -770,9 +776,17 @@ class OAuth2Helper:
                          'otherwise, if authentication fails, please double-check this value is correct')
 
         current_time = int(time.time())
+        state = secrets.token_urlsafe(16)
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
+
+        code_verifier = None
+        code_challenge = None
+        if client_secret == 'pkce':  # special value to enable PKCE code challenge
+            code_verifier = OAuth2Helper.generate_code_verifier()
+            code_challenge = OAuth2Helper.generate_code_challenge(code_verifier)
+            client_secret = None
 
         # try reloading remotely cached tokens if possible
         if not access_token and CACHE_STORE != CONFIG_FILE_PATH and reload_remote_accounts:
@@ -833,7 +847,8 @@ class OAuth2Helper:
                     try:
                         jwt_now = datetime.datetime.now(datetime.timezone.utc)
                         jwt_certificate_fingerprint = x509.load_pem_x509_certificate(
-                            pathlib.Path(jwt_certificate_path).read_bytes()).fingerprint(hashes.SHA256())
+                            pathlib.Path(jwt_certificate_path).read_bytes(),
+                            backend=default_backend()).fingerprint(hashes.SHA256())
                         jwt_client_assertion = jwt.encode(
                             {
                                 'aud': token_url,
@@ -862,7 +877,7 @@ class OAuth2Helper:
 
                         access_token = response['access_token']
                         config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                        config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+                        config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
                         if 'refresh_token' in response:
                             config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
                         AppConfig.save()
@@ -886,7 +901,8 @@ class OAuth2Helper:
                         oauth2_flow = 'authorization_code'
 
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
-                                                                                  client_id, oauth2_scope, username)
+                                                                                  client_id, oauth2_scope, username,
+                                                                                  state, code_challenge)
 
                     # note: get_oauth2_authorisation_code is a blocking call (waiting on user to provide code)
                     success, auth_result = OAuth2Helper.get_oauth2_authorisation_code(permission_url, redirect_uri,
@@ -906,8 +922,8 @@ class OAuth2Helper:
                 # note: get_oauth2_authorisation_tokens may be a blocking call (DAG flow retries until user code entry)
                 response = OAuth2Helper.get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id,
                                                                         client_secret, jwt_client_assertion,
-                                                                        auth_result, oauth2_scope, oauth2_flow,
-                                                                        username, password)
+                                                                        auth_result, oauth2_scope, oauth2_resource,
+                                                                        oauth2_flow, username, password, code_verifier)
 
                 if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
                     if client_secret:
@@ -923,7 +939,13 @@ class OAuth2Helper:
                 config.set(username, 'token_salt', cryptographer.salt)
                 config.set(username, 'token_iterations', str(cryptographer.iterations))
                 config.set(username, 'access_token', cryptographer.encrypt(access_token))
-                config.set(username, 'access_token_expiry', str(current_time + response['expires_in']))
+
+                if 'expires_in' in response:
+                    config.set(username, 'access_token_expiry', str(current_time + int(response['expires_in'])))
+                else:
+                    Log.info('Warning: no token expiry time returned for', username, '- defaulting to',
+                             TOKEN_LIFETIME, 'seconds')
+                    config.set(username, 'access_token_expiry', str(current_time + TOKEN_LIFETIME))
 
                 if 'refresh_token' in response:
                     config.set(username, 'refresh_token', cryptographer.encrypt(response['refresh_token']))
@@ -986,6 +1008,8 @@ class OAuth2Helper:
             # and will work from the next request; however, please report an issue if you encounter problems here
             Log.info('Caught exception while requesting OAuth 2.0 credentials for account %s:' % username,
                      Log.error_string(e))
+            if isinstance(e, json.JSONDecodeError):
+                Log.debug('JSON string that triggered this exception:', e.doc)
             return False, '%s: Login failed for account %s - please check your internet connection and retry' % (
                 APP_NAME, username)
 
@@ -1066,12 +1090,18 @@ class OAuth2Helper:
         RESPONSE_QUEUE.put(token_request)
 
     @staticmethod
-    def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username):
+    def construct_oauth2_permission_url(permission_url, redirect_uri, client_id, scope, username, state,
+                                        code_challenge):
         """Constructs and returns the URL to request permission for this client to access the given scope, hinting
         the username where possible (note that delegated accounts without direct login enabled will need to select the
         'Sign in with another account' option)"""
         params = {'client_id': client_id, 'redirect_uri': redirect_uri, 'scope': scope, 'response_type': 'code',
                   'access_type': 'offline', 'login_hint': username}
+        if state:
+            params['state'] = state
+        if code_challenge:
+            params['code_challenge'] = code_challenge
+            params['code_challenge_method'] = 'S256'
         if not redirect_uri:  # unlike other interactive flows, DAG doesn't involve a (known) final redirect
             del params['redirect_uri']
         param_pairs = ['%s=%s' % (param, OAuth2Helper.oauth2_url_escape(value)) for param, value in params.items()]
@@ -1120,10 +1150,12 @@ class OAuth2Helper:
                 REQUEST_QUEUE.put(token_request)  # re-insert the request as expired so the parent app can remove it
                 return False, 'Authorisation request timed out'
 
+            # noinspection PyUnboundLocalVariable
             if data is QUEUE_SENTINEL:  # app is closing
                 response_queue_reference.put(QUEUE_SENTINEL)  # make sure all watchers exit
                 return False, '%s is shutting down' % APP_NAME
 
+            # noinspection PyUnboundLocalVariable
             if data['permission_url'] == permission_url and data['username'] == username:  # a response meant for us
                 # to improve no-GUI mode we also support the use of a local redirection receiver server or terminal
                 # entry to authenticate; this result is a timeout, wsgi request error/failure, or terminal auth ctrl+c
@@ -1145,6 +1177,7 @@ class OAuth2Helper:
                         response = {str(key): value for key, value in
                                     urllib.parse.parse_qsl(urllib.parse.urlparse(data['response_url']).query)}
                         if 'code' in response and response['code']:
+                            # note: we don't check `state` as it is embedded in `permission_url` which we *do* check
                             authorisation_code = OAuth2Helper.oauth2_url_unescape(response['code'])
                             if authorisation_code:
                                 return True, authorisation_code
@@ -1166,11 +1199,14 @@ class OAuth2Helper:
     @staticmethod
     # pylint: disable-next=too-many-positional-arguments
     def get_oauth2_authorisation_tokens(token_url, redirect_uri, client_id, client_secret, jwt_client_assertion,
-                                        authorisation_result, oauth2_scope, oauth2_flow, username, password):
+                                        authorisation_result, oauth2_scope, oauth2_resource, oauth2_flow, username,
+                                        password, code_verifier):
         """Requests OAuth 2.0 access and refresh tokens from token_url using the given client_id, client_secret,
         authorisation_code and redirect_uri, returning a dict with 'access_token', 'expires_in', and 'refresh_token'
         on success, or throwing an exception on failure (e.g., HTTP 400)"""
-        if oauth2_flow == 'service_account':  # service accounts are slightly different, and are handled separately
+
+        # service accounts are slightly different, and are handled separately
+        if oauth2_flow == 'service_account':
             return OAuth2Helper.get_service_account_authorisation_token(client_id, client_secret, oauth2_scope,
                                                                         username)
 
@@ -1179,6 +1215,10 @@ class OAuth2Helper:
         expires_in = AUTHENTICATION_TIMEOUT
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
+
+            # the code verifier is only used when we don't have a secret (or, rather, the config file secret is `pkce`)
+            if code_verifier:
+                params['code_verifier'] = code_verifier
 
             # certificate credentials are only used when no client secret is provided
             if jwt_client_assertion:
@@ -1196,11 +1236,18 @@ class OAuth2Helper:
             if oauth2_flow == 'device':
                 params['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
                 params['device_code'] = authorisation_result['device_code']
-                expires_in = authorisation_result['expires_in']
+                expires_in = int(authorisation_result['expires_in'])  # unlike code requests, DAG *requires* expires_in
                 authorisation_result['interval'] = authorisation_result.get('interval', 5)  # see RFC 8628, Section 3.2
             elif oauth2_flow == 'password':
                 params['username'] = username
                 params['password'] = password
+                # there is at least one non-standard implementation of ROPCG that uses a resource parameter instead of a
+                # scope (e.g., 21Vianet's version of O365; see GitHub #351) - note that it is not known whether this is
+                # always instead of the scope value or potentially in addition to it, so we only remove if not specified
+                if oauth2_resource:
+                    params['resource'] = oauth2_resource
+                    if not oauth2_scope:
+                        del params['scope']
             if not redirect_uri:
                 del params['redirect_uri']  # redirect_uri is not typically required in non-code flows; remove if empty
 
@@ -1236,7 +1283,6 @@ class OAuth2Helper:
     @staticmethod
     def get_service_account_authorisation_token(key_type, key_path_or_contents, oauth2_scope, username):
         """Requests an authorisation token via a Service Account key (currently Google Cloud only)"""
-        import json
         try:
             import requests  # noqa: F401 - requests is required as the default transport for google-auth
             import google.oauth2.service_account
@@ -1264,7 +1310,7 @@ class OAuth2Helper:
 
         request = google.auth.transport.requests.Request()
         credentials.refresh(request)
-        return {'access_token': credentials.token, 'expires_in': int(credentials.expiry.timestamp() - time.time())}
+        return {'access_token': credentials.token, 'expires_in': credentials.expiry.timestamp() - time.time()}
 
     @staticmethod
     # pylint: disable-next=too-many-positional-arguments
@@ -1286,8 +1332,10 @@ class OAuth2Helper:
                 urllib.request.Request(token_url, data=urllib.parse.urlencode(params).encode('utf-8'),
                                        headers={'User-Agent': APP_NAME}), timeout=AUTHENTICATION_TIMEOUT).read()
             token = json.loads(response)
-            if 'expires_in' in token:  # some servers return integer values as strings - fix expiry values (GitHub #237)
-                token['expires_in'] = int(token['expires_in'])
+
+            # note: some servers return expiry as a string (GitHub #237); others omit this (but we still need to renew)
+            token['expires_in'] = token['expires_in'] if 'expires_in' in token else TOKEN_LIFETIME
+
             return token
 
         except urllib.error.HTTPError as e:
@@ -1341,6 +1389,16 @@ class OAuth2Helper:
         except (ValueError, binascii.Error):
             # ValueError is from incorrect number of arguments; binascii.Error from incorrect encoding
             return '', ''  # no (or invalid) credentials provided
+
+    @staticmethod
+    def generate_code_verifier():
+        # RFC 7636 (4.1): between 43 and 128 characters (inclusive) using only unreserved URI characters (see RFC 3986)
+        return base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b'=').decode('utf-8')
+
+    @staticmethod
+    def generate_code_challenge(verifier):
+        digest = hashlib.sha256(verifier.encode('utf-8')).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('utf-8')
 
 
 class SSLAsyncoreDispatcher(asyncore.dispatcher_with_send):
@@ -2786,8 +2844,8 @@ class App:
                 # proxy's handling of this signal may change in future if other actions are seen as more suitable
                 signal.signal(signal.SIGUSR1, lambda _signum, _fr: self.toggle_debug(Log.get_level() == logging.INFO))
 
-        # certificates are not imported automatically when packaged using pyinstaller - we need certifi
-        if getattr(sys, 'frozen', False):
+        # certificates are not imported automatically when packaged using pyinstaller/nuitka - we need certifi
+        if FROZEN_PACKAGE:
             if ssl.get_default_verify_paths().cafile is None and 'SSL_CERT_FILE' not in os.environ:
                 try:
                     import certifi
@@ -3130,6 +3188,7 @@ class App:
                 plist['Disabled'] = True if 'Disabled' not in plist else not plist['Disabled']
 
             plist['Program'] = start_command[0]
+            # noinspection PyTypeChecker
             plist['ProgramArguments'] = start_command
 
             os.makedirs(PLIST_FILE_PATH.parent, exist_ok=True)
@@ -3196,7 +3255,7 @@ class App:
             python_command = 'pythonw.exe'.join(python_command.rsplit('python.exe', 1))
 
         script_command = [python_command]
-        if not getattr(sys, 'frozen', False):  # no need for the script path if using pyinstaller
+        if not FROZEN_PACKAGE:  # no need for the script path if using pyinstaller/nuitka
             if __package__ is not None:
                 script_command.extend(['-m', APP_SHORT_NAME])
             else:
