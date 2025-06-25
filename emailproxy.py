@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2024 Simon Robinson'
+__copyright__ = 'Copyright (c) 2025 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.6.24'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.6.25'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -761,6 +761,7 @@ class OAuth2Helper:
         client_secret = AppConfig.get_option_with_catch_all_fallback(config, username, 'client_secret')
         client_secret_encrypted = AppConfig.get_option_with_catch_all_fallback(config, username,
                                                                                'client_secret_encrypted')
+        use_pkce = AppConfig.get_option_with_catch_all_fallback(config, username, 'use_pkce', fallback=False)
         jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
@@ -789,13 +790,6 @@ class OAuth2Helper:
         access_token = config.get(username, 'access_token', fallback=None)
         access_token_expiry = config.getint(username, 'access_token_expiry', fallback=current_time)
         refresh_token = config.get(username, 'refresh_token', fallback=None)
-
-        code_verifier = None
-        code_challenge = None
-        if client_secret == 'pkce':  # special value to enable PKCE code challenge
-            code_verifier = OAuth2Helper.generate_code_verifier()
-            code_challenge = OAuth2Helper.generate_code_challenge(code_verifier)
-            client_secret = None
 
         # try reloading remotely cached tokens if possible
         if not access_token and CACHE_STORE != CONFIG_FILE_PATH and reload_remote_accounts:
@@ -905,9 +899,16 @@ class OAuth2Helper:
 
             if not access_token:
                 auth_result = None
+                code_verifier = None
+                code_challenge = None
+
                 if permission_url:  # O365 CCG/ROPCG and Google service accounts skip authorisation; no permission_url
                     if oauth2_flow != 'device':  # the device flow is a poll-based method with asynchronous interaction
                         oauth2_flow = 'authorization_code'
+
+                    if oauth2_flow == 'authorization_code' and use_pkce:
+                        code_verifier = OAuth2Helper.generate_code_verifier()
+                        code_challenge = OAuth2Helper.generate_code_challenge(code_verifier)
 
                     permission_url = OAuth2Helper.construct_oauth2_permission_url(permission_url, redirect_uri,
                                                                                   client_id, oauth2_scope, username,
@@ -1108,7 +1109,7 @@ class OAuth2Helper:
                   'access_type': 'offline', 'login_hint': username}
         if state:
             params['state'] = state
-        if code_challenge:
+        if code_challenge:  # PKCE; see RFC 7636
             params['code_challenge'] = code_challenge
             params['code_challenge_method'] = 'S256'
         if not redirect_uri:  # unlike other interactive flows, DAG doesn't involve a (known) final redirect
@@ -1222,12 +1223,12 @@ class OAuth2Helper:
         params = {'client_id': client_id, 'client_secret': client_secret, 'code': authorisation_result,
                   'redirect_uri': redirect_uri, 'grant_type': oauth2_flow}
         expires_in = AUTHENTICATION_TIMEOUT
+
+        if code_verifier:
+            params['code_verifier'] = code_verifier  # PKCE; see RFC 7636
+
         if not client_secret:
             del params['client_secret']  # client secret can be optional for O365, but we don't want a None entry
-
-            # the code verifier is only used when we don't have a secret (or, rather, the config file secret is `pkce`)
-            if code_verifier:
-                params['code_verifier'] = code_verifier
 
             # certificate credentials are only used when no client secret is provided
             if jwt_client_assertion:
