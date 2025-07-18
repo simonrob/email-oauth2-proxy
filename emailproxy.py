@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2025 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.6.25'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.7.18'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -2163,8 +2163,8 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
             updated_response = re.sub('( AUTH=%s)+' % capability, ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
             if not re.search(' AUTH=PLAIN', updated_response, re.IGNORECASE):
                 # cannot just replace e.g., one 'CAPABILITY ' match because IMAP4 must be first if present (RFC 1730)
-                updated_response = re.sub('(CAPABILITY)( IMAP%s)?' % capability, r'\1\2 AUTH=PLAIN', updated_response,
-                                          count=1, flags=re.IGNORECASE)
+                updated_response = re.sub('(CAPABILITY)((?: IMAP%s)*)' % capability, r'\1\2 AUTH=PLAIN',
+                                          updated_response, count=1, flags=re.IGNORECASE)
             updated_response = updated_response.replace(' AUTH=PLAIN', '', updated_response.count(' AUTH=PLAIN') - 1)
             if not re.search(' SASL-IR', updated_response, re.IGNORECASE):
                 updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
