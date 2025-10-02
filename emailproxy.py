@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2025 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.7.18'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.10.2'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -2313,12 +2313,12 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             updated_response = re.sub(r'250([ -])AUTH(?: [A-Z\d_-]{1,20})+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = re.sub(r'250([ -])STARTTLS(?:\r\n)?', r'', updated_response, flags=re.IGNORECASE)
+            self.ehlo_response += '%s\r\n' % updated_response if updated_response else ''
             if ehlo_end and self.ehlo.lower().startswith(b'ehlo'):
                 if 'AUTH PLAIN LOGIN' not in self.ehlo_response:
                     self.ehlo_response += '250-AUTH PLAIN LOGIN\r\n'
                 if self.custom_configuration['local_starttls'] and not self.client_connection.ssl_connection:
                     self.ehlo_response += '250-STARTTLS\r\n'  # we always remove STARTTLS; re-add if permitted
-            self.ehlo_response += '%s\r\n' % updated_response if updated_response else ''
 
             if ehlo_end:
                 self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.PENDING
