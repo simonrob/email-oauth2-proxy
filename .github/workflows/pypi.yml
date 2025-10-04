@@ -13,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
 
@@ -57,7 +57,7 @@ jobs:
             ./dist/*.whl
 
       # append the built packages to the latest release
-      - uses: xresloader/upload-to-github-release@v1
+      - uses: xresloader/upload-to-github-release@v1.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

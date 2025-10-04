@@ -15,7 +15,7 @@ jobs:
       output: ${{ steps.latest_tag.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: latest_tag
         run: |
             git fetch -a
@@ -31,15 +31,15 @@ jobs:
         os: [macos-latest, windows-latest]
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
 
       # install requirements
       # - note: `imageio` is required here to convert our PNG icon to a format nuitka can handle (nuitka itself is a separate action)
       # - note: `certifi` is required here because pyinstaller no longer bundles certificates (pyinstaller #7229)
-      # - note: `boto3`, `requests`, `google-auth` and corresponding pyinstaller hidden imports / nuitka included 
+      # - note: `boto3`, `requests`, `google-auth` and corresponding pyinstaller hidden imports / nuitka included
       #         packages are so that advanced proxy features work in pre-built binaries
       # - note: `--hidden-import timeago.locales.en_short` is required for GUI mode until `timeago` #40 is fixed
       - run: |
@@ -77,7 +77,7 @@ jobs:
           filename: emailproxy-${{ needs.get_tag.outputs.output }}_pyinstaller-${{ runner.os }}.zip
 
       # append the pyinstaller zip to the latest release
-      - uses: xresloader/upload-to-github-release@v1.6.0
+      - uses: xresloader/upload-to-github-release@v1.6.1
         with:
           file: dist/*.zip
           update_latest_release: true
@@ -89,6 +89,7 @@ jobs:
             move emailproxy.py _.py
             echo '# nuitka-project-if: {OS} in ("Windows"):' >> _.txt
             echo '#    nuitka-project: --windows-icon-from-ico=icon.png' >> _.txt
+            echo '#    nuitka-project: --windows-console-mode=disable' >> _.txt
             echo '# nuitka-project-if: {OS} == "Darwin":' >> _.txt
             echo '#    nuitka-project: --macos-app-icon=icon.png' >> _.txt
             move _.txt emailproxy.py
@@ -108,7 +109,7 @@ jobs:
                           google
                           jwt
           nofollow-import-to: '*.tests'
-      
+
       # replace previous build files (-f vs. -fo behaviour differences mean we can't combine); add macOS quarantine tips
       - if: runner.os == 'macOS'
         run: |
@@ -130,7 +131,7 @@ jobs:
           filename: emailproxy-${{ needs.get_tag.outputs.output }}_nuitka-${{ runner.os }}.zip
 
       # append the nuitka zip to the latest release
-      - uses: xresloader/upload-to-github-release@v1.6.0
+      - uses: xresloader/upload-to-github-release@v1.6.1
         with:
           file: dist/*.zip
           update_latest_release: true

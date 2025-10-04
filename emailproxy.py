@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2025 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.6.25'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.10.4'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -2163,8 +2163,8 @@ class IMAPOAuth2ServerConnection(OAuth2ServerConnection):
             updated_response = re.sub('( AUTH=%s)+' % capability, ' AUTH=PLAIN', str_response, flags=re.IGNORECASE)
             if not re.search(' AUTH=PLAIN', updated_response, re.IGNORECASE):
                 # cannot just replace e.g., one 'CAPABILITY ' match because IMAP4 must be first if present (RFC 1730)
-                updated_response = re.sub('(CAPABILITY)( IMAP%s)?' % capability, r'\1\2 AUTH=PLAIN', updated_response,
-                                          count=1, flags=re.IGNORECASE)
+                updated_response = re.sub('(CAPABILITY)((?: IMAP%s)*)' % capability, r'\1\2 AUTH=PLAIN',
+                                          updated_response, count=1, flags=re.IGNORECASE)
             updated_response = updated_response.replace(' AUTH=PLAIN', '', updated_response.count(' AUTH=PLAIN') - 1)
             if not re.search(' SASL-IR', updated_response, re.IGNORECASE):
                 updated_response = updated_response.replace(' AUTH=PLAIN', ' AUTH=PLAIN SASL-IR')
@@ -2313,11 +2313,6 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
             updated_response = re.sub(r'250([ -])AUTH(?: [A-Z\d_-]{1,20})+', r'250\1AUTH PLAIN LOGIN', str_data,
                                       flags=re.IGNORECASE)
             updated_response = re.sub(r'250([ -])STARTTLS(?:\r\n)?', r'', updated_response, flags=re.IGNORECASE)
-            if ehlo_end and self.ehlo.lower().startswith(b'ehlo'):
-                if 'AUTH PLAIN LOGIN' not in self.ehlo_response:
-                    self.ehlo_response += '250-AUTH PLAIN LOGIN\r\n'
-                if self.custom_configuration['local_starttls'] and not self.client_connection.ssl_connection:
-                    self.ehlo_response += '250-STARTTLS\r\n'  # we always remove STARTTLS; re-add if permitted
             self.ehlo_response += '%s\r\n' % updated_response if updated_response else ''
 
             if ehlo_end:
@@ -2327,10 +2322,19 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                     self.starttls_state = self.STARTTLS.NEGOTIATING
 
                 elif self.starttls_state is self.STARTTLS.COMPLETE:
-                    # we replay the original EHLO response to the client after server STARTTLS completes
-                    split_response = self.ehlo_response.split('\r\n')
-                    split_response[-1] = split_response[-1].replace('250-', '250 ')  # fix last item if modified
-                    super().process_data('\r\n'.join(split_response).encode('utf-8'))
+                    # we modify and replay the original EHLO response to the client after server STARTTLS completes
+                    self.ehlo_response = self.ehlo_response.rstrip('\r\n')
+                    if self.ehlo.lower().startswith(b'ehlo'):
+                        if 'AUTH PLAIN LOGIN' not in self.ehlo_response:
+                            self.ehlo_response += '\r\n250-AUTH PLAIN LOGIN'
+                        if self.custom_configuration['local_starttls'] and not self.client_connection.ssl_connection:
+                            self.ehlo_response += '\r\n250-STARTTLS'  # we always remove STARTTLS; re-add if permitted
+
+                        # correct the last line where needed (250- vs 250 )
+                        self.ehlo_response = self.ehlo_response.replace('\r\n250 ', '\r\n250-')
+                        self.ehlo_response = '250 '.join(self.ehlo_response.rsplit('250-', 1))
+
+                    super().process_data(b'%s\r\n' % self.ehlo_response.encode('utf-8'))
                     self.ehlo = None  # only clear on completion - we need to use for any repeat calls
                 self.ehlo_response = ''
 
