@@ -4,13 +4,9 @@ Transparently add OAuth 2.0 support to IMAP/POP/SMTP client applications, script
 <div align="center">
   <br><strong>Email OAuth 2.0 Proxy is sponsored by</strong><br><br>
   <a href="https://auth-email.com/?ref=emailproxy">
-    <picture>
-      <source width="300" media="(prefers-color-scheme: dark)" srcset="https://auth-email.com/static/img/logo-full-dark.svg">
-      <source width="300" media="(prefers-color-scheme: light)" srcset="https://auth-email.com/static/img/logo-full-light.svg">
-      <img width="300" src="https://auth-email.com/static/img/logo-full.png" alt="Auth-Email.com logo">
-    </picture><br>
-    <b>Email OAuth made simple</b><br>
-    <sup>Use any app, client or device to access your OAuth mail accounts with ease.</sup>
+    <img width="300" fetchpriority="high" src="https://auth-email.com/static/img/logo-providers.svg" alt="Auth-Email.com logo and supported mail providers"><br>
+    <b>Auth-Email.com – email OAuth made easy</b><br>
+    <sup>Send and receive from <i>any</i> account with <i>every</i> email client, app or device.</sup>
   </a><br><br>
 </div>
 
@@ -24,7 +20,7 @@ It can be used with any email provider that supports OAuth 2.0 authentication, i
 
 ### Example use-cases<a id="example-use-cases"></a>
 - You need to use an Office 365 email account, but don't get on with Outlook.
-The email client you like doesn't support OAuth 2.0, which became mandatory [in January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437) ([September 2024 for personal Hotmail/Outlook accounts](https://support.microsoft.com/en-us/office/modern-authentication-methods-now-needed-to-continue-syncing-outlook-email-in-non-microsoft-email-apps-c5d65390-9676-4763-b41f-d7986499a90d); [September 2025 for O365 SMTP](https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-online-to-retire-basic-auth-for-client-submission-smtp/ba-p/4114750)).
+The email client you like doesn't support OAuth 2.0, which became mandatory for IMAP/POP [in January 2023](https://techcommunity.microsoft.com/t5/exchange-team-blog/basic-authentication-deprecation-in-exchange-online-september/ba-p/3609437) ([September 2024 for personal Hotmail/Outlook accounts](https://support.microsoft.com/en-us/office/modern-authentication-methods-now-needed-to-continue-syncing-outlook-email-in-non-microsoft-email-apps-c5d65390-9676-4763-b41f-d7986499a90d); [April 2026 for O365 SMTP](https://techcommunity.microsoft.com/t5/exchange-team-blog/exchange-online-to-retire-basic-auth-for-client-submission-smtp/ba-p/4114750)).
 - You used to use Gmail via IMAP/POP/SMTP with your raw account credentials (i.e., your real password), but cannot do this now that Google has disabled this method, and don't want to use an [App Password](https://support.google.com/accounts/answer/185833) (or cannot enable this option).
 - You have an account already set up in an email client, and you need to switch it to OAuth 2.0 authentication.
 You can edit the server details, but the client forces you to delete and re-add the account to enable OAuth 2.0, and you don't want to do this.
@@ -245,7 +241,7 @@ See the [documentation and examples](https://github.com/simonrob/email-oauth2-pr
 ## Potential improvements (pull requests welcome)<a id="potential-improvements-pull-requests-welcome"></a>
 - Full feature parity on different platforms (e.g., live menu updating; monitoring network status; clickable notifications)
 - Switch to asyncio? (with Python 3.12, [PEP 594](https://peps.python.org/pep-0594/) removed the asyncore package that the proxy is built upon – currently mitigated by the use of [pyasyncore](https://pypi.org/project/pyasyncore/))
-- Remote STARTTLS for IMAP/POP?
+- Local and/or remote STARTTLS for IMAP/POP?
 
 
 ## Related projects and alternatives<a id="related-projects-and-alternatives"></a>
