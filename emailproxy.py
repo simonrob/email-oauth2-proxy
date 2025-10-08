@@ -1132,7 +1132,7 @@ class OAuth2Helper:
             success, device_grant_result, permission_url, user_code = OAuth2Helper.start_device_authorisation_grant(
                 permission_url)
             if not success:
-                return device_grant_result
+                return False, device_grant_result
 
         token_request = {'permission_url': permission_url, 'user_code': user_code, 'redirect_uri': redirect_uri,
                          'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
