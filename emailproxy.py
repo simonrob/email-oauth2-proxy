@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2025 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.10.4'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2025.10.8'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -1132,7 +1132,7 @@ class OAuth2Helper:
             success, device_grant_result, permission_url, user_code = OAuth2Helper.start_device_authorisation_grant(
                 permission_url)
             if not success:
-                return device_grant_result
+                return False, device_grant_result
 
         token_request = {'permission_url': permission_url, 'user_code': user_code, 'redirect_uri': redirect_uri,
                          'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
