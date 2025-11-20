@@ -8,7 +8,7 @@ import re
 import plugins.IMAPMessageEditor
 
 LINK_MATCHER = re.compile(
-    br'<a(?P<pre_attr>.+?)href="(?P<prefix>https?://)(?P<url>[^"]+)"(?P<post_attr>[^>]*?)>\s*http(?P<text>.*?)</a>',
+    br'<a(?P<pre_attr>.+?)href="(?P<prefix>https?://)(?P<url>[^"]+)"(?P<post_attr>[^>]*?)>\s*http(?P<text>[^<]*).*</a>',
     flags=re.IGNORECASE | re.MULTILINE)
 
 DESTINATION_MAX_LENGTH = 0  # for the original link display, how many characters after the domain to show (-1 = all)
@@ -34,7 +34,7 @@ class IMAPLinkDestinationRevealer(plugins.IMAPMessageEditor.IMAPMessageEditor):
             if self.normalise_url(href_url) != self.normalise_url(text_url):
                 parts = link_url.split(b'/', 1)
                 truncated = b'%s%s' % (link_prefix, parts[0])
-                if len(parts) > 0:
+                if len(parts) > 1:
                     truncated = (b'%s/%s...' % (
                         truncated, parts[1][:DESTINATION_MAX_LENGTH])) if 0 <= DESTINATION_MAX_LENGTH < len(
                         parts[1]) else b'%s/%s' % (truncated, parts[1])
