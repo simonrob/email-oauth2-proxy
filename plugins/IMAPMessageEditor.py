@@ -137,8 +137,12 @@ class IMAPMessageEditor(plugins.BasePlugin.BasePlugin):
                 original_part_decoded = base64.decodebytes(byte_part)
                 is_base64 = base64.encodebytes(original_part_decoded) == byte_part.replace(b'\r\n', b'\n')
                 if is_base64:
+                    # binary data should always be ignored
+                    if b'\x00\x00' in original_part_decoded:
+                        return False, byte_part
+
                     # very likely to be an attachment - ignore (note: we cannot always detect text attachments...)
-                    if b'BODY[2]' in self.fetch_command or b'\x00\x00' in original_part_decoded:
+                    if b'BODY[2]' in self.fetch_command:
                         # as a backup, guess at HTML and permit if detected content is 30% or more of the message length
                         # (note: this will also operate on matching HTML *attachments*, but that is hopefully rare...)
                         is_html = re.findall(HTML_MATCH_PATTERN, original_part_decoded)
