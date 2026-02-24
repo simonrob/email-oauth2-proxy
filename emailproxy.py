@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2025 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.10.14'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.02.24'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -815,7 +815,8 @@ class OAuth2Helper:
                             APP_NAME, username)
                 else:
                     Log.info('Warning: found both `client_secret_encrypted` and `client_secret` for account', username,
-                             '- the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+                             '- the un-encrypted value will be used, and the encrypted value will be overwritten after',
+                             'OAuth token retrieval. Removing the un-encrypted value is recommended')
 
             # O365 certificate credentials - see: learn.microsoft.com/entra/identity-platform/certificate-credentials
             jwt_client_assertion = None
@@ -868,6 +869,12 @@ class OAuth2Helper:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
                                                                             jwt_client_assertion, username,
                                                                             cryptographer.decrypt(refresh_token))
+
+                        if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False) and client_secret:
+                            # see GitHub #407 discussion - tokens aren't always expired on secret change, so we encrypt
+                            # even on refresh (still avoiding potential issue with catch-all accounts as discussed below)
+                            config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
+                            config.remove_option(username, 'client_secret')
 
                         access_token = response['access_token']
                         config.set(username, 'access_token', cryptographer.encrypt(access_token))
@@ -926,12 +933,11 @@ class OAuth2Helper:
                                                                         auth_result, oauth2_scope, oauth2_resource,
                                                                         oauth2_flow, username, password, code_verifier)
 
-                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
-                    if client_secret:
-                        # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when
-                        # using `encrypt_client_secret_on_first_use` with the `allow_catch_all_accounts` option
-                        config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
-                        config.remove_option(username, 'client_secret')
+                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False) and client_secret:
+                    # note: we save to the `username` entry even if `user_domain` exists, avoiding the risk of conflicts
+                    # when using `encrypt_client_secret_on_first_use` with the `allow_catch_all_accounts` option
+                    config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
+                    config.remove_option(username, 'client_secret')
 
                 access_token = response['access_token']
                 if username not in config.sections():
