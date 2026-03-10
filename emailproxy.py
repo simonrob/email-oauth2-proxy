@@ -270,7 +270,7 @@ class Log:
     _LOGGER = None
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
-    _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
+    _SYSLOG_MESSAGE_FORMAT = '%s %%(message)s' % APP_SHORT_NAME
     _MACOS_USE_SYSLOG = False
 
     @staticmethod
