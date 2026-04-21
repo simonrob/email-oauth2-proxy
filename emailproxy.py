@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2025 Simon Robinson'
+__copyright__ = 'Copyright (c) 2026 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2025.10.4'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.04.21'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -52,7 +52,7 @@ import zlib
 
 # asyncore is essential, but has been deprecated and will be removed in python 3.12 (see PEP 594)
 # pyasyncore is our workaround, so suppress this warning until the proxy is rewritten in, e.g., asyncio
-with warnings.catch_warnings():
+with warnings.catch_warnings(record=False):
     warnings.simplefilter('ignore', DeprecationWarning)
     import asyncore
 
@@ -178,10 +178,10 @@ CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
 FROZEN_PACKAGE = getattr(sys, 'frozen', False) or '__compiled__' in globals()  # for pyinstaller/nuitka etc
-script_path = sys.executable if FROZEN_PACKAGE else os.path.realpath(__file__)
+script_path = sys.executable if FROZEN_PACKAGE else str(os.path.realpath(__file__))
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     if float('.'.join(platform.mac_ver()[0].split('.')[:2])) >= 10.12:  # need a known path (due to App Translocation)
-        script_path = pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser()
+        script_path = str(pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser())
     else:
         script_path = '.'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
 script_path = os.getcwd() if __package__ is not None else os.path.dirname(script_path)  # for packaged version (PyPI)
@@ -273,17 +273,16 @@ class Log:
     _LOGGER = None
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
-    _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
     _MACOS_USE_SYSLOG = False
 
     @staticmethod
     def initialise(log_file=None):
-        Log._LOGGER = logging.getLogger(APP_NAME)
+        Log._LOGGER = logging.getLogger(APP_SHORT_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
                 log_file or os.path.join(os.getcwd() if __package__ is not None else
                                          os.path.dirname(sys.executable if FROZEN_PACKAGE else
-                                                         os.path.realpath(__file__)), '%s.log' % APP_SHORT_NAME),
+                                                         str(os.path.realpath(__file__))), '%s.log' % APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
 
@@ -293,7 +292,6 @@ class Log:
             Log._MACOS_USE_SYSLOG = not pyoslog.is_supported()
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
                 handler = logging.handlers.SysLogHandler(address='/var/run/syslog')
-                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:  # unified logging in 10.12+
                 handler = pyoslog.Handler()
                 handler.setSubsystem(APP_PACKAGE)
@@ -301,7 +299,6 @@ class Log:
         else:
             if os.path.exists('/dev/log'):
                 handler = logging.handlers.SysLogHandler(address='/dev/log')
-                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:
                 handler = logging.StreamHandler()
 
@@ -328,7 +325,8 @@ class Log:
         if len(message) > 2048 and (sys.platform not in ['win32', 'darwin'] or Log._MACOS_USE_SYSLOG):
             truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run `%s' \
                                  ' --debug` in a terminal to see the full output ] ' % os.path.basename(__file__)
-            message = message[0:2048 - len(Log._SYSLOG_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
+            # 9 = max length of Logging.BASIC_FORMAT: "WARNING:[APP_SHORT_NAME]:" (we don't use critical)
+            message = message[0:2048 - len(APP_SHORT_NAME) - 9 - len(truncation_message)] + truncation_message
 
         # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
         severity = Log._LOGGER.warning if Log._MACOS_USE_SYSLOG else level_method
@@ -693,6 +691,7 @@ class Cryptographer:
 
     @property
     def salt(self):
+        # noinspection PyTypeChecker
         return base64.b64encode(self._salt).decode('utf-8')
 
     @property
@@ -824,7 +823,8 @@ class OAuth2Helper:
                             APP_NAME, username)
                 else:
                     Log.info('Warning: found both `client_secret_encrypted` and `client_secret` for account', username,
-                             '- the un-encrypted value will be used. Removing the un-encrypted value is recommended')
+                             '- the un-encrypted value will be used, and the encrypted value will be overwritten after',
+                             'OAuth token retrieval. Removing the un-encrypted value is recommended')
 
             # O365 certificate credentials - see: learn.microsoft.com/entra/identity-platform/certificate-credentials
             jwt_client_assertion = None
@@ -877,6 +877,12 @@ class OAuth2Helper:
                         response = OAuth2Helper.refresh_oauth2_access_token(token_url, client_id, client_secret,
                                                                             jwt_client_assertion, username,
                                                                             cryptographer.decrypt(refresh_token))
+
+                        if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False) and client_secret:
+                            # see GitHub #407 discussion - tokens aren't always expired on secret change, so we encrypt
+                            # even on refresh (still avoiding potential issue with catch-all accounts as discussed below)
+                            config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
+                            config.remove_option(username, 'client_secret')
 
                         access_token = response['access_token']
                         config.set(username, 'access_token', cryptographer.encrypt(access_token))
@@ -935,12 +941,11 @@ class OAuth2Helper:
                                                                         auth_result, oauth2_scope, oauth2_resource,
                                                                         oauth2_flow, username, password, code_verifier)
 
-                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False):
-                    if client_secret:
-                        # note: save to the `username` entry even if `user_domain` exists, avoiding conflicts when
-                        # using `encrypt_client_secret_on_first_use` with the `allow_catch_all_accounts` option
-                        config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
-                        config.remove_option(username, 'client_secret')
+                if AppConfig.get_global('encrypt_client_secret_on_first_use', fallback=False) and client_secret:
+                    # note: we save to the `username` entry even if `user_domain` exists, avoiding the risk of conflicts
+                    # when using `encrypt_client_secret_on_first_use` with the `allow_catch_all_accounts` option
+                    config.set(username, 'client_secret_encrypted', cryptographer.encrypt(client_secret))
+                    config.remove_option(username, 'client_secret')
 
                 access_token = response['access_token']
                 if username not in config.sections():
@@ -1141,7 +1146,7 @@ class OAuth2Helper:
             success, device_grant_result, permission_url, user_code = OAuth2Helper.start_device_authorisation_grant(
                 permission_url)
             if not success:
-                return device_grant_result
+                return False, device_grant_result
 
         token_request = {'permission_url': permission_url, 'user_code': user_code, 'redirect_uri': redirect_uri,
                          'redirect_listen_address': redirect_listen_address, 'username': username, 'expired': False}
@@ -2831,7 +2836,7 @@ class App:
         if self.args.gui and len(MISSING_GUI_REQUIREMENTS) > 0:
             Log.error('Unable to load all GUI requirements:', MISSING_GUI_REQUIREMENTS, '- did you mean to run in',
                       '`--no-gui` mode? If not, please run `python -m pip install -r requirements-gui.txt` or install',
-                      'from PyPI with GUI requirements included: `python -m pip install emailproxy[gui]`')
+                      'from PyPI with GUI requirements included: `python -m pip install "emailproxy[gui]"`')
             self.exit(None)
             return
 
@@ -3134,8 +3139,8 @@ class App:
                     else:
                         # on Windows, most pywebview engine options return None for get_current_url() on pages created
                         # using 'html=' even on redirection to an actual URL; 'mshtml', though archaic, does work
-                        forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
-                        webview.start(gui=forced_gui, debug=Log.get_level() == logging.DEBUG)
+                        webview.start(gui='mshtml' if sys.platform == 'win32' and self.args.external_auth else None,
+                                      debug=Log.get_level() == logging.DEBUG)
                 else:
                     self.macos_web_view_queue.put(request)  # future requests need to use the same thread
                 return
@@ -3332,7 +3337,7 @@ class App:
             if __package__ is not None:
                 script_command.extend(['-m', APP_SHORT_NAME])
             else:
-                script_command.append(os.path.realpath(__file__))
+                script_command.append(str(os.path.realpath(__file__)))
 
         # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
         script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
