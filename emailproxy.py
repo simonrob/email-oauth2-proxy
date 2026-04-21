@@ -49,7 +49,7 @@ import zlib
 
 # asyncore is essential, but has been deprecated and will be removed in python 3.12 (see PEP 594)
 # pyasyncore is our workaround, so suppress this warning until the proxy is rewritten in, e.g., asyncio
-with warnings.catch_warnings():
+with warnings.catch_warnings(record=False):
     warnings.simplefilter('ignore', DeprecationWarning)
     import asyncore
 
@@ -175,10 +175,10 @@ CENSOR_CREDENTIALS = True
 CENSOR_MESSAGE = b'[[ Credentials removed from proxy log ]]'  # replaces actual credentials; must be a byte-type string
 
 FROZEN_PACKAGE = getattr(sys, 'frozen', False) or '__compiled__' in globals()  # for pyinstaller/nuitka etc
-script_path = sys.executable if FROZEN_PACKAGE else os.path.realpath(__file__)
+script_path = sys.executable if FROZEN_PACKAGE else str(os.path.realpath(__file__))
 if sys.platform == 'darwin' and '.app/Contents/MacOS/' in script_path:  # pyinstaller .app binary is within the bundle
     if float('.'.join(platform.mac_ver()[0].split('.')[:2])) >= 10.12:  # need a known path (due to App Translocation)
-        script_path = pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser()
+        script_path = str(pathlib.Path('~/.%s/%s' % (APP_SHORT_NAME, APP_SHORT_NAME)).expanduser())
     else:
         script_path = '.'.join(script_path.split('Contents/MacOS/')[0].split('/')[:-1])
 script_path = os.getcwd() if __package__ is not None else os.path.dirname(script_path)  # for packaged version (PyPI)
@@ -279,7 +279,7 @@ class Log:
             handler = logging.handlers.RotatingFileHandler(
                 log_file or os.path.join(os.getcwd() if __package__ is not None else
                                          os.path.dirname(sys.executable if FROZEN_PACKAGE else
-                                                         os.path.realpath(__file__)), '%s.log' % APP_SHORT_NAME),
+                                                         str(os.path.realpath(__file__))), '%s.log' % APP_SHORT_NAME),
                 maxBytes=LOG_FILE_MAX_SIZE, backupCount=LOG_FILE_MAX_BACKUPS)
             handler.setFormatter(logging.Formatter('%(asctime)s: %(message)s'))
 
@@ -682,6 +682,7 @@ class Cryptographer:
 
     @property
     def salt(self):
+        # noinspection PyTypeChecker
         return base64.b64encode(self._salt).decode('utf-8')
 
     @property
@@ -3070,8 +3071,8 @@ class App:
                     else:
                         # on Windows, most pywebview engine options return None for get_current_url() on pages created
                         # using 'html=' even on redirection to an actual URL; 'mshtml', though archaic, does work
-                        forced_gui = 'mshtml' if sys.platform == 'win32' and self.args.external_auth else None
-                        webview.start(gui=forced_gui, debug=Log.get_level() == logging.DEBUG)
+                        webview.start(gui='mshtml' if sys.platform == 'win32' and self.args.external_auth else None,
+                                      debug=Log.get_level() == logging.DEBUG)
                 else:
                     self.macos_web_view_queue.put(request)  # future requests need to use the same thread
                 return
@@ -3268,7 +3269,7 @@ class App:
             if __package__ is not None:
                 script_command.extend(['-m', APP_SHORT_NAME])
             else:
-                script_command.append(os.path.realpath(__file__))
+                script_command.append(str(os.path.realpath(__file__)))
 
         # preserve any arguments - note that some are configurable in the GUI, so sys.argv may not be their actual state
         script_command.extend(arg for arg in sys.argv[1:] if arg not in ('--debug', '--external-auth'))
