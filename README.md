@@ -177,7 +177,7 @@ This will include all commands to and responses from the server (and also as a r
 
 On macOS this can be viewed using Console.app or `log stream --predicate 'subsystem == "ac.robinson.email-oauth2-proxy"' --level=debug`.
 On Windows a file `emailproxy.log` will be created in the same location as the proxy (see also the `--log-file` option).
-On Linux you can use, for example, `tail -f /var/log/syslog | grep "Email OAuth 2.0 Proxy"`.
+On Linux you can use, for example, `tail -f /var/log/syslog | grep "emailproxy"`.
 
 Please note that debug mode may also result in your login credentials being printed to the log (though this is avoided where possible).
 However, it is worth pointing out that because account authorisation with the remote email server is handled entirely through OAuth 2.0 in a web browser, while the username you set in your email client must be correct, the password used for the local IMAP/POP/SMTP connection to the proxy can be anything you like, and does not need to be the one you actually use to log in to your account (though it must be the same value each time, or you will be asked to re-authenticate repeatedly by the proxy).

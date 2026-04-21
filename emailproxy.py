@@ -4,9 +4,9 @@
 2.0 authentication. Designed for apps/clients that don't support OAuth 2.0 but need to connect to modern servers."""
 
 __author__ = 'Simon Robinson'
-__copyright__ = 'Copyright (c) 2025 Simon Robinson'
+__copyright__ = 'Copyright (c) 2026 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2026.02.24'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.04.21'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -270,12 +270,11 @@ class Log:
     _LOGGER = None
     _HANDLER = None
     _DATE_FORMAT = '%Y-%m-%d %H:%M:%S:'
-    _SYSLOG_MESSAGE_FORMAT = '%s: %%(message)s' % APP_NAME
     _MACOS_USE_SYSLOG = False
 
     @staticmethod
     def initialise(log_file=None):
-        Log._LOGGER = logging.getLogger(APP_NAME)
+        Log._LOGGER = logging.getLogger(APP_SHORT_NAME)
         if log_file or sys.platform == 'win32':
             handler = logging.handlers.RotatingFileHandler(
                 log_file or os.path.join(os.getcwd() if __package__ is not None else
@@ -290,7 +289,6 @@ class Log:
             Log._MACOS_USE_SYSLOG = not pyoslog.is_supported()
             if Log._MACOS_USE_SYSLOG:  # syslog prior to 10.12
                 handler = logging.handlers.SysLogHandler(address='/var/run/syslog')
-                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:  # unified logging in 10.12+
                 handler = pyoslog.Handler()
                 handler.setSubsystem(APP_PACKAGE)
@@ -298,7 +296,6 @@ class Log:
         else:
             if os.path.exists('/dev/log'):
                 handler = logging.handlers.SysLogHandler(address='/dev/log')
-                handler.setFormatter(logging.Formatter(Log._SYSLOG_MESSAGE_FORMAT))
             else:
                 handler = logging.StreamHandler()
 
@@ -325,7 +322,8 @@ class Log:
         if len(message) > 2048 and (sys.platform not in ['win32', 'darwin'] or Log._MACOS_USE_SYSLOG):
             truncation_message = ' [ NOTE: message over syslog length limit truncated to 2048 characters; run `%s' \
                                  ' --debug` in a terminal to see the full output ] ' % os.path.basename(__file__)
-            message = message[0:2048 - len(Log._SYSLOG_MESSAGE_FORMAT) - len(truncation_message)] + truncation_message
+            # 9 = max length of Logging.BASIC_FORMAT: "WARNING:[APP_SHORT_NAME]:" (we don't use critical)
+            message = message[0:2048 - len(APP_SHORT_NAME) - 9 - len(truncation_message)] + truncation_message
 
         # note: need LOG_ALERT (i.e., warning) or higher to show in syslog on macOS
         severity = Log._LOGGER.warning if Log._MACOS_USE_SYSLOG else level_method
