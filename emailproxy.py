@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2026 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2026.04.21'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.07.03'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -2523,6 +2523,7 @@ class OAuth2Proxy(asyncore.dispatcher):
             except Exception:
                 connection_socket.close()
                 if new_server_connection:
+                    # noinspection PyUnresolvedReferences
                     new_server_connection.close()
                 raise
         else:
@@ -3047,6 +3048,7 @@ class App:
                 for account in catch_all_accounts:
                     items.append(pystray.MenuItem('    %s' % account, None, enabled=False))
             if sys.platform != 'darwin':
+                # noinspection PyUnresolvedReferences
                 items.append(pystray.MenuItem('    Refresh activity data', self.icon.update_menu))
         items.append(pystray.Menu.SEPARATOR)
 
@@ -3171,6 +3173,7 @@ class App:
             # noinspection PyUnresolvedReferences
             authorisation_window.loaded += self.authorisation_window_loaded
         else:
+            # noinspection PyUnresolvedReferences
             authorisation_window.events.loaded += self.authorisation_window_loaded
 
     def handle_authorisation_windows(self):
@@ -3194,6 +3197,7 @@ class App:
 
         # also needed only on macOS because otherwise closing the last remaining webview window exits the application
         dummy_window = webview.create_window('%s hidden (dummy) window' % APP_NAME, html='<html></html>', hidden=True)
+        # noinspection PyUnresolvedReferences
         dummy_window.hide()  # hidden=True (above) doesn't seem to work in all cases
 
         while True:
@@ -3231,8 +3235,10 @@ class App:
                 continue  # no requests processed for this window - nothing to do yet
 
             # the DAG flow will not normally have a matching `redirect_uri`; wait for users to close the window manually
+            # noinspection PyUnresolvedReferences
             if not completed_request['user_code']:
                 window.destroy()
+            # noinspection PyUnresolvedReferences
             self.icon.update_menu()
 
             # note that in this part of the interaction we don't actually check the *use* of the authorisation code,
@@ -3240,6 +3246,7 @@ class App:
             # token request then we still send an 'authentication completed' notification here, but in the background
             # we close the connection with a failure message and re-request authorisation next time the client
             # interacts, which may potentially lead to repeated and conflicting (and confusing) notifications - improve?
+            # noinspection PyUnresolvedReferences
             self.notify(APP_NAME, 'Authentication completed for %s' % completed_request['username'])
             if len(self.authorisation_requests) > 0:
                 self.notify(APP_NAME, 'Please authorise your account %s from the menu' % self.authorisation_requests[0][
@@ -3394,6 +3401,7 @@ class App:
         if log_message:
             Log.info('Setting debug mode:', Log.get_level() == logging.DEBUG)
         if hasattr(self, 'icon') and self.icon:
+            # noinspection PyUnresolvedReferences
             self.icon.update_menu()
 
     # noinspection PyUnresolvedReferences
@@ -3461,10 +3469,12 @@ class App:
         server_start_error = False
         for section in servers:
             match = CONFIG_SERVER_MATCHER.match(section)
+            # noinspection PyUnresolvedReferences
             server_type = match.group('type')
 
             # noinspection PyUnboundLocalVariable
             local_address = config.get(section, 'local_address', fallback='::')
+            # noinspection PyUnresolvedReferences
             str_local_port = match.group('port')
             local_port = -1
             try:
@@ -3472,12 +3482,14 @@ class App:
                 if local_port <= 0 or local_port > 65535:
                     raise ValueError
             except ValueError:
+                # noinspection PyUnresolvedReferences
                 Log.error('Error: invalid value', str_local_port, 'for local server port in section', match.string)
                 server_load_error = True
 
             server_address = config.get(section, 'server_address', fallback=None)
             server_port = config.getint(section, 'server_port', fallback=-1)
             if server_port <= 0 or server_port > 65535:
+                # noinspection PyUnresolvedReferences
                 Log.error('Error: invalid value', server_port, 'for remote server port in section', match.string)
                 server_load_error = True
 
@@ -3522,11 +3534,13 @@ class App:
                 custom_configuration['local_starttls'] = config.getboolean(section, 'local_starttls', fallback=False)
                 if custom_configuration['local_starttls'] and not (custom_configuration['local_certificate_path'] and
                                                                    custom_configuration['local_key_path']):
+                    # noinspection PyUnresolvedReferences
                     Log.error('Error: you have set `local_starttls` but did not provide both '
                               '`local_certificate_path` and `local_key_path` values in section', match.string)
                     server_load_error = True
 
             if not server_address:  # all other values are checked, regex matched or have a fallback above
+                # noinspection PyUnresolvedReferences
                 Log.error('Error: remote server address is missing in section', match.string)
                 server_load_error = True
 
@@ -3537,6 +3551,7 @@ class App:
                     new_proxy.start()
                     self.proxies.append(new_proxy)
                 except Exception as e:
+                    # noinspection PyUnresolvedReferences
                     Log.error('Error: unable to start', match.string, 'server:', Log.error_string(e))
                     server_start_error = True
 
