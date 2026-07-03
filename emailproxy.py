@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2026 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2026.07.03'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.7.3'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
