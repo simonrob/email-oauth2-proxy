@@ -67,14 +67,25 @@ no_gui_parser = argparse.ArgumentParser(add_help=False)
 no_gui_parser.add_argument('--no-gui', action='store_false', dest='gui')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if no_gui_args.gui:
-    try:
-        # noinspection PyUnresolvedReferences
-        import pystray  # the menu bar/taskbar GUI
-    except Exception as gui_requirement_import_error:  # see #204 - incomplete pystray installation can throw exceptions
-        MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
-        no_gui_args.gui = False  # we need the dummy implementation
+    if sys.platform.startswith('linux'):
+        try:
+            # noinspection PyUnresolvedReferences
+            import gi
+            gi.require_version('Gtk', '3.0')
+            # noinspection PyUnresolvedReferences
+            from gi.repository import Gtk, GLib, GdkPixbuf
+        except Exception as gui_requirement_import_error:
+            MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+            no_gui_args.gui = False
+    else:
+        try:
+            # noinspection PyUnresolvedReferences
+            import pystray  # the menu bar/taskbar GUI
+        except Exception as gui_requirement_import_error:  # see #204 - incomplete pystray installation can throw exceptions
+            MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
+            no_gui_args.gui = False  # we need the dummy implementation
 
-if not no_gui_args.gui:
+if 'pystray' not in sys.modules:
     class DummyPystray:  # dummy implementation allows initialisation to complete (with skeleton to avoid lint warnings)
         class Icon:
             def __init__(self, *args, **kwargs):
@@ -2696,6 +2707,212 @@ if sys.platform == 'darwin':
             self._status_item.button().setImage_(self._icon_image)
 
 
+if sys.platform.startswith('linux'):
+    # noinspection PyUnresolvedReferences
+    class GtkProxyWindow:
+        """GTK window interface for Linux, replacing pystray tray icon on GNOME/AppIndicator environments."""
+
+        HAS_NOTIFICATION = False
+
+        def __init__(self, app):
+            self.app = app
+            self.visible = False
+            self.window = None
+
+        def run(self, setup_func):
+            self.window = Gtk.Window(title=APP_NAME)
+            self.window.set_default_size(540, 580)
+            self.window.set_position(Gtk.WindowPosition.CENTER)
+            self.window.connect('destroy', lambda w: self.app.exit(self))
+
+            try:
+                icon_buf = io.BytesIO()
+                App.get_image().save(icon_buf, format='PNG')
+                loader = GdkPixbuf.PixbufLoader.new_with_type('png')
+                loader.write(icon_buf.getvalue())
+                loader.close()
+                pixbuf = loader.get_pixbuf()
+                if pixbuf:
+                    self.window.set_icon(pixbuf)
+            except Exception:
+                pass
+
+            self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            self.main_box.set_margin_start(15)
+            self.main_box.set_margin_end(15)
+            self.main_box.set_margin_top(15)
+            self.main_box.set_margin_bottom(15)
+            self.window.add(self.main_box)
+
+            # Header
+            header_label = Gtk.Label()
+            header_label.set_markup('<b><big>%s</big></b> <span color="gray">(v%s)</span>' % (APP_NAME, __version__))
+            header_label.set_xalign(0)
+            self.main_box.pack_start(header_label, False, False, 0)
+
+            # Scrolled container for content
+            self.scrolled = Gtk.ScrolledWindow()
+            self.scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            self.main_box.pack_start(self.scrolled, True, True, 0)
+
+            self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            self.scrolled.add(self.content_box)
+
+            # Bottom Bar (toggles & quit button)
+            self.bottom_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            self.main_box.pack_end(self.bottom_bar, False, False, 0)
+
+            self._rebuild_ui()
+
+            self.window.show_all()
+            self.visible = True
+
+            threading.Thread(target=setup_func, args=(self,), daemon=True).start()
+
+            Gtk.main()
+
+        def update_menu(self):
+            GLib.idle_add(self._rebuild_ui)
+
+        def stop(self):
+            GLib.idle_add(Gtk.main_quit)
+
+        def _rebuild_ui(self):
+            if not self.window:
+                return
+
+            for child in self.content_box.get_children():
+                self.content_box.remove(child)
+
+            for child in self.bottom_bar.get_children():
+                self.bottom_bar.remove(child)
+
+            # 1. Servers Frame
+            frame_servers = Gtk.Frame(label=' Proxy Servers ')
+            box_servers = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            box_servers.set_margin_start(10)
+            box_servers.set_margin_end(10)
+            box_servers.set_margin_top(8)
+            box_servers.set_margin_bottom(8)
+            frame_servers.add(box_servers)
+
+            if len(self.app.proxies) <= 0:
+                lbl_none = Gtk.Label(label='No servers running', xalign=0)
+                box_servers.pack_start(lbl_none, False, False, 0)
+            else:
+                for server_type in ['IMAP', 'POP', 'SMTP']:
+                    proxies_of_type = [p for p in self.app.proxies if p.proxy_type == server_type]
+                    if proxies_of_type:
+                        lbl_type = Gtk.Label(xalign=0)
+                        lbl_type.set_markup('<b>%s servers:</b>' % server_type)
+                        box_servers.pack_start(lbl_type, False, False, 2)
+                        for proxy in proxies_of_type:
+                            srv_text = '    %s  →  %s' % (
+                                Log.format_host_port(proxy.local_address),
+                                Log.format_host_port(proxy.server_address)
+                            )
+                            lbl_proxy = Gtk.Label(label=srv_text, xalign=0)
+                            box_servers.pack_start(lbl_proxy, False, False, 0)
+
+            self.content_box.pack_start(frame_servers, False, False, 0)
+
+            # 2. Accounts Frame
+            frame_accounts = Gtk.Frame(label=' Configured Accounts & Activity ')
+            box_accounts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            box_accounts.set_margin_start(10)
+            box_accounts.set_margin_end(10)
+            box_accounts.set_margin_top(8)
+            box_accounts.set_margin_bottom(8)
+            frame_accounts.add(box_accounts)
+
+            config_accounts = AppConfig.accounts()
+            if len(config_accounts) <= 0:
+                lbl_no_acc = Gtk.Label(label='No accounts configured', xalign=0)
+                box_accounts.pack_start(lbl_no_acc, False, False, 0)
+            else:
+                catch_all_enabled = AppConfig.get_global('allow_catch_all_accounts', fallback=False)
+                catch_all_accounts = []
+                for account in config_accounts:
+                    if account.startswith('@') and catch_all_enabled:
+                        catch_all_accounts.append(account)
+                    else:
+                        activity_str = App.get_last_activity(account).strip()
+                        lbl_acc = Gtk.Label(label=activity_str, xalign=0)
+                        box_accounts.pack_start(lbl_acc, False, False, 0)
+                if catch_all_accounts:
+                    lbl_ca_hdr = Gtk.Label(xalign=0)
+                    lbl_ca_hdr.set_markup('<b>Catch-all accounts:</b>')
+                    box_accounts.pack_start(lbl_ca_hdr, False, False, 2)
+                    for account in catch_all_accounts:
+                        lbl_ca = Gtk.Label(label=account, xalign=0)
+                        box_accounts.pack_start(lbl_ca, False, False, 0)
+
+            acc_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            btn_refresh = Gtk.Button(label='Refresh activity')
+            btn_refresh.connect('clicked', lambda w: self.update_menu())
+            btn_edit_cfg = Gtk.Button(label='Edit config file...')
+            btn_edit_cfg.connect('clicked', lambda w: self.app.system_open(CONFIG_FILE_PATH))
+            btn_reload_cfg = Gtk.Button(label='Reload config file')
+            btn_reload_cfg.connect('clicked', lambda w: self.app.linux_restart(self) if sys.platform.startswith('linux') else self.app.load_and_start_servers(self))
+
+            acc_btn_box.pack_start(btn_refresh, False, False, 0)
+            acc_btn_box.pack_start(btn_edit_cfg, False, False, 0)
+            acc_btn_box.pack_start(btn_reload_cfg, False, False, 0)
+            box_accounts.pack_start(acc_btn_box, False, False, 4)
+
+            self.content_box.pack_start(frame_accounts, False, False, 0)
+
+            # 3. Authorisation Requests Frame
+            frame_auth = Gtk.Frame(label=' Authorisation ')
+            box_auth = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            box_auth.set_margin_start(10)
+            box_auth.set_margin_end(10)
+            box_auth.set_margin_top(8)
+            box_auth.set_margin_bottom(8)
+            frame_auth.add(box_auth)
+
+            if len(self.app.authorisation_requests) <= 0:
+                lbl_no_auth = Gtk.Label(label='No pending authorisation requests', xalign=0)
+                box_auth.pack_start(lbl_no_auth, False, False, 0)
+            else:
+                lbl_pending = Gtk.Label(xalign=0)
+                lbl_pending.set_markup('<b>Pending requests:</b>')
+                box_auth.pack_start(lbl_pending, False, False, 0)
+                usernames = []
+                for request in self.app.authorisation_requests:
+                    if request['username'] not in usernames:
+                        usernames.append(request['username'])
+                        btn_auth = Gtk.Button(label='Authorise %s' % request['username'])
+                        btn_auth.connect('clicked', lambda w, u=request['username']: self.app.authorise_account(None, u))
+                        box_auth.pack_start(btn_auth, False, False, 0)
+
+            chk_ext_auth = Gtk.CheckButton(label='External authorisation mode')
+            chk_ext_auth.set_active(self.app.args.external_auth)
+            chk_ext_auth.connect('toggled', lambda w: self.app.toggle_external_auth())
+            box_auth.pack_start(chk_ext_auth, False, False, 4)
+
+            self.content_box.pack_start(frame_auth, False, False, 0)
+
+            # 4. Bottom Bar Widgets
+            chk_start_login = Gtk.CheckButton(label='Start at login')
+            chk_start_login.set_active(self.app.started_at_login(None))
+            chk_start_login.connect('toggled', lambda w: self.app.toggle_start_at_login(self))
+
+            chk_debug_mode = Gtk.CheckButton(label='Debug mode')
+            chk_debug_mode.set_active(Log.get_level() == logging.DEBUG)
+            chk_debug_mode.connect('toggled', lambda w: self.app.toggle_debug(w.get_active()))
+
+            btn_quit = Gtk.Button(label='Quit %s' % APP_NAME)
+            btn_quit.connect('clicked', lambda w: self.app.exit(self))
+
+            self.bottom_bar.pack_start(chk_start_login, False, False, 0)
+            self.bottom_bar.pack_start(chk_debug_mode, False, False, 0)
+            self.bottom_bar.pack_end(btn_quit, False, False, 0)
+
+            self.content_box.show_all()
+            self.bottom_bar.show_all()
+
+
 class App:
     """Manage the menu bar icon, server loading, authorisation and notifications, and start the main proxy thread"""
 
@@ -2882,6 +3099,9 @@ class App:
 
     # noinspection PyDeprecation
     def create_icon(self):
+        if sys.platform.startswith('linux'):
+            return GtkProxyWindow(self)
+
         # fix pystray <= 0.19.4 incompatibility with PIL 10.0.0+; resolved in 0.19.5 and later via pystray PR #147
         pystray_version = packaging.version.Version(importlib_metadata.version('pystray'))
         pillow_version = packaging.version.Version(importlib_metadata.version('pillow'))
@@ -3187,7 +3407,7 @@ class App:
     def toggle_start_at_login(self, icon, force_rewrite=False):
         # we reuse this function to force-overwrite the startup file when changing the external auth option, but pystray
         # verifies actions have a maximum of two parameters (_assert_action()), so we must use 'item' and check its type
-        recreate_login_file = False if isinstance(force_rewrite, pystray.MenuItem) else force_rewrite
+        recreate_login_file = False if (isinstance(force_rewrite, pystray.MenuItem) or (sys.platform.startswith('linux') and isinstance(force_rewrite, (Gtk.Widget, GtkProxyWindow)))) else force_rewrite
 
         start_command = self.get_script_start_command(quote_args=sys.platform != 'darwin')  # plistlib handles quoting
 
@@ -3355,7 +3575,7 @@ class App:
                         title = title.replace(*replacement)
                     subprocess.call(['osascript', '-e', 'display notification "%s" with title "%s"' % (text, title)])
 
-            elif self.icon.HAS_NOTIFICATION:
+            elif hasattr(self.icon, 'HAS_NOTIFICATION') and self.icon.HAS_NOTIFICATION:
                 self.icon.remove_notification()
                 self.icon.notify('%s: %s' % (title, text))
 
@@ -3660,7 +3880,7 @@ class App:
         # for the 'Start at login' option we need a callback to restart the script the first time this preference is
         # configured (macOS) or every time (other platforms) - note that just as in toggle_start_at_login(), pystray
         # verifies that actions have a maximum of two parameters, so we must override the 'item' one but check its type
-        if restart_callback and not isinstance(restart_callback, pystray.MenuItem):
+        if restart_callback and not (isinstance(restart_callback, pystray.MenuItem) or (sys.platform.startswith('linux') and isinstance(restart_callback, (Gtk.Widget, GtkProxyWindow)))):
             Log.info('Restarted', APP_NAME, 'as a background task')
             restart_callback()
 
