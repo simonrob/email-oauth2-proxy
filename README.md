@@ -107,6 +107,10 @@ When starting the proxy there are several optional arguments that can be set to 
 Please note that unless you also specify one of the authorisation options below, or are using an OAuth 2.0 flow that does not require user authorisation, this mode is only of use if you have already authorised your accounts through the proxy in GUI mode, or are loading a proxy configuration file that already contains the cached authorisation tokens.
 If you do not set `--external-auth` or `--local-server-auth`, accounts that have not yet been authorised (or for whatever reason require re-authorisation) will time out when authenticating, and an error will be printed to the log.
 
+- `--no-tray` will launch the proxy using a standalone GTK window interface instead of a system tray icon (Linux).
+This can be useful in desktop environments (such as GNOME 50 + AppIndicator) where tray icons may encounter display or interaction issues.
+Closing the GTK window via the close button hides the window while keeping the proxy active in the background; use the "Quit Email OAuth2 Proxy" button inside the window to terminate the application.
+
 - `--external-auth` configures the proxy to present an account authorisation URL to be opened in an external browser and wait for you to copy+paste the post-authorisation result.
 In GUI mode this can be useful in situations where the proxy's own browser window does not have access to some required authentication attribute of your typical setup.
 In no-GUI mode this option allows you to authenticate accounts entirely externally (unlike `--local-server-auth`, which starts a local web server), though you will need to monitor the proxy's output and/or log for authentication notifications.

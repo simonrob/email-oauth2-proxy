@@ -65,9 +65,10 @@ MISSING_GUI_REQUIREMENTS = []
 
 no_gui_parser = argparse.ArgumentParser(add_help=False)
 no_gui_parser.add_argument('--no-gui', action='store_false', dest='gui')
+no_gui_parser.add_argument('--no-tray', action='store_true', dest='no_tray')
 no_gui_args = no_gui_parser.parse_known_args()[0]
 if no_gui_args.gui:
-    if sys.platform.startswith('linux'):
+    if sys.platform.startswith('linux') and no_gui_args.no_tray:
         try:
             # noinspection PyUnresolvedReferences
             import gi
@@ -2723,7 +2724,7 @@ if sys.platform.startswith('linux'):
             self.window = Gtk.Window(title=APP_NAME)
             self.window.set_default_size(540, 580)
             self.window.set_position(Gtk.WindowPosition.CENTER)
-            self.window.connect('destroy', lambda w: self.app.exit(self))
+            self.window.connect('delete-event', lambda w, e: w.hide_on_delete())
 
             try:
                 icon_buf = io.BytesIO()
@@ -2931,6 +2932,8 @@ class App:
                                help='start the proxy without a menu bar icon (note: account authorisation requests '
                                     'will fail unless a pre-authorised `--config-file` is used, or you use '
                                     '`--external-auth` or `--local-server-auth` and monitor log/terminal output)')
+        group_gui.add_argument('--no-tray', action='store_true',
+                               help='start the proxy using a GTK window instead of a system tray icon')
         group_auth = parser.add_argument_group('authentication methods')
         group_auth.add_argument('--external-auth', action='store_true',
                                 help='handle authorisation externally: rather than intercepting `redirect_uri`, the '
@@ -3099,7 +3102,7 @@ class App:
 
     # noinspection PyDeprecation
     def create_icon(self):
-        if sys.platform.startswith('linux'):
+        if sys.platform.startswith('linux') and self.args.no_tray:
             return GtkProxyWindow(self)
 
         # fix pystray <= 0.19.4 incompatibility with PIL 10.0.0+; resolved in 0.19.5 and later via pystray PR #147

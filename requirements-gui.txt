@@ -7,7 +7,7 @@ pillow  # to create the menu bar icon image from a TTF icon
 timeago  # for displaying the last authenticated activity hint
 
 # force pystray version with dummy GUI fix for headless deployments (https://github.com/moses-palmer/pystray/issues/118)
-pystray>=0.19.4; sys_platform != 'linux'
+pystray>=0.19.4
 PyGObject; sys_platform == 'linux'
 
 # force pywebview 4.2.1+ to fix Windows issue with PyInstaller/pythonw (https://github.com/r0x0r/pywebview/issues/1086)
