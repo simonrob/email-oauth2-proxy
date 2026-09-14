@@ -715,7 +715,7 @@ class OAuth2Helper:
         pass
 
     @staticmethod
-    def get_oauth2_credentials(username, password, reload_remote_accounts=True):
+    def get_oauth2_credentials(username, password, reload_remote_accounts=True, protocol='GENERIC'):
         # noinspection GrazieInspection
         """Using the given username (i.e., email address) and password, reads account details from AppConfig and
         handles OAuth 2.0 token request and renewal, saving the updated details back to AppConfig (or removing them
@@ -755,6 +755,8 @@ class OAuth2Helper:
         jwt_certificate_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_certificate_path')
         jwt_key_path = AppConfig.get_option_with_catch_all_fallback(config, username, 'jwt_key_path')
 
+        smtp_use_unique_name_as_xauth_username = AppConfig.get_option_with_catch_all_fallback(config, username, 'smtp_use_unique_name_as_xauth_username', fallback=False)
+
         # because the proxy supports a wide range of OAuth 2.0 flows, in addition to the token_url we only mandate the
         # core parameters that are required by all methods: client_id and oauth2_scope (or, for non-standard ROPCG,
         # currently only known to be used by 21Vianet, oauth2_resource instead of oauth2_scope - see GitHub #351)
@@ -784,7 +786,7 @@ class OAuth2Helper:
         # try reloading remotely cached tokens if possible
         if not access_token and CACHE_STORE != CONFIG_FILE_PATH and reload_remote_accounts:
             AppConfig.unload()
-            return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
+            return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False, protocol=protocol)
 
         cryptographer = Cryptographer(config, username, password)
         rotatable_values = {
@@ -964,7 +966,17 @@ class OAuth2Helper:
 
             # send authentication command to server (response checked in ServerConnection) - note: we only support
             # single-trip authentication (SASL) without actually checking the server's capabilities - improve?
-            oauth2_string = OAuth2Helper.construct_oauth2_string(username, access_token)
+            tmp_username=username
+            if protocol=="SMTP" and smtp_use_unique_name_as_xauth_username:
+                try:
+                    import jwt
+                    tmp_at=jwt.decode(access_token,options={"verify_signature": False})
+                    tmp_username=tmp_at["unique_name"]
+                    Log.debug('We are using SMTP and because of smtp_use_unique_name_as_xauth_username being set for this account we will use the claim unique_name from access_token as username - so <%s> instead of <%s>' % (tmp_username , username))
+                except:
+                    Log.info('Warning: we are using SMTP and smtp_use_unique_name_as_xauth_username was set, but we couldnt decode or find a claim named unique_name in access_token')
+
+            oauth2_string = OAuth2Helper.construct_oauth2_string(tmp_username, access_token)
             return True, oauth2_string
 
         except OAuth2Helper.TokenRefreshError as e:
@@ -983,7 +995,7 @@ class OAuth2Helper:
 
             Log.info('Retrying login due to exception while refreshing access token for account', username,
                      '(attempt %d):' % (1 if has_access_token else 2), Log.error_string(e))
-            return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
+            return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False, protocol=protocol)
 
         except InvalidToken as e:
             # regardless of the `delete_account_token_on_password_error` setting, we only reset tokens for standard or
@@ -1000,7 +1012,7 @@ class OAuth2Helper:
 
                 Log.info('Retrying login due to exception while decrypting OAuth 2.0 credentials for account', username,
                          '(invalid password):', Log.error_string(e))
-                return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False)
+                return OAuth2Helper.get_oauth2_credentials(username, password, reload_remote_accounts=False, protocol=protocol)
 
             Log.error('Invalid password to decrypt credentials for account', username, '- aborting login:',
                       Log.error_string(e))
@@ -2363,7 +2375,7 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
         # ...then, once we have the username and password we can respond to the '334 ' response with credentials
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_AWAITING_CONFIRMATION:
             if str_data.startswith('334') and self.username and self.password:  # '334 ' = 'please send credentials'
-                success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password)
+                success, result = OAuth2Helper.get_oauth2_credentials(self.username, self.password, protocol='SMTP')
                 if success:
                     # because get_oauth2_credentials blocks, the client could have disconnected, and may no-longer exist
                     if self.client_connection:
