@@ -138,6 +138,7 @@ if sys.platform == 'darwin':
         # PyUnresolvedReferences; see: youtrack.jetbrains.com/issue/PY-11963 (same for others with this suppression)
         # noinspection PyPackageRequirements,PyUnresolvedReferences
         import PyObjCTools.MachSignals  # SIGTERM handling (only needed in GUI mode; `signal` is sufficient otherwise)
+        import PyObjCTools.AppHelper  # to dispatch menu bar icon updates to the main thread (required on macOS 27+)
     except ImportError as gui_requirement_import_error:
         MISSING_GUI_REQUIREMENTS.append(gui_requirement_import_error)
 
@@ -2650,6 +2651,30 @@ if sys.platform == 'darwin':
             self._refresh_delegate._unlocked_image.setSize_((half_thickness, half_thickness))
 
             super()._mark_ready()
+
+        # pystray calls these from its setup thread, but macOS 27+ enforces that NSStatusItem changes happen on the main
+        # thread (otherwise the process is terminated with SIGTRAP) - here we dispatch them to the main thread instead
+        @staticmethod
+        def _on_main_thread(function, *args):
+            if AppKit.NSThread.isMainThread():
+                function(*args)
+            else:
+                PyObjCTools.AppHelper.callAfter(function, *args)
+
+        def _update_menu(self):
+            self._on_main_thread(super()._update_menu)
+
+        def _show(self):
+            self._on_main_thread(super()._show)
+
+        def _hide(self):
+            self._on_main_thread(super()._hide)
+
+        def _update_icon(self):
+            self._on_main_thread(super()._update_icon)
+
+        def _update_title(self):
+            self._on_main_thread(super()._update_title)
 
         # noinspection PyUnresolvedReferences
         class MenuDelegate(AppKit.NSObject):
