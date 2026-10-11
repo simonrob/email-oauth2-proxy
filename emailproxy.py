@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2026 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2026.7.3'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.10.11'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -1539,6 +1539,7 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
     def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
         SSLAsyncoreDispatcher.__init__(self, connection_socket=connection_socket, socket_map=socket_map)
         self.receive_buffer = b''
+        self.discard_receive_buffer = False
         self.proxy_type = proxy_type
         self.server_connection = None
         self.proxy_parent = proxy_parent
@@ -1610,6 +1611,10 @@ class OAuth2ClientConnection(SSLAsyncoreDispatcher):
                 Log.debug(self.info_string(), '-->', log_data if CENSOR_CREDENTIALS else line)
                 try:
                     self.process_data(line)
+                    if self.discard_receive_buffer:
+                        self.discard_receive_buffer = False
+                        self.receive_buffer = b''
+                        break
                 except AttributeError:  # AttributeError("'NoneType' object has no attribute 'username'"), etc
                     Log.info(self.info_string(),
                              'Caught client exception in subclass; server connection closed before data could be sent')
@@ -1898,6 +1903,7 @@ class SMTPOAuth2ClientConnection(OAuth2ClientConnection):
                     self.set_ssl_connection(True)
                     self.connection_state = self.STATE.LOCAL_STARTTLS_AWAITING_CONFIRMATION
                     self.send(b'220 Ready to start TLS\r\n')
+                    self.discard_receive_buffer = True
                     ssl_context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
                     try:
                         ssl_context.load_cert_chain(certfile=self.custom_configuration['local_certificate_path'],
@@ -1984,6 +1990,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
     def __init__(self, proxy_type, connection_socket, socket_map, proxy_parent, custom_configuration):
         SSLAsyncoreDispatcher.__init__(self, socket_map=socket_map)  # note: establish connection later due to STARTTLS
         self.receive_buffer = b''
+        self.discard_receive_buffer = False
         self.proxy_type = proxy_type
         self.client_connection = None
         self.proxy_parent = proxy_parent
@@ -2074,6 +2081,10 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
                 Log.debug(self.info_string(), '    <--', line)  # (log before edits)
                 try:
                     self.process_data(line)
+                    if self.discard_receive_buffer:
+                        self.discard_receive_buffer = False
+                        self.receive_buffer = b''
+                        break
                 except AttributeError:  # AttributeError("'NoneType' object has no attribute 'connection_state'"), etc
                     Log.info(self.info_string(),
                              'Caught server exception in subclass; client connection closed before data could be sent')
@@ -2356,9 +2367,11 @@ class SMTPOAuth2ServerConnection(OAuth2ServerConnection):
                           're-sending greeting ]')
                 self.client_connection.connection_state = SMTPOAuth2ClientConnection.STATE.EHLO_AWAITING_RESPONSE
                 self.send(self.ehlo)  # re-send original EHLO/HELO to server (includes domain, so can't just be generic)
+                self.discard_receive_buffer = True
             else:
                 super().process_data(byte_data)  # an error occurred - just send to the client and exit
                 self.close()
+                self.discard_receive_buffer = True
 
         # ...then, once we have the username and password we can respond to the '334 ' response with credentials
         elif self.client_connection.connection_state is SMTPOAuth2ClientConnection.STATE.XOAUTH2_AWAITING_CONFIRMATION:
