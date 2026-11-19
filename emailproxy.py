@@ -192,6 +192,10 @@ RECEIVE_BUFFER_SIZE = 65536  # number of bytes to try to read from the socket at
 
 MAX_SSL_HANDSHAKE_ATTEMPTS = 1024  # number of attempts before aborting SSL/TLS handshake (max 10ms each); 0 = no limit
 
+# when a server's hostname resolves to more than one address, the number of seconds to wait for each connection attempt
+# before trying the next address (the final address is left to the operating system's own connection timeout)
+SERVER_CONNECTION_TIMEOUT = 10
+
 # IMAP/POP/SMTP require \r\n as a line terminator (we use lines only pre-authentication; afterwards just pass through)
 LINE_TERMINATOR = b'\r\n'
 LINE_TERMINATOR_LENGTH = len(LINE_TERMINATOR)
@@ -2009,27 +2013,84 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.authenticated_username = None  # used only for showing last activity in the menu
         self.last_activity = 0
 
+        self.server_addresses = []  # getaddrinfo results still to be tried if the current connection attempt fails
+        self.awaiting_server = True  # until the server sends its first data it is safe to switch to another address
+        self.connection_deadline = None
+
         self.create_connection()
 
     def create_connection(self):
-        # resolve the given address, then create a socket and connect to each result in turn until one succeeds
+        # resolve the given address, then create a socket and connect to each result in turn until one succeeds - note
+        # that because sockets are non-blocking, most connection failures (refused, reset, unanswered) are only reported
+        # later, so connect_next_address() is also called from try_next_address() until the server first responds
         # noinspection PyTypeChecker
-        for result in socket.getaddrinfo(*self.server_address, socket.AF_UNSPEC, socket.SOCK_STREAM):
+        self.server_addresses = socket.getaddrinfo(*self.server_address, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        if not self.connect_next_address():
+            raise socket.gaierror(8, 'All socket creation attempts failed - unable to resolve host')
+
+    def connect_next_address(self):
+        while self.server_addresses:
+            result = self.server_addresses.pop(0)
             family, socket_type, _protocol, _canonical_name, socket_address = result
             try:
+                self._reset()  # discard any SSL state from a previous attempt
                 self.create_socket(family, socket_type)
+                # only apply our own timeout when there are other addresses to fall back to
+                self.connection_deadline = time.time() + SERVER_CONNECTION_TIMEOUT if self.server_addresses else None
                 self.connect(socket_address)
-                return
+                return True
 
             except OSError as e:
-                self.del_channel()
-                if self.socket is not None:
-                    self.socket.close()
+                self.discard_socket()
                 socket_type = ' IPv4' if family == socket.AF_INET else ' IPv6' if family == socket.AF_INET6 else ''
                 Log.debug(self.info_string(), 'Unable to create%s socket' % socket_type, 'from getaddrinfo result',
                           result, '-', Log.error_string(e))
 
-        raise socket.gaierror(8, 'All socket creation attempts failed - unable to resolve host')
+        return False
+
+    def discard_socket(self):
+        self.del_channel()
+        if self.socket is not None:
+            self.socket.close()
+        self.connected = False
+        self.connecting = False
+
+    def try_next_address(self, error):
+        # called when the server connection fails before the server has sent any data; returns True if a connection to
+        # another of the server's addresses has been started, or False if none remain (and the error should be handled)
+        if not self.awaiting_server or not self.server_addresses:
+            return False
+        Log.info(self.info_string(), 'Unable to connect to server at', Log.format_host_port(self.addr), '-',
+                 Log.error_string(error), '- trying next address (%d remaining)' % len(self.server_addresses))
+        self.discard_socket()
+        return self.connect_next_address()
+
+    def check_connection_timeout(self):
+        if self.connecting and self.connection_deadline and time.time() > self.connection_deadline:
+            error = TimeoutError(errno.ETIMEDOUT, 'No response after %d seconds' % SERVER_CONNECTION_TIMEOUT)
+            if not self.try_next_address(error):
+                Log.info(self.info_string(), 'Caught network error (server) -', Log.error_string(error))
+                self.close()
+
+    def connection_attempt_in_progress(self):
+        # while connecting, ignore events that select() reports for a socket that is not yet ready - this can happen
+        # after a failed attempt is replaced by a new socket (which may reuse the same file descriptor) in the same loop
+        if not self.connecting:
+            return False
+        _readable, writable, exceptional = select.select([], [self.socket], [self.socket], 0)
+        return not writable and not exceptional
+
+    def handle_read_event(self):
+        if not self.connection_attempt_in_progress():
+            super().handle_read_event()
+
+    def handle_write_event(self):
+        if not self.connection_attempt_in_progress():
+            super().handle_write_event()
+
+    def handle_expt_event(self):
+        if not self.connection_attempt_in_progress():
+            super().handle_expt_event()
 
     def info_string(self):
         debug_string = self.debug_address_string if Log.get_level() == logging.DEBUG else \
@@ -2052,6 +2113,7 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         byte_data = self.recv(RECEIVE_BUFFER_SIZE)
         if not byte_data:
             return
+        self.awaiting_server = False
 
         # data received before client is connected (or after client has disconnected) - ignore
         if not self.client_connection:
@@ -2112,6 +2174,8 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def handle_error(self):
         error_type, value = Log.get_last_error()
+        if isinstance(value, OSError) and not isinstance(value, ssl.SSLError) and self.try_next_address(value):
+            return
         if error_type is TimeoutError and value.errno == errno.ETIMEDOUT or \
                 issubclass(error_type, ConnectionError) and value.errno in [errno.ECONNRESET, errno.ECONNREFUSED] or \
                 error_type is OSError and value.errno in [0, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTDOWN,
@@ -2132,6 +2196,12 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
 
     def handle_close(self):
         error_type, value = Log.get_last_error()
+        # a connection that is reset or closed before the server sends anything is retried using the next address (but
+        # not when the client has sent a command too early, which would fail in the same way with any address)
+        if value is None or (isinstance(value, OSError) and not isinstance(value, ssl.SSLError) and
+                             value.errno not in [errno.ENOTCONN, 10057]):
+            if self.try_next_address(value or ConnectionAbortedError('Server closed connection without responding')):
+                return
         if error_type and value:
             message = 'Caught connection error (server)'
             if error_type is OSError and value.errno in [errno.ENOTCONN, 10057]:
@@ -2141,6 +2211,8 @@ class OAuth2ServerConnection(SSLAsyncoreDispatcher):
         self.close()
 
     def close(self):
+        self.awaiting_server = False
+        self.server_addresses = []
         if self.client_connection:
             self.client_connection.server_connection = None
             with contextlib.suppress(AttributeError):
@@ -2491,6 +2563,13 @@ class OAuth2Proxy(asyncore.dispatcher):
     @staticmethod
     def run_server(client, socket_map):
         try:
+            # until the server first responds, poll at short intervals so that a connection attempt to an address that
+            # does not answer can be abandoned in favour of the server's next address (see SERVER_CONNECTION_TIMEOUT)
+            server = client.server_connection
+            while socket_map and server and server.awaiting_server:
+                asyncore.loop(timeout=0.5, map=socket_map, count=1)
+                server.check_connection_timeout()
+
             asyncore.loop(map=socket_map)  # loop for a single connection thread
         except Exception as e:
             if not EXITING:
