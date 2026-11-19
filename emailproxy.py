@@ -6,7 +6,7 @@
 __author__ = 'Simon Robinson'
 __copyright__ = 'Copyright (c) 2026 Simon Robinson'
 __license__ = 'Apache 2.0'
-__package_version__ = '2026.10.11'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
+__package_version__ = '2026.11.19'  # for pyproject.toml usage only - needs to be ast.literal_eval() compatible
 __version__ = '-'.join('%02d' % int(part) for part in __package_version__.split('.'))  # ISO 8601 (YYYY-MM-DD)
 
 import abc
@@ -1053,8 +1053,14 @@ class OAuth2Helper:
         class RedirectionReceiverWSGIApplication:
             def __call__(self, environ, start_response):
                 start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
-                token_request['response_url'] = '/'.join(token_request['redirect_uri'].split('/')[0:3]) + environ.get(
-                    'PATH_INFO') + '?' + environ.get('QUERY_STRING')
+                if token_request['redirect_listen_address']:
+                    # the listener could be behind a relay/proxy with a path different to `redirect_uri` - treat the fact that
+                    # it has reached us as sufficient and reuse `redirect_uri` with the given query parts to ensure a match
+                    token_request['response_url'] = urllib.parse.urlunparse(urllib.parse.urlparse(
+                        token_request['redirect_uri'])._replace(query=environ.get('QUERY_STRING')))
+                else:
+                    token_request['response_url'] = '/'.join(token_request['redirect_uri'].split('/')[0:3]) + \
+                                                    environ.get('PATH_INFO') + '?' + environ.get('QUERY_STRING')
                 return [('<html><head><title>%s authentication complete (%s)</title><style type="text/css">body{margin:'
                          '20px auto;line-height:1.3;font-family:sans-serif;font-size:16px;color:#444;padding:0 24px}'
                          '</style></head><body><p>%s successfully authenticated account %s.</p><p>You can close this '
@@ -1195,7 +1201,7 @@ class OAuth2Helper:
                             return False, message
                         return (False, 'OAuth 2.0 authorisation response for account %s has neither code nor error '
                                        'message' % data['username'])
-                    return (False, 'OAuth 2.0 authorisation response for account %s is missing or does not match'
+                    return (False, 'OAuth 2.0 authorisation response for account %s is missing or does not match '
                                    '`redirect_uri`' % data['username'])
 
             else:  # not for this thread - put back into queue
